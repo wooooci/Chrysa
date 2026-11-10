@@ -179,17 +179,18 @@ struct ThingsStudioMainView: View {
         Button(action: {
             vm.activeTab = tab
         }) {
-            HStack(spacing: 9) {
-                T3SidebarIcon(tab: tab)
+            HStack(alignment: .center, spacing: 9) {
+                T3SidebarIcon(tab: tab, size: 17)
+                    .offset(y: -0.2)
 
                 Text(title)
-                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                    .font(.system(size: 14.5, weight: isSelected ? .semibold : .medium))
                     .foregroundColor(.t3TextMain)
 
                 Spacer(minLength: 0)
 
                 Text(count)
-                    .font(.system(size: 12, weight: .medium).monospacedDigit())
+                    .font(.system(size: 13, weight: .medium).monospacedDigit())
                     .foregroundColor(.t3TextSub)
                     .frame(width: 20, alignment: .trailing)
             }
@@ -536,25 +537,26 @@ struct ThingsStudioMainView: View {
     }
 
     private var pageHeader: some View {
-        HStack(spacing: 9) {
-            T3SidebarIcon(tab: vm.activeTab, size: 21)
+        HStack(alignment: .center, spacing: 10) {
+            T3SidebarIcon(tab: vm.activeTab, size: 23)
+                .offset(y: 0.8)
 
             switch vm.activeTab {
             case .download:
                 Text("下载")
-                    .font(.system(size: 22, weight: .bold))
+                    .font(.system(size: 24, weight: .bold))
                     .foregroundColor(.t3TextMain)
             case .unpack:
                 Text("解压")
-                    .font(.system(size: 22, weight: .bold))
+                    .font(.system(size: 24, weight: .bold))
                     .foregroundColor(.t3TextMain)
             case .patch:
                 Text("补丁")
-                    .font(.system(size: 22, weight: .bold))
+                    .font(.system(size: 24, weight: .bold))
                     .foregroundColor(.t3TextMain)
             case .settings:
                 Text("设置")
-                    .font(.system(size: 22, weight: .bold))
+                    .font(.system(size: 24, weight: .bold))
                     .foregroundColor(.t3TextMain)
             }
 

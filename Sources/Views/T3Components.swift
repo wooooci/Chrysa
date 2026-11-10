@@ -4,7 +4,7 @@ import AppKit
 // MARK: - Authentic Things 3 Custom Vector Icons (Inbox / Archive Box / Logbook / Sliders)
 struct T3SidebarIcon: View {
     let tab: StudioTab
-    var size: CGFloat = 15
+    var size: CGFloat = 17
 
     var body: some View {
         Canvas { context, canvasSize in
@@ -14,19 +14,19 @@ struct T3SidebarIcon: View {
             switch tab {
             case .download:
                 // Authentic Things 3 "Inbox" Icon: Sky-blue rounded square with T-stepped white tray cutout
-                let bgRect = CGRect(x: w * 0.04, y: h * 0.04, width: w * 0.92, height: h * 0.92)
+                let bgRect = CGRect(x: w * 0.05, y: h * 0.05, width: w * 0.90, height: h * 0.90)
                 let bgPath = Path(roundedRect: bgRect, cornerRadius: w * 0.22, style: .continuous)
                 context.fill(bgPath, with: .color(Color(red: 0.098, green: 0.620, blue: 0.953))) // #199EF3
 
                 var cutout = Path()
-                let topW = w * 0.64
-                let topH = h * 0.34
+                let topW = w * 0.62
+                let topH = h * 0.33
                 let topX = (w - topW) / 2
-                let topY = h * 0.22
+                let topY = h * 0.23
                 cutout.addRoundedRect(in: CGRect(x: topX, y: topY, width: topW, height: topH), cornerSize: CGSize(width: w * 0.08, height: w * 0.08))
 
                 let botW = w * 0.28
-                let botH = h * 0.28
+                let botH = h * 0.27
                 let botX = (w - botW) / 2
                 let botY = h * 0.48
                 cutout.addRoundedRect(in: CGRect(x: botX, y: botY, width: botW, height: botH), cornerSize: CGSize(width: w * 0.06, height: w * 0.06))
@@ -34,24 +34,25 @@ struct T3SidebarIcon: View {
 
             case .unpack:
                 // Authentic Things 3 "Someday" Archive Box Icon: Two-piece banker's box with lid gap & handle slot
+                // Spans y: 0.06 .. 0.94 (centered at 0.50) to match Inbox & Logbook height
                 let boxColor = Color(red: 0.910, green: 0.698, blue: 0.165) // Things 3 Warm Gold-Amber #E8B228
-                let lidRect = CGRect(x: w * 0.04, y: h * 0.10, width: w * 0.92, height: h * 0.21)
+                let lidRect = CGRect(x: w * 0.04, y: h * 0.07, width: w * 0.92, height: h * 0.22)
                 let lidPath = Path(roundedRect: lidRect, cornerRadius: w * 0.09, style: .continuous)
                 context.fill(lidPath, with: .color(boxColor))
 
-                let bodyRect = CGRect(x: w * 0.09, y: h * 0.38, width: w * 0.82, height: h * 0.52)
+                let bodyRect = CGRect(x: w * 0.08, y: h * 0.36, width: w * 0.84, height: h * 0.57)
                 let bodyPath = Path(roundedRect: bodyRect, cornerRadius: w * 0.13, style: .continuous)
                 context.fill(bodyPath, with: .color(boxColor))
 
                 // White handle slot inside box body
-                let slotRect = CGRect(x: w * 0.33, y: h * 0.52, width: w * 0.34, height: h * 0.12)
+                let slotRect = CGRect(x: w * 0.33, y: h * 0.51, width: w * 0.34, height: h * 0.12)
                 let slotPath = Path(roundedRect: slotRect, cornerRadius: h * 0.06, style: .continuous)
                 context.fill(slotPath, with: .color(.white))
 
             case .patch:
                 // Authentic Things 3 "Logbook" Icon: Green book with left spine groove and white checkmark
                 let greenColor = Color(red: 0.208, green: 0.753, blue: 0.353) // #35C05A
-                let bookRect = CGRect(x: w * 0.11, y: h * 0.05, width: w * 0.78, height: h * 0.90)
+                let bookRect = CGRect(x: w * 0.10, y: h * 0.05, width: w * 0.80, height: h * 0.90)
                 let bookPath = Path(roundedRect: bookRect, cornerRadius: w * 0.16, style: .continuous)
                 context.fill(bookPath, with: .color(greenColor))
 
@@ -73,15 +74,15 @@ struct T3SidebarIcon: View {
             case .settings:
                 // Authentic Things 3 Sliders / Preferences Icon (unboxed slate-gray tracks with circular knobs)
                 let slate = Color(red: 0.455, green: 0.490, blue: 0.545) // #747D8B
-                let lineW = max(1.3, h * 0.095)
-                let yPositions: [CGFloat] = [h * 0.24, h * 0.50, h * 0.76]
+                let lineW = max(1.35, h * 0.095)
+                let yPositions: [CGFloat] = [h * 0.22, h * 0.50, h * 0.78]
                 let knobXPositions: [CGFloat] = [w * 0.34, w * 0.68, w * 0.44]
-                let knobR = max(2.1, w * 0.135)
+                let knobR = max(2.2, w * 0.135)
 
                 for (idx, y) in yPositions.enumerated() {
                     var track = Path()
-                    track.move(to: CGPoint(x: w * 0.08, y: y))
-                    track.addLine(to: CGPoint(x: w * 0.92, y: y))
+                    track.move(to: CGPoint(x: w * 0.07, y: y))
+                    track.addLine(to: CGPoint(x: w * 0.93, y: y))
                     context.stroke(track, with: .color(slate), style: StrokeStyle(lineWidth: lineW, lineCap: .round))
 
                     let kx = knobXPositions[idx]
