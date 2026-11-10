@@ -115,24 +115,27 @@ struct ThingsStudioMainView: View {
         .frame(width: 480)
     }
 
+    private var topBarHeight: CGFloat {
+        isSnapshotMode ? 38 : 10
+    }
+
     // MARK: Sidebar
     private var sidebarView: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if isSnapshotMode {
-                HStack(spacing: 8) {
-                    Circle().fill(Color(red: 1.0, green: 0.373, blue: 0.341)).frame(width: 12, height: 12)
-                        .overlay(Circle().stroke(Color.black.opacity(0.12), lineWidth: 0.5))
-                    Circle().fill(Color(red: 1.0, green: 0.741, blue: 0.180)).frame(width: 12, height: 12)
-                        .overlay(Circle().stroke(Color.black.opacity(0.12), lineWidth: 0.5))
-                    Circle().fill(Color(red: 0.153, green: 0.788, blue: 0.247)).frame(width: 12, height: 12)
-                        .overlay(Circle().stroke(Color.black.opacity(0.12), lineWidth: 0.5))
+            ZStack(alignment: .leading) {
+                if isSnapshotMode {
+                    HStack(spacing: 8) {
+                        Circle().fill(Color(red: 1.0, green: 0.373, blue: 0.341)).frame(width: 12, height: 12)
+                            .overlay(Circle().stroke(Color.black.opacity(0.12), lineWidth: 0.5))
+                        Circle().fill(Color(red: 1.0, green: 0.741, blue: 0.180)).frame(width: 12, height: 12)
+                            .overlay(Circle().stroke(Color.black.opacity(0.12), lineWidth: 0.5))
+                        Circle().fill(Color(red: 0.153, green: 0.788, blue: 0.247)).frame(width: 12, height: 12)
+                            .overlay(Circle().stroke(Color.black.opacity(0.12), lineWidth: 0.5))
+                    }
+                    .padding(.leading, 18)
                 }
-                .padding(.top, 14)
-                .padding(.bottom, 12)
-                .padding(.leading, 19.5)
-            } else {
-                Spacer().frame(height: 10)
             }
+            .frame(height: topBarHeight)
 
             VStack(spacing: 2) {
                 sidebarRow(tab: .download, title: "下载", count: "\(vm.downloadTasks.filter { !$0.isArchived }.count)", isSelected: vm.activeTab == .download)
@@ -143,7 +146,7 @@ struct ThingsStudioMainView: View {
                     .fill(Color.t3SidebarBorder)
                     .frame(height: 1)
                     .padding(.vertical, 8)
-                    .padding(.horizontal, 6)
+                    .padding(.horizontal, 8)
 
                 sidebarRow(tab: .settings, title: "设置", count: "", isSelected: vm.activeTab == .settings)
             }
@@ -159,9 +162,9 @@ struct ThingsStudioMainView: View {
                 vm.autoRelay.toggle()
                 vm.appendLog("config ▸ 自动流转: \(vm.autoRelay ? "开启" : "关闭")", highlight: false)
             }) {
-                HStack(spacing: 0) {
+                HStack(alignment: .center, spacing: 0) {
                     Text("自动流转")
-                        .font(.system(size: 12.5, weight: .medium))
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundColor(.t3TextSub)
                     Spacer()
                     T3ToggleSwitch(isOn: vm.autoRelay)
@@ -181,7 +184,7 @@ struct ThingsStudioMainView: View {
         }) {
             HStack(alignment: .center, spacing: 9) {
                 T3SidebarIcon(tab: tab, size: 17)
-                    .offset(y: -0.2)
+                    .frame(width: 18, height: 18, alignment: .center)
 
                 Text(title)
                     .font(.system(size: 14.5, weight: isSelected ? .semibold : .medium))
@@ -192,7 +195,7 @@ struct ThingsStudioMainView: View {
                 Text(count)
                     .font(.system(size: 13, weight: .medium).monospacedDigit())
                     .foregroundColor(.t3TextSub)
-                    .frame(width: 20, alignment: .trailing)
+                    .frame(width: 24, alignment: .trailing)
             }
             .padding(.horizontal, 8)
             .frame(height: 30)
@@ -209,6 +212,8 @@ struct ThingsStudioMainView: View {
     private var mainCanvasView: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
+                Spacer().frame(height: topBarHeight)
+
                 pageHeader
                     .frame(height: 30)
                     .padding(.bottom, 12)
@@ -227,7 +232,7 @@ struct ThingsStudioMainView: View {
                 // Bottom Log Section (hidden on Settings tab)
                 if vm.activeTab != .settings {
                     VStack(alignment: .leading, spacing: 6) {
-                        HStack {
+                        HStack(alignment: .center) {
                             Text("日志")
                                 .font(.system(size: 13, weight: .bold))
                                 .foregroundColor(.t3Blue)
@@ -239,6 +244,7 @@ struct ThingsStudioMainView: View {
                             }
                             .buttonStyle(.plain)
                         }
+                        .padding(.horizontal, 12)
                         .padding(.bottom, 4)
                         .overlay(
                             Rectangle()
@@ -252,7 +258,6 @@ struct ThingsStudioMainView: View {
                 }
             }
             .padding(.horizontal, 34)
-            .padding(.top, isSnapshotMode ? 38 : 10)
             .padding(.bottom, 14)
 
             Rectangle()
@@ -317,7 +322,7 @@ struct ThingsStudioMainView: View {
                         Text(cat.rawValue)
                             .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
                             .foregroundColor(isSelected ? .white : .t3TextSub)
-                            .padding(.horizontal, 11)
+                            .padding(.horizontal, 12)
                             .padding(.vertical, 3.5)
                             .background(
                                 Capsule()
@@ -422,7 +427,7 @@ struct ThingsStudioMainView: View {
 
     private var settingsUnpackPasswordView: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
                 if !isSnapshotMode {
                     TextField("添加解压密码...", text: $vm.newPasswordInput)
                         .textFieldStyle(.plain)
@@ -461,11 +466,11 @@ struct ThingsStudioMainView: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(vm.passwords.enumerated()), id: \.offset) { idx, pwd in
-                    HStack(spacing: 10) {
+                    HStack(alignment: .center, spacing: 10) {
                         Image(systemName: "key.fill")
                             .font(.system(size: 11))
                             .foregroundColor(.t3TextMuted)
-                            .frame(width: 16)
+                            .frame(width: 16, alignment: .center)
 
                         Text(pwd)
                             .font(.system(size: 13, design: .monospaced))
@@ -480,7 +485,7 @@ struct ThingsStudioMainView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, 12)
                     .frame(height: 32)
                     .overlay(
                         Rectangle()
@@ -519,14 +524,14 @@ struct ThingsStudioMainView: View {
     }
 
     private func t3SettingRow<Trailing: View>(title: String, @ViewBuilder trailing: () -> Trailing) -> some View {
-        HStack {
+        HStack(alignment: .center) {
             Text(title)
                 .font(.system(size: 13.5, weight: .regular))
                 .foregroundColor(.t3TextMain)
             Spacer()
             trailing()
         }
-        .padding(.horizontal, 4)
+        .padding(.horizontal, 12)
         .frame(height: 36)
         .overlay(
             Rectangle()
@@ -539,7 +544,7 @@ struct ThingsStudioMainView: View {
     private var pageHeader: some View {
         HStack(alignment: .center, spacing: 10) {
             T3SidebarIcon(tab: vm.activeTab, size: 23)
-                .offset(y: 0.8)
+                .frame(width: 24, height: 24, alignment: .center)
 
             switch vm.activeTab {
             case .download:
@@ -560,7 +565,7 @@ struct ThingsStudioMainView: View {
                     .foregroundColor(.t3TextMain)
             }
 
-            if vm.activeTab != .settings {
+            if vm.activeTab != .settings && !isSnapshotMode {
                 Menu {
                     Button(action: { vm.archiveAllCompletedInActiveTab() }) {
                         Label("归档所有已完成项目", systemImage: "archivebox")
@@ -587,6 +592,11 @@ struct ThingsStudioMainView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
+            } else if vm.activeTab != .settings {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(.t3TextMuted)
+                    .padding(.leading, 4)
             }
 
             Spacer()
@@ -708,168 +718,177 @@ struct ThingsStudioMainView: View {
         return rawList.filter { !$0.isArchived }
     }
 
+    @ViewBuilder
     private var taskListView: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(currentRows) { row in
-                    VStack(alignment: .leading, spacing: 0) {
-                        HStack(spacing: 10) {
-                            Button(action: { vm.archiveTask(row) }) {
-                                T3StatusBox(status: row.isArchived ? .done : row.status)
-                                    .frame(width: 16, height: 16)
+        if isSnapshotMode {
+            taskListContent
+        } else {
+            ScrollView(.vertical, showsIndicators: false) {
+                taskListContent
+            }
+        }
+    }
+
+    private var taskListContent: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(currentRows) { row in
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(alignment: .center, spacing: 10) {
+                        Button(action: { vm.archiveTask(row) }) {
+                            T3StatusBox(status: row.isArchived ? .done : row.status)
+                                .frame(width: 16, height: 16, alignment: .center)
+                        }
+                        .buttonStyle(.plain)
+                        .help(row.isArchived ? "点击取消归档" : "点击归档该项目")
+
+                        Text(row.title)
+                            .font(.system(size: 13.5, weight: row.expanded ? .semibold : .regular))
+                            .strikethrough(row.isArchived, color: .t3TextMuted)
+                            .foregroundColor(
+                                {
+                                    if row.isArchived {
+                                        return Color.t3TextMuted
+                                    }
+                                    if case .done = row.status, vm.activeTab != .patch {
+                                        return Color.t3TextMuted
+                                    }
+                                    return Color.t3TextMain
+                                }()
+                            )
+                            .lineLimit(1)
+
+                        if row.isArchived {
+                            T3OutlinedPill(text: "已归档", icon: "archivebox")
+                        } else if let pill = row.pill {
+                            T3OutlinedPill(
+                                text: pill,
+                                icon: pill == "试密中" ? "key.fill" : nil
+                            )
+                        }
+
+                        Spacer()
+
+                        if case .failed = row.status {
+                            Button(action: { vm.retryTask(row) }) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "arrow.clockwise")
+                                        .font(.system(size: 10, weight: .semibold))
+                                    Text("重试")
+                                        .font(.system(size: 11, weight: .semibold))
+                                }
+                                .foregroundColor(.t3Blue)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2)
+                                .background(
+                                    Capsule().fill(Color.t3Blue.opacity(0.10))
+                                )
                             }
                             .buttonStyle(.plain)
-                            .help(row.isArchived ? "点击取消归档" : "点击归档该项目")
-
-                            Text(row.title)
-                                .font(.system(size: 13.5, weight: row.expanded ? .semibold : .regular))
-                                .strikethrough(row.isArchived, color: .t3TextMuted)
-                                .foregroundColor(
-                                    {
-                                        if row.isArchived {
-                                            return Color.t3TextMuted
-                                        }
-                                        if case .done = row.status, vm.activeTab != .patch {
-                                            return Color.t3TextMuted
-                                        }
-                                        return Color.t3TextMain
-                                    }()
-                                )
-                                .lineLimit(1)
-
-                            if row.isArchived {
-                                T3OutlinedPill(text: "已归档", icon: "archivebox")
-                            } else if let pill = row.pill {
-                                T3OutlinedPill(
-                                    text: pill,
-                                    icon: pill == "试密中" ? "key.fill" : nil
-                                )
-                            }
-
-                            Spacer()
-
-                            if case .failed = row.status {
-                                Button(action: { vm.retryTask(row) }) {
-                                    HStack(spacing: 3) {
-                                        Image(systemName: "arrow.clockwise")
-                                            .font(.system(size: 10, weight: .semibold))
-                                        Text("重试")
-                                            .font(.system(size: 11, weight: .semibold))
-                                    }
-                                    .foregroundColor(.t3Blue)
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 2)
-                                    .background(
-                                        Capsule().fill(Color.t3Blue.opacity(0.10))
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                            } else if case .running = row.status {
-                                Button(action: { vm.stopTask(row) }) {
-                                    Image(systemName: "stop.circle")
-                                        .font(.system(size: 13))
-                                        .foregroundColor(.t3TextMuted)
-                                }
-                                .buttonStyle(.plain)
-                                .help("停止任务")
-                            }
-
-                            if vm.activeTab == .patch {
-                                Button(action: { vm.launchGame(row) }) {
-                                    Text(row.rightText)
-                                        .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
-                                        .foregroundColor(.t3Blue)
-                                }
-                                .buttonStyle(.plain)
-                            } else {
-                                Text(row.rightText)
-                                    .font(.system(size: 11.5, weight: .regular, design: .monospaced))
+                        } else if case .running = row.status {
+                            Button(action: { vm.stopTask(row) }) {
+                                Image(systemName: "stop.circle")
+                                    .font(.system(size: 13))
                                     .foregroundColor(.t3TextMuted)
                             }
+                            .buttonStyle(.plain)
+                            .help("停止任务")
+                        }
 
-                            if !isSnapshotMode {
-                                Menu {
-                                    taskMenuItems(for: row)
-                                } label: {
-                                    Image(systemName: "ellipsis")
-                                        .font(.system(size: 12, weight: .semibold))
-                                        .foregroundColor(.t3TextMuted)
-                                        .frame(width: 20, height: 20)
-                                        .contentShape(Rectangle())
-                                }
-                                .menuStyle(.borderlessButton)
-                                .fixedSize()
+                        if vm.activeTab == .patch {
+                            Button(action: { vm.launchGame(row) }) {
+                                Text(row.rightText)
+                                    .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(.t3Blue)
                             }
-                        }
-                        .padding(.vertical, 6)
-                        .padding(.horizontal, 8)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            if vm.activeTab == .patch,
-                               let idx = vm.patchTasks.firstIndex(where: { $0.id == row.id }) {
-                                vm.patchTasks[idx].expanded.toggle()
-                            }
-                        }
-                        .contextMenu {
-                            taskMenuItems(for: row)
+                            .buttonStyle(.plain)
+                        } else {
+                            Text(row.rightText)
+                                .font(.system(size: 11.5, weight: .regular, design: .monospaced))
+                                .foregroundColor(.t3TextMuted)
                         }
 
-                        if row.expanded && !row.checklist.isEmpty {
-                            Rectangle()
-                                .fill(Color.t3Divider)
-                                .frame(height: 1)
-                                .padding(.leading, 34)
-                                .padding(.vertical, 6)
-
-                            VStack(alignment: .leading, spacing: 7) {
-                                ForEach(Array(row.checklist.enumerated()), id: \.element.id) { cIdx, item in
-                                    HStack(spacing: 8) {
-                                        ZStack {
-                                            RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                                .fill(item.isChecked ? Color.t3Blue : Color.white)
-                                                .frame(width: 12, height: 12)
-                                            if !item.isChecked {
-                                                RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                                    .stroke(Color.t3CheckBorder, lineWidth: 1.3)
-                                                    .frame(width: 12, height: 12)
-                                            } else {
-                                                Image(systemName: "checkmark")
-                                                    .font(.system(size: 7.5, weight: .bold))
-                                                    .foregroundColor(.white)
-                                            }
-                                        }
-                                        Text(item.title)
-                                            .font(.system(size: 12.5))
-                                            .foregroundColor(.t3TextMain)
-                                    }
+                        if !isSnapshotMode {
+                            Menu {
+                                taskMenuItems(for: row)
+                            } label: {
+                                Image(systemName: "ellipsis")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.t3TextMuted)
+                                    .frame(width: 20, height: 20)
                                     .contentShape(Rectangle())
-                                    .onTapGesture {
-                                        if let pIdx = vm.patchTasks.firstIndex(where: { $0.id == row.id }) {
-                                            vm.patchTasks[pIdx].checklist[cIdx].isChecked.toggle()
-                                        }
-                                    }
-                                }
                             }
-                            .padding(.leading, 34)
-                            .padding(.bottom, 8)
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
                         }
                     }
-                    .background(
-                        Group {
-                            if row.expanded {
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(Color.white)
-                                    .shadow(color: Color.black.opacity(0.07), radius: 12, x: 0, y: 3)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                            .stroke(Color.black.opacity(0.05), lineWidth: 1)
-                                    )
-                            } else {
-                                Color.clear
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 12)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        if vm.activeTab == .patch,
+                           let idx = vm.patchTasks.firstIndex(where: { $0.id == row.id }) {
+                            vm.patchTasks[idx].expanded.toggle()
+                        }
+                    }
+                    .contextMenu {
+                        taskMenuItems(for: row)
+                    }
+
+                    if row.expanded && !row.checklist.isEmpty {
+                        Rectangle()
+                            .fill(Color.t3Divider)
+                            .frame(height: 1)
+                            .padding(.leading, 38)
+                            .padding(.vertical, 6)
+
+                        VStack(alignment: .leading, spacing: 7) {
+                            ForEach(Array(row.checklist.enumerated()), id: \.element.id) { cIdx, item in
+                                HStack(alignment: .center, spacing: 8) {
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                            .fill(item.isChecked ? Color.t3Blue : Color.white)
+                                            .frame(width: 12, height: 12)
+                                        if !item.isChecked {
+                                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                                .stroke(Color.t3CheckBorder, lineWidth: 1.3)
+                                                .frame(width: 12, height: 12)
+                                        } else {
+                                            Image(systemName: "checkmark")
+                                                .font(.system(size: 7.5, weight: .bold))
+                                                .foregroundColor(.white)
+                                        }
+                                    }
+                                    Text(item.title)
+                                        .font(.system(size: 12.5))
+                                        .foregroundColor(.t3TextMain)
+                                }
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    if let pIdx = vm.patchTasks.firstIndex(where: { $0.id == row.id }) {
+                                        vm.patchTasks[pIdx].checklist[cIdx].isChecked.toggle()
+                                    }
+                                }
                             }
                         }
-                    )
+                        .padding(.leading, 38)
+                        .padding(.bottom, 8)
+                    }
                 }
+                .background(
+                    Group {
+                        if row.expanded {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color.white)
+                                .shadow(color: Color.black.opacity(0.07), radius: 12, x: 0, y: 3)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .stroke(Color.black.opacity(0.05), lineWidth: 1)
+                                )
+                        } else {
+                            Color.clear
+                        }
+                    }
+                )
             }
         }
     }

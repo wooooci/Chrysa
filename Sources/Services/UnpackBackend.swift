@@ -129,7 +129,7 @@ extension StudioViewModel {
                 try? innoProc.run()
                 await MainActor.run { self.activeProcesses[taskID] = innoProc }
                 innoProc.waitUntilExit()
-                await MainActor.run { self.activeProcesses.removeValue(forKey: taskID) }
+                _ = await MainActor.run { self.activeProcesses.removeValue(forKey: taskID) }
                 if innoProc.terminationStatus != 0 {
                     allOK = false
                     break
