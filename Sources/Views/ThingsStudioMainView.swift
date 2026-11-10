@@ -292,7 +292,7 @@ struct ThingsStudioMainView: View {
                 Button(action: {
                     vm.activeTab = .settings
                 }) {
-                    Image(systemName: "gearshape")
+                    Image(systemName: "slider.horizontal.3")
                         .foregroundColor(vm.activeTab == .settings ? .t3Blue : .t3TextSub)
                 }
                 .buttonStyle(.plain)
@@ -306,7 +306,7 @@ struct ThingsStudioMainView: View {
 
     private var settingsSectionView: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Secondary Category Menu Bar (Things 3 Style)
+            // Secondary Category Menu Bar (Authentic Things 3 Capsule Tag Filter Bar)
             HStack(spacing: 6) {
                 ForEach(SettingsCategory.allCases) { cat in
                     let isSelected = (vm.settingsCategory == cat)
@@ -314,13 +314,13 @@ struct ThingsStudioMainView: View {
                         vm.settingsCategory = cat
                     }) {
                         Text(cat.rawValue)
-                            .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
-                            .foregroundColor(isSelected ? .t3TextMain : .t3TextSub)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 4.5)
+                            .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
+                            .foregroundColor(isSelected ? .white : .t3TextSub)
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 3.5)
                             .background(
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(isSelected ? Color.t3SidebarActive : Color.clear)
+                                Capsule()
+                                    .fill(isSelected ? Color(red: 0.675, green: 0.706, blue: 0.753) : Color.clear)
                             )
                             .contentShape(Rectangle())
                     }
@@ -328,7 +328,7 @@ struct ThingsStudioMainView: View {
                 }
                 Spacer()
             }
-            .padding(.bottom, 10)
+            .padding(.bottom, 12)
             .overlay(
                 Rectangle()
                     .fill(Color.t3Divider)
@@ -536,27 +536,23 @@ struct ThingsStudioMainView: View {
     }
 
     private var pageHeader: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 9) {
+            T3SidebarIcon(tab: vm.activeTab, size: 21)
+
             switch vm.activeTab {
             case .download:
-                T3PieRing(progress: headerProgress(for: vm.downloadTasks.filter { !$0.isArchived }), size: 21, color: .t3Blue)
                 Text("下载")
                     .font(.system(size: 22, weight: .bold))
                     .foregroundColor(.t3TextMain)
             case .unpack:
-                T3PieRing(progress: headerProgress(for: vm.unpackTasks.filter { !$0.isArchived }), size: 21, color: .t3Amber)
                 Text("解压")
                     .font(.system(size: 22, weight: .bold))
                     .foregroundColor(.t3TextMain)
             case .patch:
-                T3PieRing(progress: headerProgress(for: vm.patchTasks.filter { !$0.isArchived }), size: 21, color: .t3Green)
                 Text("补丁")
                     .font(.system(size: 22, weight: .bold))
                     .foregroundColor(.t3TextMain)
             case .settings:
-                Image(systemName: "gearshape.fill")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundColor(Color(red: 0.455, green: 0.490, blue: 0.545))
                 Text("设置")
                     .font(.system(size: 22, weight: .bold))
                     .foregroundColor(.t3TextMain)
@@ -582,10 +578,10 @@ struct ThingsStudioMainView: View {
                         Label("清空当前列表", systemImage: "trash")
                     }
                 } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundColor(.t3TextSub)
-                        .padding(.leading, 2)
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundColor(.t3TextMuted)
+                        .padding(.leading, 4)
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
