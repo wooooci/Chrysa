@@ -7,6 +7,24 @@ struct ThingsStudioMainView: View {
     @ObservedObject var vm: StudioViewModel
     var isSnapshotMode: Bool = false
 
+    // Magpie-style tab follower state:
+    // - Immediate pointer-down pre-glide (`onpointerdown` -> glide to pressed tab; drag out -> spring back)
+    // - `navlamp.js` continuous pointer torch on hovered sidebar rows
+    @State private var pressingSidebarTab: StudioTab? = nil
+    @State private var hoveredSidebarTab: StudioTab? = nil
+    @State private var hoverSidebarX: CGFloat = 45
+
+    @State private var pressingSettingsCategory: SettingsCategory? = nil
+    @State private var hoveredSettingsCategory: SettingsCategory? = nil
+
+    private var effectiveSidebarTab: StudioTab {
+        pressingSidebarTab ?? vm.activeTab
+    }
+
+    private var effectiveSettingsCategory: SettingsCategory {
+        pressingSettingsCategory ?? vm.settingsCategory
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             sidebarView
@@ -137,10 +155,12 @@ struct ThingsStudioMainView: View {
             }
             .frame(height: topBarHeight)
 
+            // Magpie `.nav-top-hl` follower container:
+            // One persistent shape sliding from row to row on NAV_SPRING (response: 0.42, damping: 0.84)
             VStack(spacing: 2) {
-                sidebarRow(tab: .download, title: "下载", count: "\(vm.downloadTasks.filter { !$0.isArchived }.count)", isSelected: vm.activeTab == .download)
-                sidebarRow(tab: .unpack,   title: "解压", count: "\(vm.unpackTasks.filter { !$0.isArchived }.count)",   isSelected: vm.activeTab == .unpack)
-                sidebarRow(tab: .patch,    title: "补丁", count: "\(vm.patchTasks.filter { !$0.isArchived }.count)",    isSelected: vm.activeTab == .patch)
+                sidebarRow(tab: .download, title: "下载", count: "\(vm.downloadTasks.filter { !$0.isArchived }.count)")
+                sidebarRow(tab: .unpack,   title: "解压", count: "\(vm.unpackTasks.filter { !$0.isArchived }.count)")
+                sidebarRow(tab: .patch,    title: "补丁", count: "\(vm.patchTasks.filter { !$0.isArchived }.count)")
 
                 Rectangle()
                     .fill(Color.t3SidebarBorder)
@@ -148,9 +168,21 @@ struct ThingsStudioMainView: View {
                     .padding(.vertical, 8)
                     .padding(.horizontal, 8)
 
-                sidebarRow(tab: .settings, title: "设置", count: "", isSelected: vm.activeTab == .settings)
+                sidebarRow(tab: .settings, title: "设置", count: "")
             }
             .padding(.horizontal, 10)
+            .backgroundPreferenceValue(SidebarTabBoundsKey.self) { bounds in
+                GeometryReader { proxy in
+                    if let anchor = bounds[effectiveSidebarTab] {
+                        let rect = proxy[anchor]
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color.t3SidebarActive)
+                            .frame(width: rect.width, height: rect.height)
+                            .offset(x: rect.minX, y: rect.minY)
+                            .animation(.spring(response: 0.42, dampingFraction: 0.84), value: effectiveSidebarTab)
+                    }
+                }
+            }
 
             Spacer()
 
@@ -178,34 +210,75 @@ struct ThingsStudioMainView: View {
         .background(Color.t3SidebarBg)
     }
 
-    private func sidebarRow(tab: StudioTab, title: String, count: String, isSelected: Bool) -> some View {
-        Button(action: {
-            vm.activeTab = tab
-        }) {
-            HStack(alignment: .center, spacing: 9) {
-                T3SidebarIcon(tab: tab, size: 17)
-                    .frame(width: 18, height: 18, alignment: .center)
+    private func sidebarRow(tab: StudioTab, title: String, count: String) -> some View {
+        let isHighlighted = (effectiveSidebarTab == tab)
+        let isHovered = (hoveredSidebarTab == tab && !isHighlighted)
 
-                Text(title)
-                    .font(.system(size: 14.5, weight: isSelected ? .semibold : .medium))
-                    .foregroundColor(.t3TextMain)
+        return HStack(alignment: .center, spacing: 9) {
+            T3SidebarIcon(tab: tab, size: 17)
+                .frame(width: 18, height: 18, alignment: .center)
 
-                Spacer(minLength: 0)
+            Text(title)
+                .font(.system(size: 14.5, weight: isHighlighted ? .semibold : .medium))
+                .foregroundStyle(
+                    isHovered
+                        ? AnyShapeStyle(
+                            RadialGradient(
+                                colors: [Color.black, Color.t3TextMain.opacity(0.88)],
+                                center: UnitPoint(x: min(max((hoverSidebarX - 35) / 60, 0), 1), y: 0.5),
+                                startRadius: 2,
+                                endRadius: 42
+                            )
+                        )
+                        : AnyShapeStyle(isHighlighted ? Color.t3TextMain : Color.t3TextMain.opacity(0.86))
+                )
 
-                Text(count)
-                    .font(.system(size: 13, weight: .medium).monospacedDigit())
-                    .foregroundColor(.t3TextSub)
-                    .frame(width: 24, alignment: .trailing)
-            }
-            .padding(.horizontal, 8)
-            .frame(height: 30)
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(isSelected ? Color.t3SidebarActive : Color.clear)
-            )
-            .contentShape(Rectangle())
+            Spacer(minLength: 0)
+
+            Text(count)
+                .font(.system(size: 13, weight: .medium).monospacedDigit())
+                .foregroundColor(isHighlighted ? .t3TextMain.opacity(0.75) : .t3TextSub)
+                .frame(width: 24, alignment: .trailing)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .frame(height: 30)
+        .contentShape(Rectangle())
+        .anchorPreference(key: SidebarTabBoundsKey.self, value: .bounds) { [tab: $0] }
+        .onContinuousHover { phase in
+            switch phase {
+            case .active(let loc):
+                hoveredSidebarTab = tab
+                withAnimation(.linear(duration: 0.08)) {
+                    hoverSidebarX = loc.x
+                }
+            case .ended:
+                if hoveredSidebarTab == tab {
+                    hoveredSidebarTab = nil
+                }
+            }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                .onChanged { value in
+                    let rowBounds = CGRect(x: -4, y: -4, width: 174, height: 38)
+                    if rowBounds.contains(value.location) {
+                        if pressingSidebarTab != tab {
+                            pressingSidebarTab = tab
+                        }
+                    } else if pressingSidebarTab == tab {
+                        pressingSidebarTab = nil
+                    }
+                }
+                .onEnded { value in
+                    let rowBounds = CGRect(x: -4, y: -4, width: 174, height: 38)
+                    if rowBounds.contains(value.location) {
+                        vm.activeTab = tab
+                    }
+                    pressingSidebarTab = nil
+                }
+        )
+        .animation(.easeOut(duration: 0.18), value: isHighlighted)
+        .animation(.easeOut(duration: 0.18), value: isHovered)
     }
 
     // MARK: Main Canvas
@@ -218,14 +291,18 @@ struct ThingsStudioMainView: View {
                     .frame(height: 30)
                     .padding(.bottom, 12)
 
-                if vm.activeTab == .settings {
-                    settingsSectionView
-                } else {
-                    topDropZone
-                        .padding(.bottom, 16)
+                Group {
+                    if vm.activeTab == .settings {
+                        settingsSectionView
+                    } else {
+                        topDropZone
+                            .padding(.bottom, 16)
 
-                    taskListView
+                        taskListView
+                    }
                 }
+                .id(vm.activeTab)
+                .transition(.opacity.animation(.easeOut(duration: 0.16)))
 
                 Spacer(minLength: 10)
 
@@ -312,27 +389,24 @@ struct ThingsStudioMainView: View {
 
     private var settingsSectionView: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Secondary Category Menu Bar (Authentic Things 3 Capsule Tag Filter Bar)
+            // Secondary Category Menu Bar with Magpie `.seg > .thumb` shared gliding capsule
             HStack(spacing: 6) {
                 ForEach(SettingsCategory.allCases) { cat in
-                    let isSelected = (vm.settingsCategory == cat)
-                    Button(action: {
-                        vm.settingsCategory = cat
-                    }) {
-                        Text(cat.rawValue)
-                            .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
-                            .foregroundColor(isSelected ? .white : .t3TextSub)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 3.5)
-                            .background(
-                                Capsule()
-                                    .fill(isSelected ? Color(red: 0.675, green: 0.706, blue: 0.753) : Color.clear)
-                            )
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
+                    settingsCategoryPill(cat)
                 }
                 Spacer()
+            }
+            .backgroundPreferenceValue(SettingsCategoryBoundsKey.self) { bounds in
+                GeometryReader { proxy in
+                    if let anchor = bounds[effectiveSettingsCategory] {
+                        let rect = proxy[anchor]
+                        Capsule(style: .continuous)
+                            .fill(Color(red: 0.675, green: 0.706, blue: 0.753))
+                            .frame(width: rect.width, height: rect.height)
+                            .offset(x: rect.minX, y: rect.minY)
+                            .animation(.spring(response: 0.30, dampingFraction: 0.86), value: effectiveSettingsCategory)
+                    }
+                }
             }
             .padding(.bottom, 12)
             .overlay(
@@ -343,17 +417,67 @@ struct ThingsStudioMainView: View {
             )
             .padding(.bottom, 16)
 
-            switch vm.settingsCategory {
-            case .appearance:
-                settingsAppearanceView
-            case .download:
-                settingsDownloadView
-            case .unpack:
-                settingsUnpackPasswordView
-            case .patch:
-                settingsPatchView
+            Group {
+                switch vm.settingsCategory {
+                case .appearance:
+                    settingsAppearanceView
+                case .download:
+                    settingsDownloadView
+                case .unpack:
+                    settingsUnpackPasswordView
+                case .patch:
+                    settingsPatchView
+                }
             }
+            .id(vm.settingsCategory)
+            .transition(.opacity.animation(.easeOut(duration: 0.14)))
         }
+    }
+
+    private func settingsCategoryPill(_ cat: SettingsCategory) -> some View {
+        let isHighlighted = (effectiveSettingsCategory == cat)
+        let isHovered = (hoveredSettingsCategory == cat && !isHighlighted)
+
+        return Text(cat.rawValue)
+            .font(.system(size: 12, weight: isHighlighted ? .semibold : .medium))
+            .foregroundColor(
+                isHighlighted
+                    ? .white
+                    : (isHovered ? .t3TextMain : .t3TextSub)
+            )
+            .padding(.horizontal, 12)
+            .padding(.vertical, 3.5)
+            .contentShape(Rectangle())
+            .anchorPreference(key: SettingsCategoryBoundsKey.self, value: .bounds) { [cat: $0] }
+            .onHover { hovering in
+                if hovering {
+                    hoveredSettingsCategory = cat
+                } else if hoveredSettingsCategory == cat {
+                    hoveredSettingsCategory = nil
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                    .onChanged { value in
+                        let pillBounds = CGRect(x: -4, y: -4, width: 64, height: 32)
+                        if pillBounds.contains(value.location) {
+                            if pressingSettingsCategory != cat {
+                                pressingSettingsCategory = cat
+                            }
+                        } else if pressingSettingsCategory == cat {
+                            pressingSettingsCategory = nil
+                        }
+                    }
+                    .onEnded { value in
+                        let pillBounds = CGRect(x: -4, y: -4, width: 64, height: 32)
+                        if pillBounds.contains(value.location) {
+                            vm.settingsCategory = cat
+                        }
+                        pressingSettingsCategory = nil
+                    }
+            )
+            .animation(.easeOut(duration: 0.16), value: isHighlighted)
+            .animation(.easeOut(duration: 0.16), value: isHovered)
     }
 
     private var settingsAppearanceView: some View {

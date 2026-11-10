@@ -202,6 +202,26 @@ struct T3ToggleSwitch: View {
                 .shadow(color: Color.black.opacity(0.18), radius: 1, x: 0, y: 0.8)
                 .padding(.horizontal, 1.8)
         }
+        .animation(.spring(response: 0.26, dampingFraction: 0.82), value: isOn)
     }
 }
+
+// MARK: - Magpie-Style Shared Tab Follower Preference Keys & Interaction
+// Replicates yetone/magpie's `.nav-top-hl` (NAV_SPRING: response 0.42, damping 0.84),
+// `.seg > .thumb` / `.nav-hl` sliding pill, immediate pointer-down pre-glide,
+// and `navlamp.js` pointer-following torch highlight.
+struct SidebarTabBoundsKey: PreferenceKey {
+    static var defaultValue: [StudioTab: Anchor<CGRect>] = [:]
+    static func reduce(value: inout [StudioTab: Anchor<CGRect>], nextValue: () -> [StudioTab: Anchor<CGRect>]) {
+        value.merge(nextValue(), uniquingKeysWith: { $1 })
+    }
+}
+
+struct SettingsCategoryBoundsKey: PreferenceKey {
+    static var defaultValue: [SettingsCategory: Anchor<CGRect>] = [:]
+    static func reduce(value: inout [SettingsCategory: Anchor<CGRect>], nextValue: () -> [SettingsCategory: Anchor<CGRect>]) {
+        value.merge(nextValue(), uniquingKeysWith: { $1 })
+    }
+}
+
 
