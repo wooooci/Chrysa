@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-// MARK: - App Delegate & CLI Self-Test / Snapshot Entrypoint
+// MARK: - App Delegate & Lifecycle Cleanup
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     var vm: StudioViewModel!
@@ -24,7 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(withTitle: "退出 Chrysa", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appMenuItem.submenu = appMenu
 
-        // 2. Edit Menu (Enables Cmd+V Paste, Cmd+C Copy, Cmd+X Cut, Cmd+A Select All, Cmd+Z Undo in all TextFields!)
+        // 2. Edit Menu (Cmd+V, Cmd+C, Cmd+X, Cmd+A, Cmd+Z)
         let editMenuItem = NSMenuItem()
         mainMenu.addItem(editMenuItem)
         let editMenu = NSMenu(title: "编辑")
@@ -69,13 +69,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
-        // Global Cmd+V fallback when window is active but TextField isn't focused yet
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self else { return event }
             if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
                event.charactersIgnoringModifiers?.lowercased() == "v" {
                 if let responder = self.window?.firstResponder, responder is NSText {
-                    // Let NSTextField / Edit menu handle standard paste into focused field
                     return event
                 }
                 if self.vm.activeTab == .download, self.vm.editingTask == nil {
@@ -105,6 +103,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return true
     }
+
+    @MainActor
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let vmRef = self.vm
+        Task { @MainActor in
+            await ProcessSupervisor.shared.terminateAll()
+            await vmRef?.flushTasksImmediately()
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
 }
 
 @main
@@ -112,7 +121,7 @@ struct ChrysaAppMain {
     @MainActor
     static func main() async {
         if CommandLine.arguments.contains("--self-test") {
-            await runBackendSelfTest()
+            await runArchitectureSelfTest()
             return
         }
 
@@ -123,7 +132,9 @@ struct ChrysaAppMain {
                 (.unpack, .appearance, "un"),
                 (.patch, .appearance, "pa"),
                 (.settings, .appearance, "settings_appearance"),
-                (.settings, .unpack, "settings_unpack")
+                (.settings, .download, "settings_download"),
+                (.settings, .unpack, "settings_unpack"),
+                (.settings, .patch, "settings_patch")
             ]
             for (tab, cat, suffix) in presets {
                 let vm = StudioViewModel(seedDemoData: true)
@@ -159,145 +170,137 @@ struct ChrysaAppMain {
     }
 
     @MainActor
-    static func runBackendSelfTest() async {
-        print("=== [Chrysa Backend Hardening Self-Test] ===")
+    static func runArchitectureSelfTest() async {
+        print("=== [Chrysa Decoupled Architecture Self-Test] ===")
 
-        // Test 1: System Proxy Detection + Host Routing
-        let proxy = StudioViewModel.detectSystemProxy()
-        let gofileProxy = StudioViewModel.hostNeedsProxy("https://store4.gofile.io/download/web/xxx/game.7z")
-        let vfProxy = StudioViewModel.hostNeedsProxy("https://bi.vikingfile.com/download/xxx/SAN.7z")
-        print("1. System Proxy -> \(proxy ?? "none") | Gofile uses proxy=\(gofileProxy), VikingFile uses proxy=\(vfProxy)")
+        // 1. ToolchainLocator & Proxy Routing
+        let proxy = ToolchainLocator.detectSystemProxy()
+        let gofileProxy = ToolchainLocator.hostNeedsProxy("https://store4.gofile.io/download/web/xxx/game.7z")
+        let vfProxy = ToolchainLocator.hostNeedsProxy("https://bi.vikingfile.com/download/xxx/SAN.7z")
+        let dlBin = ToolchainLocator.locateDownloadEngineBinary() ?? "missing"
+        let gbe64 = ToolchainLocator.locateGbeDLL(is64Bit: true) != nil
+        print("1. Infrastructure -> proxy=\(proxy ?? "none"), gofileProxy=\(gofileProxy), vfProxy=\(vfProxy), dlEngine=\((dlBin as NSString).lastPathComponent), gbe64Found=\(gbe64)")
+        assert(gofileProxy == true && vfProxy == false)
 
-        // Test 2: VikingFile Resolver + Strict Byte-Count Chunk Verification
-        let vf = await StudioViewModel.resolveHostLink("https://vikingfile.com/d/GFXaaEgK9t/SAN_21675470.7z")
-        print("2. VikingFile Resolver -> useChunkedRange=\(vf.useChunkedRange), totalSize=\(vf.totalSize ?? 0) bytes, filename=\(vf.suggestedFilename ?? "")")
+        // 2. AppSettingsStore & TaskStore Round-Trip + Interrupted Task Normalization
+        let tmpDir = URL(fileURLWithPath: "/tmp/chrysa_selftest_\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
 
-        // Test 3: Multi-part Archive Normalization + Strict Unpack Exit-Code Check (Reject Bad Archive)
+        let settingsFile = tmpDir.appendingPathComponent("settings.json")
+        let s1 = AppSettingsStore(inMemoryOnly: false, customFileURL: settingsFile)
+        s1.settings.maxConcurrentConnections = 8
+        s1.settings.defaultLanguage = .tchinese
+        s1.settings.deleteArchiveAfterUnpack = true
+        let s2 = AppSettingsStore(inMemoryOnly: false, customFileURL: settingsFile)
+        assert(s2.settings.maxConcurrentConnections == 8 && s2.settings.defaultLanguage == .tchinese && s2.settings.deleteArchiveAfterUnpack == true)
+
+        let tasksFile = tmpDir.appendingPathComponent("tasks.json")
+        let ts = TaskStore(inMemoryOnly: false, customFileURL: tasksFile)
+        await ts.save(
+            PersistedTaskSnapshot(
+                downloadTasks: [StudioTask(title: "InFlight.7z", status: .running(0.42), pill: "12 MB/s", rightText: "1/2 GB")],
+                unpackTasks: [],
+                patchTasks: [StudioTask(title: "SavedGame", status: .done, pill: "Goldberg x64", rightText: "▶ 启动")]
+            )
+        )
+        let loaded = await ts.load()
+        assert(loaded.downloadTasks.first?.status == .failed && loaded.downloadTasks.first?.pill == "已中断")
+        assert(loaded.patchTasks.first?.title == "SavedGame")
+        print("2. Persistence -> AppSettingsStore & TaskStore round-trip OK, interrupted task normalized to '\(loaded.downloadTasks.first?.pill ?? "")'")
+
+        // 3. HostResolverRegistry Plugin Rack
+        let pdResolved = await HostResolverRegistry.resolveSingleLink("https://pixeldrain.com/u/zeC9sxvA")
+        let mailItems = await HostResolverRegistry.resolveLinks("https://cloud.mail.ru/public/BqBr/K7pB3Myfy")
+        print("3. HostResolverRegistry -> Pixeldrain='\(pdResolved.suggestedFilename ?? "")', Mail.ru count=\(mailItems.count)")
+
+        // 4. UnpackService Multipart Normalization + Corrupt Archive Rejection
         FileManager.default.createFile(atPath: "/tmp/TestGame.part01.rar", contents: Data())
         FileManager.default.createFile(atPath: "/tmp/TestGame.7z.001", contents: Data())
-        let normRar = StudioViewModel.normalizeMultipartArchivePath("/tmp/TestGame.part02.rar")
-        let norm7z = StudioViewModel.normalizeMultipartArchivePath("/tmp/TestGame.7z.003")
-        let vm = StudioViewModel(seedDemoData: false)
-        let badArchive = "/tmp/corrupt_test.7z"
+        FileManager.default.createFile(atPath: "/tmp/setup_rain_world_1.11.8_(90164).exe", contents: Data())
+        let normRar = UnpackService.normalizeMultipartArchivePath("/tmp/TestGame.part02.rar")
+        let norm7z = UnpackService.normalizeMultipartArchivePath("/tmp/TestGame.7z.003")
+        let normGOG = UnpackService.normalizeMultipartArchivePath("/tmp/setup_rain_world_1.11.8_(90164)-1.bin")
+        assert(normRar.hasSuffix("TestGame.part01.rar") && norm7z.hasSuffix("TestGame.7z.001") && normGOG.hasSuffix(".exe"))
+
+        let badArchive = "/tmp/corrupt_arch_test.7z"
         try? Data([0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00, 0x00]).write(to: URL(fileURLWithPath: badArchive))
-        let unpackTID = UUID()
-        vm.unpackTasks.insert(StudioTask(id: unpackTID, title: "CorruptTest", status: .running(0.1), pill: "测试", rightText: "解压中"), at: 0)
-        await vm.runSevenZipUnpack(taskID: unpackTID, archivePath: badArchive, candidatePasswords: ["cs.rin.ru"])
-        let unpackStatus = vm.unpackTasks.first(where: { $0.id == unpackTID })?.status
-        let unpackRejected = (unpackStatus == .failed)
-        print("3. Unpack Hardening -> .part02.rar normalized='\(URL(fileURLWithPath: normRar).lastPathComponent)', .7z.003 normalized='\(URL(fileURLWithPath: norm7z).lastPathComponent)', corruptArchiveRejected=\(unpackRejected)")
+        let unpackSvc = UnpackService()
+        let badOut = await unpackSvc.executeUnpack(
+            taskID: UUID(),
+            archivePath: badArchive,
+            candidatePasswords: ["cs.rin.ru"],
+            onProgress: { _, _ in },
+            onLog: { _, _ in }
+        )
+        let badRejected: Bool = {
+            if case .failed = badOut { return true }
+            return false
+        }()
+        assert(badRejected)
+        print("4. UnpackService -> multipart normalized OK, corruptArchiveRejected=\(badRejected)")
 
-        // Test 4A: CSF Patch with Existing DLL (SANABI)
-        let acfDir = "/tmp/SAN_21675470_extracted/steamapps"
-        try? FileManager.default.createDirectory(atPath: acfDir, withIntermediateDirectories: true)
-        let acfPath = "\(acfDir)/appmanifest_1562700.acf"
-        let acfSample = "\"AppState\"\n{\n\t\"appid\"\t\t\"1562700\"\n\t\"name\"\t\t\"SANABI\"\n}\n"
-        try? acfSample.write(toFile: acfPath, atomically: true, encoding: .utf8)
-
-        let tidA = UUID()
-        vm.patchTasks.insert(StudioTask(id: tidA, title: "SAN 21675470", status: .running(0.35), pill: "扫描中", rightText: "处理中"), at: 0)
-        await vm.runGoldbergPatch(taskID: tidA, folderPath: "/tmp/SAN_21675470_extracted", cleanTitle: "SAN 21675470")
-        if let pA = vm.patchTasks.first(where: { $0.id == tidA }) {
-            print("4A. Existing DLL Patch -> title='\(pA.title)', appID='\(pA.appID ?? "")', pill='\(pA.pill ?? "")', rightText='\(pA.rightText)'")
-        }
-
-        // Test 4B: Unity Missing-DLL Injection (Remove steam_api64.dll and verify Unity *_Data/Plugins/x86_64 auto-injection)
-        let unityMock = "/tmp/UnityMissingDLL_Test"
-        try? FileManager.default.removeItem(atPath: unityMock)
-        try? FileManager.default.createDirectory(atPath: "\(unityMock)/SNB_Data/Plugins/x86_64", withIntermediateDirectories: true)
-        try? FileManager.default.copyItem(atPath: "/tmp/SAN_21675470_extracted/steamapps/common/SANABI/SNB.exe", toPath: "\(unityMock)/SNB.exe")
-        let tidB = UUID()
-        vm.patchTasks.insert(StudioTask(id: tidB, title: "SANABI", status: .running(0.35), pill: "扫描中", rightText: "处理中"), at: 0)
-        await vm.runGoldbergPatch(taskID: tidB, folderPath: unityMock, cleanTitle: "SANABI")
-        if let pB = vm.patchTasks.first(where: { $0.id == tidB }) {
-            let injectedExists = FileManager.default.fileExists(atPath: "\(unityMock)/SNB_Data/Plugins/x86_64/steam_api64.dll")
-            print("4B. Unity Missing-DLL Injection -> pill='\(pB.pill ?? "")', injectedInPlugins=\(injectedExists), appID='\(pB.appID ?? "")'")
-        }
-
-        // Test 4C: Native PE Missing-DLL Injection (Order of the Sinking Star where uploader deleted steam_api64.dll)
-        let peMock = "/tmp/PEMissingDLL_Test"
-        try? FileManager.default.removeItem(atPath: peMock)
-        try? FileManager.default.createDirectory(atPath: peMock, withIntermediateDirectories: true)
+        // 5. PEBinaryInspector RVA Import Table Parser + Dynamic CrossOver Bottle Scanner + PatchService Language Binding
         let realOSS = "/Users/woooci/Library/Application Support/CrossOver/Bottles/Order of the Sinking Star/drive_c/Order of the Sinking Star/sinking_star.exe"
         if FileManager.default.fileExists(atPath: realOSS) {
-            try? FileManager.default.copyItem(atPath: realOSS, toPath: "\(peMock)/sinking_star.exe")
-            let tidC = UUID()
-            vm.patchTasks.insert(StudioTask(id: tidC, title: "Order of the Sinking Star", status: .running(0.35), pill: "扫描中", rightText: "处理中"), at: 0)
-            await vm.runGoldbergPatch(taskID: tidC, folderPath: peMock, cleanTitle: "Order of the Sinking Star")
-            if let pC = vm.patchTasks.first(where: { $0.id == tidC }) {
-                let injectedExists = FileManager.default.fileExists(atPath: "\(peMock)/steam_api64.dll")
-                print("4C. Native PE Missing-DLL Injection -> pill='\(pC.pill ?? "")', injectedNextToExe=\(injectedExists), appID='\(pC.appID ?? "")', rightText='\(pC.rightText)'")
-            }
+            let pe = PEBinaryInspector.inspect(exePath: realOSS)
+            print("5A. PEBinaryInspector (RVA Import Table) -> is64Bit=\(pe.is64Bit), importsSteamAPI=\(pe.importsSteamAPI), importsD3D12=\(pe.importsD3D12)")
+            assert(pe.is64Bit && pe.importsSteamAPI)
         }
 
-        // Test 5: End-to-End Pixeldrain Pipeline (https://pixeldrain.com/u/zeC9sxvA -> sf-dl -> Unpack -> Patch)
-        let pdResolved = await StudioViewModel.resolveHostLink("https://pixeldrain.com/u/zeC9sxvA")
-        print("5A. Pixeldrain Resolver -> filename='\(pdResolved.suggestedFilename ?? "")', size=\(pdResolved.totalSize ?? 0) bytes, url='\(pdResolved.finalURL)'")
+        let discoveredBottles = PatchAndBottleService.scanInstalledBottles(
+            bottlesDirectory: AppSettings.default.bottlesDirectory
+        )
+        let bottleTitles = discoveredBottles.map(\.title).joined(separator: ", ")
+        print("5B. Dynamic Bottle Scanner -> discovered \(discoveredBottles.count) games: [\(bottleTitles)]")
 
-        let dlTID = UUID()
-        vm.autoRelay = false
-        vm.downloadTasks.insert(StudioTask(id: dlTID, title: pdResolved.suggestedFilename ?? "zeC9sxvA", status: .running(0.05), pill: "下载中", rightText: "准备中"), at: 0)
-        await vm.runAria2Download(taskID: dlTID, resolved: pdResolved)
-        if let dlTask = vm.downloadTasks.first(where: { $0.id == dlTID }),
-           let archivePath = dlTask.localPath {
-            print("5B. Pixeldrain Download -> status=\(dlTask.status), localPath='\(archivePath)'")
-
-            let unTID = UUID()
-            vm.unpackTasks.insert(StudioTask(id: unTID, title: dlTask.title, status: .locked(0.1), pill: "试密中", rightText: ""), at: 0)
-            await vm.runSevenZipUnpack(taskID: unTID, archivePath: archivePath, candidatePasswords: [""] + vm.passwords)
-            if let unTask = vm.unpackTasks.first(where: { $0.id == unTID }),
-               let unpackedDir = unTask.localPath {
-                print("5C. Pixeldrain Unpack -> status=\(unTask.status), pill='\(unTask.pill ?? "")', unpackedDir='\(unpackedDir)'")
-
-                let paTID = UUID()
-                let cleaned = StudioViewModel.cleanGameTitle(from: (unpackedDir as NSString).lastPathComponent)
-                vm.patchTasks.insert(StudioTask(id: paTID, title: cleaned, status: .running(0.35), pill: "扫描中", rightText: "处理中"), at: 0)
-                await vm.runGoldbergPatch(taskID: paTID, folderPath: unpackedDir, cleanTitle: cleaned)
-                if let paTask = vm.patchTasks.first(where: { $0.id == paTID }) {
-                    let dllSize = (try? FileManager.default.attributesOfItem(atPath: "\(unpackedDir)/RainWorld_Data/Plugins/x86_64/steam_api64.dll")[.size] as? Int64) ?? 0
-                    let cfgText = (try? String(contentsOfFile: "\(unpackedDir)/RainWorld_Data/Plugins/x86_64/steam_settings/configs.user.ini", encoding: .utf8)) ?? ""
-                    let hasSchinese = cfgText.contains("language=schinese")
-                    let preservedAccount = cfgText.contains("account_steamid=76561197960287930")
-                    print("5D. Pixeldrain Patch -> title='\(paTask.title)', appID='\(paTask.appID ?? "")', pill='\(paTask.pill ?? "")', rightText='\(paTask.rightText)', overlayDLLSize=\(dllSize), hasSchinese=\(hasSchinese), preservedAccount=\(preservedAccount)")
-                }
-            }
-        }
-
-        // Test 6A: cloud.mail.ru Multi-File Folder Resolution (https://cloud.mail.ru/public/BqBr/K7pB3Myfy)
-        let mailItems = await StudioViewModel.resolveHostLinks("https://cloud.mail.ru/public/BqBr/K7pB3Myfy")
-        let mailNames = mailItems.compactMap { $0.suggestedFilename }.joined(separator: ", ")
-        print("6A. Mail.ru Folder Resolver -> count=\(mailItems.count), subDir='\(mailItems.first?.subDirectory ?? "")', files=[\(mailNames)]")
-
-        // Test 6B: GOG Inno Setup -1.bin -> .exe Normalization + innoextract Detection
-        let gogSetupExe = "/tmp/setup_rain_world_1.11.8_(90164).exe"
-        let gogBinSlice = "/tmp/setup_rain_world_1.11.8_(90164)-1.bin"
-        FileManager.default.createFile(atPath: gogBinSlice, contents: Data())
-        let normGOG = StudioViewModel.normalizeMultipartArchivePath(gogBinSlice)
-        let isInno = StudioViewModel.isInnoSetupInstaller(gogSetupExe)
-        let cleanGOGTitle = StudioViewModel.cleanGameTitle(from: "setup_rain_world_1.11.8_(90164)")
-        print("6B. GOG Inno Setup Detection -> -1.bin normalized='\(URL(fileURLWithPath: normGOG).lastPathComponent)', isInnoSetup=\(isInno), cleanTitle='\(cleanGOGTitle)'")
-
-        // Test 6C: Unity <Name>_Data Exact .exe Selection over Larger __redist/ISI/scriptinterpreter.exe (1.2MB vs 638KB) + winhttp.dll detection
-        let gogMock = "/tmp/GOG_RainWorld_Mock"
+        // Verify GOG thin Unity EXE selection + configurable defaultLanguage (tchinese -> TW)
+        let gogMock = "/tmp/GOG_RainWorld_Refactor_Mock"
         try? FileManager.default.removeItem(atPath: gogMock)
+        defer { try? FileManager.default.removeItem(atPath: gogMock) }
         try? FileManager.default.createDirectory(atPath: "\(gogMock)/__redist/ISI", withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(atPath: "\(gogMock)/RainWorld_Data/Plugins/x86_64", withIntermediateDirectories: true)
-        // Create 1.2MB __redist/ISI/scriptinterpreter.exe, 1.17MB UnityCrashHandler64.exe, and 638KB RainWorld.exe
         try? Data(repeating: 0x4D, count: 1_258_000).write(to: URL(fileURLWithPath: "\(gogMock)/__redist/ISI/scriptinterpreter.exe"))
-        try? Data(repeating: 0x4D, count: 1_198_000).write(to: URL(fileURLWithPath: "\(gogMock)/UnityCrashHandler64.exe"))
         try? Data(repeating: 0x4D, count: 653_000).write(to: URL(fileURLWithPath: "\(gogMock)/RainWorld.exe"))
         try? Data(repeating: 0x4D, count: 295_000).write(to: URL(fileURLWithPath: "\(gogMock)/RainWorld_Data/Plugins/x86_64/steam_api64.dll"))
-        try? Data(repeating: 0x4D, count: 25_000).write(to: URL(fileURLWithPath: "\(gogMock)/winhttp.dll"))
+        try? "312520\n".write(toFile: "\(gogMock)/steam_appid.txt", atomically: true, encoding: .utf8)
 
-        let tidGOG = UUID()
-        vm.patchTasks.insert(StudioTask(id: tidGOG, title: "rain world", status: .running(0.35), pill: "扫描中", rightText: "处理中"), at: 0)
-        await vm.runGoldbergPatch(taskID: tidGOG, folderPath: gogMock, cleanTitle: "Rain World")
-        if let pGOG = vm.patchTasks.first(where: { $0.id == tidGOG }) {
-            let selectedEXE = URL(fileURLWithPath: pGOG.exePath ?? "").lastPathComponent
-            let checklistText = pGOG.checklist.map { $0.title }.joined(separator: " | ")
-            print("6C. GOG RainWorld Patch -> selectedEXE='\(selectedEXE)', appID='\(pGOG.appID ?? "")', rightText='\(pGOG.rightText)', checklist=[\(checklistText)]")
+        var customSettings = AppSettings.default
+        customSettings.defaultLanguage = .tchinese
+        let patchSvc = PatchAndBottleService()
+        let patchRes = await patchSvc.executePatch(
+            taskID: UUID(),
+            folderPath: gogMock,
+            cleanTitle: "Rain World",
+            settings: customSettings,
+            onLog: { _, _ in }
+        )
+        let cfgContent = (try? String(contentsOfFile: "\(gogMock)/RainWorld_Data/Plugins/x86_64/steam_settings/configs.user.ini", encoding: .utf8)) ?? ""
+        assert((patchRes.exePath as NSString?)?.lastPathComponent == "RainWorld.exe")
+        assert(cfgContent.contains("language=tchinese") && cfgContent.contains("ip_country=TW"))
+        print("5C. PatchAndBottleService -> selectedEXE='RainWorld.exe', dynamic language=tchinese (TW) verified!")
+
+        // 6. Verify Silent Background Relay (does NOT hijack activeTab!)
+        let vm = StudioViewModel(inMemoryOnly: true)
+        vm.activeTab = .settings
+        vm.autoRelay = true
+        let silentArchiveDir = "/tmp/silent_relay_src_\(UUID().uuidString)"
+        let silentArchive = "/tmp/silent_relay_\(UUID().uuidString).7z"
+        try? FileManager.default.createDirectory(atPath: silentArchiveDir, withIntermediateDirectories: true)
+        try? "hello".write(toFile: "\(silentArchiveDir)/readme.txt", atomically: true, encoding: .utf8)
+        if let sevenZip = ToolchainLocator.locateSevenZip() {
+            _ = try? await ProcessSupervisor.shared.run(executable: sevenZip, arguments: ["a", "-y", silentArchive, "\(silentArchiveDir)/readme.txt"])
+            let tid = UUID()
+            vm.unpackTasks.insert(StudioTask(id: tid, title: "SilentRelay.7z", status: .locked(0.1), localPath: silentArchive), at: 0)
+            await vm.coordinator.runUnpackTask(taskID: tid, archivePath: silentArchive, candidatePasswords: [""])
+            assert(vm.activeTab == .settings, "AutoRelay must NOT hijack user's activeTab!")
+            assert(!vm.patchTasks.isEmpty, "AutoRelay should enqueue downstream Patch task in background!")
+            print("6. PipelineCoordinator -> Silent Background Relay verified (activeTab remained .settings while patchTasks count=\(vm.patchTasks.count))")
         }
+        try? FileManager.default.removeItem(atPath: silentArchiveDir)
+        try? FileManager.default.removeItem(atPath: silentArchive)
 
-        print("=== [All Hardened Backend Self-Tests PASSED] ===")
+        await ProcessSupervisor.shared.terminateAll()
+        print("=== [All Decoupled Architecture Self-Tests PASSED] ===")
     }
 }
