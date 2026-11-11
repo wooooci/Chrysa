@@ -50,14 +50,18 @@ actor UnpackService {
         let lastComp = (path as NSString).lastPathComponent
         if let decodedName = HostResolverRegistry.decodeBase64FilenameIfPossible(lastComp) {
             let parent = (path as NSString).deletingLastPathComponent
-            let renamedPath = (parent as NSString).appendingPathComponent(decodedName)
-            if FileManager.default.fileExists(atPath: path) {
-                try? FileManager.default.removeItem(atPath: renamedPath)
-                if (try? FileManager.default.moveItem(atPath: path, toPath: renamedPath)) != nil {
-                    return renamedPath
+            if let safeName = PathSafety.safeFilename(decodedName) {
+                let parentURL = URL(fileURLWithPath: parent, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
+                let renamedURL = parentURL.appendingPathComponent(safeName).standardizedFileURL
+                if PathSafety.containedURL(renamedURL, in: parentURL) != nil {
+                    if FileManager.default.fileExists(atPath: path), !FileManager.default.fileExists(atPath: renamedURL.path) {
+                        if (try? FileManager.default.moveItem(atPath: path, toPath: renamedURL.path)) != nil {
+                            return renamedURL.path
+                        }
+                    } else if FileManager.default.fileExists(atPath: renamedURL.path) {
+                        return renamedURL.path
+                    }
                 }
-            } else if FileManager.default.fileExists(atPath: renamedPath) {
-                return renamedPath
             }
         }
         let range = NSRange(path.startIndex..., in: path)
@@ -86,10 +90,15 @@ actor UnpackService {
     }
 
     func mergeGOGDLCInstaller(dlcExePath: String, intoDir outDir: String, taskID: UUID? = nil) async -> Bool {
-        guard let innoBin = ToolchainLocator.locateInnoextract() else { return false }
+        guard let innoBin = ToolchainLocator.locateInnoextract(),
+              let sourceParent = try? PathSafety.canonicalDirectory(URL(fileURLWithPath: dlcExePath).deletingLastPathComponent().path),
+              let target = try? PathSafety.canonicalDirectory(outDir),
+              target.path != "/",
+              target.path != sourceParent.path,
+              PathSafety.containedURL(target, in: sourceParent) != nil else { return false }
         let res = try? await supervisor.run(
             executable: innoBin,
-            arguments: ["-e", "-m", "-g", "--collisions=overwrite", "-s", "-d", outDir, dlcExePath],
+            arguments: ["-e", "-m", "-g", "--collisions=overwrite", "-s", "-d", target.path, dlcExePath],
             taskID: taskID
         )
         return res?.exitCode == 0
@@ -103,22 +112,51 @@ actor UnpackService {
         onProgress: @escaping @Sendable (Double, String?) -> Void,
         onLog: @escaping @Sendable (String, Bool) -> Void
     ) async -> UnpackOutcome {
-        await supervisor.clearCancellation(for: taskID)
-
-        let parentDir = (archivePath as NSString).deletingLastPathComponent
-        var rawBase = ((archivePath as NSString).lastPathComponent as NSString).deletingPathExtension
-        if rawBase.lowercased().hasPrefix("setup_") {
-            rawBase = String(rawBase.dropFirst("setup_".count))
+        let archiveURL = URL(fileURLWithPath: archivePath).standardizedFileURL
+        let parentPath = archiveURL.deletingLastPathComponent().path
+        let parentURL: URL
+        let output: (url: URL, name: String)
+        do {
+            parentURL = try PathSafety.canonicalDirectory(parentPath)
+            let archiveValues = try archiveURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard parentURL.path != "/",
+                  PathSafety.containedURL(archiveURL, in: parentURL) != nil,
+                  archiveValues.isRegularFile == true,
+                  archiveValues.isSymbolicLink != true else {
+                onLog("error ▸ 压缩包路径无效", true)
+                return .failed(pill: "路径无效")
+            }
+            let lastComponent = archiveURL.lastPathComponent
+            var proposedName = (lastComponent as NSString).deletingPathExtension
+            if proposedName.lowercased().hasPrefix("setup_") {
+                proposedName = String(proposedName.dropFirst("setup_".count))
+            }
+            if proposedName.lowercased().hasSuffix(".7z") || proposedName.lowercased().hasSuffix(".tar") || proposedName.lowercased().hasSuffix(".part1") || proposedName.lowercased().hasSuffix(".part01") {
+                proposedName = (proposedName as NSString).deletingPathExtension
+            }
+            proposedName = PatchAndBottleService.cleanGameTitle(from: proposedName)
+            output = try PathSafety.uniqueChildDirectory(parent: parentURL, proposedName: proposedName)
+        } catch {
+            onLog("error ▸ 无法创建安全解压目录: \(error.localizedDescription)", true)
+            return .failed(pill: "目录错误")
         }
-        if rawBase.lowercased().hasSuffix(".7z") || rawBase.lowercased().hasSuffix(".tar") || rawBase.lowercased().hasSuffix(".part1") || rawBase.lowercased().hasSuffix(".part01") {
-            rawBase = (rawBase as NSString).deletingPathExtension
+        let parentDir = parentURL.path
+        let outDir = output.url.path
+        var preserveOutputDirectory = false
+        defer {
+            if !preserveOutputDirectory {
+                removeOutputDirectoryIfSafe(output.url, parent: parentURL)
+            }
         }
-        let baseName = PatchAndBottleService.cleanGameTitle(from: rawBase)
-        let outDir = (parentDir as NSString).appendingPathComponent(baseName)
+        guard PathSafety.containedURL(output.url, in: parentURL)?.path == output.url.standardizedFileURL.path,
+              (try? output.url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+            onLog("error ▸ 解压目录被替换或不再安全", true)
+            return .failed(pill: "路径无效")
+        }
+        let baseName = output.name
 
         // Branch 1: GOG / Inno Setup Installer (.exe + .bin)
         if Self.isInnoSetupInstaller(archivePath), let innoBin = ToolchainLocator.locateInnoextract() {
-            try? FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true)
             onLog("innoextract ▸ 检测到 GOG Inno Setup 安装包，开始原生免安装解包至 [\(baseName)]...", true)
 
             var installersToExtract: [String] = [archivePath]
@@ -161,18 +199,16 @@ actor UnpackService {
 
             let extractedItems = (try? FileManager.default.contentsOfDirectory(atPath: outDir))?.filter { !$0.hasPrefix(".") } ?? []
             guard allOK && !extractedItems.isEmpty else {
-                if extractedItems.isEmpty {
-                    try? FileManager.default.removeItem(atPath: outDir)
-                }
                 onLog("error ▸ GOG 安装包解包未完成 (可能缺少配套的 -1.bin 数据卷)！", true)
                 return .failed(pill: "缺少 .bin 分卷")
             }
 
-            await repairMacOSPermissions(outDir: outDir)
+            await repairMacOSPermissions(outDir: outDir, parent: parentURL)
             if deleteArchiveAfterUnpack {
                 cleanupSourceArchive(archivePath: archivePath, onLog: onLog)
             }
             onLog("innoextract ▸ GOG 游戏与 DLC 解包完成并已修复权限: \(baseName)", true)
+            preserveOutputDirectory = true
             return .completed(outDir: outDir, baseName: baseName, pill: "GOG 已解包")
         }
 
@@ -246,8 +282,6 @@ actor UnpackService {
             onLog("\(engineLabel) ▸ 默认密码本未命中，尝试使用空密码或切换备用引擎解压...", false)
         }
 
-        try? FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true)
-
         let mainExe = (isRarArchive && unrarBin != nil) ? unrarBin! : sevenZip
         let mainArgs: [String] = {
             if isRarArchive && unrarBin != nil {
@@ -319,20 +353,18 @@ actor UnpackService {
             let hasExtractedFiles = totalExtractedBytes > 0
 
             guard extractOK && hasExtractedFiles else {
-                if !hasExtractedFiles {
-                    try? FileManager.default.removeItem(atPath: outDir)
-                }
                 onLog("error ▸ 解压未成功 (7zz/unrar/unar 退出异常或密码不匹配)，已中止流转！", true)
                 return .failed(pill: "密码错误/失败")
             }
 
-            await repairMacOSPermissions(outDir: outDir)
+            await repairMacOSPermissions(outDir: outDir, parent: parentURL)
             onLog("perm ▸ 已修复读写权限 (chmod u+rwX) 并清除隔离锁 (xattr -cr)", false)
 
             if deleteArchiveAfterUnpack {
                 cleanupSourceArchive(archivePath: archivePath, onLog: onLog)
             }
 
+            preserveOutputDirectory = true
             return .completed(outDir: outDir, baseName: baseName, pill: "已解锁")
         } catch {
             if await supervisor.isCancelled(taskID) { return .cancelled }
@@ -341,35 +373,63 @@ actor UnpackService {
         }
     }
 
-    private func repairMacOSPermissions(outDir: String) async {
-        _ = try? await supervisor.run(executable: "/bin/chmod", arguments: ["-R", "u+rwX", outDir])
-        _ = try? await supervisor.run(executable: "/usr/bin/xattr", arguments: ["-cr", outDir])
+    private func removeOutputDirectoryIfSafe(_ output: URL, parent: URL) {
+        guard let target = PathSafety.containedURL(output, in: parent),
+              target.path == output.standardizedFileURL.path,
+              target.path != parent.resolvingSymlinksInPath().standardizedFileURL.path,
+              target.path != "/" else { return }
+        try? FileManager.default.removeItem(at: target)
+    }
+
+    private func repairMacOSPermissions(outDir: String, parent: URL) async {
+        let output = URL(fileURLWithPath: outDir, isDirectory: true)
+        guard let target = PathSafety.containedURL(output, in: parent),
+              target.path == output.standardizedFileURL.path,
+              target.path != parent.resolvingSymlinksInPath().standardizedFileURL.path,
+              target.path != "/",
+              (try? target.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { return }
+        _ = try? await supervisor.run(executable: "/bin/chmod", arguments: ["-R", "u+rwX", target.path])
+        _ = try? await supervisor.run(executable: "/usr/bin/xattr", arguments: ["-cr", target.path])
     }
 
     private func cleanupSourceArchive(archivePath: String, onLog: @Sendable (String, Bool) -> Void) {
         let fm = FileManager.default
-        let parent = (archivePath as NSString).deletingLastPathComponent
-        let fileName = (archivePath as NSString).lastPathComponent
-        // Handle multipart volumes (.7z.001/.002, .part1.rar/.part2.rar, setup_*.bin) cleanly
+        let archiveURL = URL(fileURLWithPath: archivePath).standardizedFileURL
+        let parentPath = archiveURL.deletingLastPathComponent().path
+        guard let parent = try? PathSafety.canonicalDirectory(parentPath),
+              let source = PathSafety.containedURL(archiveURL, in: parent),
+              source.path != parent.path,
+              let attrs = try? fm.attributesOfItem(atPath: source.path),
+              (attrs[.type] as? FileAttributeType) == .typeRegular else { return }
+        let fileName = source.lastPathComponent
+        var removedAny = false
+        func removeRegularChild(_ name: String) {
+            guard let safeName = PathSafety.safeFilename(name) else { return }
+            let candidate = parent.appendingPathComponent(safeName).standardizedFileURL
+            guard let target = PathSafety.containedURL(candidate, in: parent),
+                  target.path != parent.path,
+                  let itemAttrs = try? fm.attributesOfItem(atPath: target.path),
+                  (itemAttrs[.type] as? FileAttributeType) == .typeRegular else { return }
+            if (try? fm.removeItem(at: target)) != nil { removedAny = true }
+        }
+
         if fileName.lowercased().hasSuffix(".7z.001") {
-            let prefix = String(fileName.dropLast(3)) // keep ".7z."
-            if let items = try? fm.contentsOfDirectory(atPath: parent) {
-                for item in items where item.hasPrefix(prefix) {
-                    try? fm.removeItem(atPath: (parent as NSString).appendingPathComponent(item))
-                }
+            let prefix = String(fileName.dropLast(3))
+            if let items = try? fm.contentsOfDirectory(atPath: parent.path) {
+                for item in items where item.hasPrefix(prefix) { removeRegularChild(item) }
             }
         } else if let rarMatch = try? NSRegularExpression(pattern: #"^(.+)\.part0*1\.rar$"#, options: .caseInsensitive)
             .firstMatch(in: fileName, range: NSRange(fileName.startIndex..., in: fileName)),
                   let prefixRange = Range(rarMatch.range(at: 1), in: fileName) {
             let basePrefix = String(fileName[prefixRange]) + ".part"
-            if let items = try? fm.contentsOfDirectory(atPath: parent) {
+            if let items = try? fm.contentsOfDirectory(atPath: parent.path) {
                 for item in items where item.lowercased().hasPrefix(basePrefix.lowercased()) && item.lowercased().hasSuffix(".rar") {
-                    try? fm.removeItem(atPath: (parent as NSString).appendingPathComponent(item))
+                    removeRegularChild(item)
                 }
             }
         } else {
-            try? fm.removeItem(atPath: archivePath)
+            removeRegularChild(fileName)
         }
-        onLog("clean ▸ 已按设置自动清理源压缩包: \(fileName)", false)
+        if removedAny { onLog("clean ▸ 已按设置自动清理源压缩包: \(fileName)", false) }
     }
 }

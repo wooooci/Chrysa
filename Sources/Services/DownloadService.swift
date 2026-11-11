@@ -30,8 +30,6 @@ actor DownloadService {
         onProgress: @escaping @Sendable (DownloadProgressUpdate) -> Void,
         onLog: @escaping @Sendable (String, Bool) -> Void
     ) async -> DownloadOutcome {
-        await supervisor.clearCancellation(for: taskID)
-
         if resolved.useChunkedRange, let totalSize = resolved.totalSize, totalSize > 0 {
             return await runChunkedRangeDownload(
                 taskID: taskID,
@@ -43,17 +41,54 @@ actor DownloadService {
             )
         }
 
-        let baseDownloadsDir = (settings.downloadDirectory as NSString).expandingTildeInPath
-        try? FileManager.default.createDirectory(atPath: baseDownloadsDir, withIntermediateDirectories: true)
-
-        let downloadsDir: String = {
-            if let sub = resolved.subDirectory, !sub.isEmpty {
-                let d = (baseDownloadsDir as NSString).appendingPathComponent(sub)
-                try? FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
-                return d
+        let downloadsRoot: URL
+        let downloadsDirectory: URL
+        do {
+            downloadsRoot = try PathSafety.canonicalDirectory(settings.downloadDirectory)
+            guard downloadsRoot.path != "/" else { return .failed(pill: "下载目录无效") }
+            if let rawSubdirectory = resolved.subDirectory, !rawSubdirectory.isEmpty {
+                guard let subdirectory = PathSafety.safeRelativeDirectory(rawSubdirectory) else {
+                    onLog("error ▸ 下载子目录包含不安全路径", true)
+                    return .failed(pill: "路径无效")
+                }
+                let candidate = downloadsRoot.appendingPathComponent(subdirectory, isDirectory: true)
+                try FileManager.default.createDirectory(at: candidate, withIntermediateDirectories: true)
+                guard let contained = PathSafety.containedURL(candidate, in: downloadsRoot) else {
+                    onLog("error ▸ 下载子目录越出下载目录", true)
+                    return .failed(pill: "路径无效")
+                }
+                downloadsDirectory = contained
+            } else {
+                downloadsDirectory = downloadsRoot
             }
-            return baseDownloadsDir
-        }()
+        } catch {
+            onLog("error ▸ 无法准备下载目录: \(error.localizedDescription)", true)
+            return .failed(pill: "目录错误")
+        }
+
+        let rawFilename = resolved.suggestedFilename ?? URL(string: resolved.finalURL)?.lastPathComponent ?? currentTitle
+        guard let filename = PathSafety.safeFilename(rawFilename) else {
+            onLog("error ▸ 远端文件名无效或包含路径分隔符", true)
+            return .failed(pill: "文件名无效")
+        }
+        let stagingDirectory = downloadsDirectory.appendingPathComponent(".chrysa-\(UUID().uuidString)", isDirectory: true)
+        guard PathSafety.containedURL(stagingDirectory, in: downloadsRoot) != nil else {
+            return .failed(pill: "路径无效")
+        }
+        do {
+            try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: false)
+        } catch {
+            onLog("error ▸ 无法建立下载暂存目录", true)
+            return .failed(pill: "目录错误")
+        }
+        defer {
+            if let safeStage = PathSafety.containedURL(stagingDirectory, in: downloadsRoot),
+               safeStage.path == stagingDirectory.standardizedFileURL.path,
+               safeStage.path != downloadsRoot.path {
+                try? FileManager.default.removeItem(at: safeStage)
+            }
+        }
+        let stagedFile = stagingDirectory.appendingPathComponent(filename)
 
         guard let aria2Path = ToolchainLocator.locateDownloadEngineBinary() else {
             onLog("error ▸ 未找到下载内核 (sf-dl / aria2c)", true)
@@ -84,7 +119,7 @@ actor DownloadService {
             "-k", "1M",
             "-U", customUA,
             "--file-allocation=none",
-            "--dir=\(downloadsDir)",
+            "--dir=\(stagingDirectory.path)",
             "--summary-interval=1",
             "--console-log-level=warn",
             "--allow-overwrite=true"
@@ -94,9 +129,7 @@ actor DownloadService {
             args.append("--all-proxy=\(sysProxy)")
             onLog("proxy ▸ 海外节点通过 sf-dl 挂载系统代理: \(sysProxy) (\(threadsStr) 线程)", false)
         }
-        if let name = resolved.suggestedFilename, !name.isEmpty {
-            args.append("--out=\(name)")
-        }
+        args.append("--out=\(filename)")
         for h in resolved.headers where !h.lowercased().hasPrefix("user-agent:") {
             args.append("--header=\(h)")
         }
@@ -131,9 +164,12 @@ actor DownloadService {
                 mergeStderr: true
             ) { [weak self] chunk in
                 let parsed = Self.parseAria2Chunk(chunk)
-                capture.record(path: parsed.localPath, title: parsed.resolvedTitle, right: parsed.rightText)
-                if parsed.progress != nil || parsed.pill != nil || parsed.rightText != nil || parsed.localPath != nil {
-                    onProgress(parsed)
+                capture.record(path: nil, title: nil, right: parsed.rightText)
+                if parsed.progress != nil || parsed.pill != nil || parsed.rightText != nil {
+                    var visibleUpdate = parsed
+                    visibleUpdate.localPath = nil
+                    visibleUpdate.resolvedTitle = filename
+                    onProgress(visibleUpdate)
                 }
                 if let pct = parsed.progress {
                     let pInt = Int(pct * 100.0)
@@ -153,18 +189,20 @@ actor DownloadService {
                 return .cancelled
             }
 
-            let (streamPath, streamTitle, streamRight) = capture.snapshot()
+            let (_, _, streamRight) = capture.snapshot()
             if result.exitCode == 0 {
-                let finalTitle = streamTitle ?? resolved.suggestedFilename ?? currentTitle
-                let fallbackPath: String = {
-                    if let name = resolved.suggestedFilename, !name.isEmpty {
-                        return (downloadsDir as NSString).appendingPathComponent(name)
-                    }
-                    return (downloadsDir as NSString).appendingPathComponent(finalTitle)
-                }()
-                let finalPath = streamPath ?? fallbackPath
-                onLog("dl ▸ 下载完成: \(finalTitle)", true)
-                return .completed(localPath: finalPath, finalTitle: finalTitle, rightText: streamRight)
+                guard FileManager.default.fileExists(atPath: stagedFile.path) else {
+                    onLog("error ▸ 下载内核未生成预期文件", true)
+                    return .failed(pill: "文件缺失")
+                }
+                do {
+                    let published = try PathSafety.publishFile(from: stagedFile, toDirectory: downloadsDirectory, filename: filename)
+                    onLog("dl ▸ 下载完成: \(published.name)", true)
+                    return .completed(localPath: published.url.path, finalTitle: published.name, rightText: streamRight)
+                } catch {
+                    onLog("error ▸ 无法安全发布下载文件: \(error.localizedDescription)", true)
+                    return .failed(pill: "发布失败")
+                }
             } else {
                 onLog("dl ▸ 进程退出码 \(result.exitCode)", false)
                 return .failed(pill: "失败")
@@ -224,19 +262,44 @@ actor DownloadService {
         onProgress: @escaping @Sendable (DownloadProgressUpdate) -> Void,
         onLog: @escaping @Sendable (String, Bool) -> Void
     ) async -> DownloadOutcome {
-        let downloadsDir = (settings.downloadDirectory as NSString).expandingTildeInPath
-        try? FileManager.default.createDirectory(atPath: downloadsDir, withIntermediateDirectories: true)
-        let filename = resolved.suggestedFilename ?? "Download_\(Int(Date().timeIntervalSince1970)).7z"
-        let destPath = (downloadsDir as NSString).appendingPathComponent(filename)
+        let downloadsRoot: URL
+        do {
+            downloadsRoot = try PathSafety.canonicalDirectory(settings.downloadDirectory)
+            guard downloadsRoot.path != "/" else { return .failed(pill: "下载目录无效") }
+        } catch {
+            onLog("error ▸ 无法准备下载目录", true)
+            return .failed(pill: "目录错误")
+        }
+        let rawFilename = resolved.suggestedFilename ?? URL(string: resolved.finalURL)?.lastPathComponent ?? "Download_\(UUID().uuidString).7z"
+        guard let filename = PathSafety.safeFilename(rawFilename) else {
+            onLog("error ▸ 远端文件名无效或包含路径分隔符", true)
+            return .failed(pill: "文件名无效")
+        }
+        let temporaryURL = downloadsRoot.appendingPathComponent(".chrysa-range-\(UUID().uuidString).tmp")
+        guard PathSafety.containedURL(temporaryURL, in: downloadsRoot) != nil else { return .failed(pill: "路径无效") }
+        defer {
+            if let safeTemporary = PathSafety.containedURL(temporaryURL, in: downloadsRoot),
+               safeTemporary.path == temporaryURL.standardizedFileURL.path,
+               safeTemporary.path != downloadsRoot.path {
+                try? FileManager.default.removeItem(at: safeTemporary)
+            }
+        }
 
         onLog("range-3m ▸ 检测到 VikingFile 限速策略，启用 8 路 × 3MB 切片校验引擎！", true)
 
-        FileManager.default.createFile(atPath: destPath, contents: nil)
-        guard let fileHandle = FileHandle(forWritingAtPath: destPath) else {
+        guard FileManager.default.createFile(atPath: temporaryURL.path, contents: nil),
+              let fileHandle = FileHandle(forWritingAtPath: temporaryURL.path) else {
             return .failed(pill: "写入失败")
         }
-        try? fileHandle.truncate(atOffset: UInt64(totalSize))
-        try? fileHandle.close()
+        do {
+            try fileHandle.truncate(atOffset: UInt64(totalSize))
+            try fileHandle.close()
+        } catch {
+            try? fileHandle.close()
+            onLog("error ▸ 无法预分配分片文件: \(error.localizedDescription)", true)
+            return .failed(pill: "写入失败")
+        }
+        let destPath = temporaryURL.path
 
         let chunkSize: Int64 = 3 * 1024 * 1024
         var ranges: [(Int, Int64, Int64)] = []
@@ -333,16 +396,27 @@ actor DownloadService {
                     activeCDNURL = u
                 }
                 if let verified = dataOpt {
-                    try? writer.seek(toOffset: UInt64(cStart))
-                    try? writer.write(contentsOf: verified)
-                    completedBytes += Int64(verified.count)
+                    do {
+                        try writer.seek(toOffset: UInt64(cStart))
+                        try writer.write(contentsOf: verified)
+                        completedBytes += Int64(verified.count)
+                    } catch {
+                        try? writer.close()
+                        onLog("error ▸ 切片 #\(cIdx) 写入失败: \(error.localizedDescription)", true)
+                        return .failed(pill: "写入失败")
+                    }
                 } else {
                     try? writer.close()
                     onLog("error ▸ 切片 #\(cIdx) (\(cStart)-\(cEnd)) 5 次重试后仍未通过字节数校验，已中止以防损坏压缩包！", true)
                     return .failed(pill: "切片校验失败")
                 }
             }
-            try? writer.close()
+            do {
+                try writer.close()
+            } catch {
+                onLog("error ▸ 分片文件关闭失败: \(error.localizedDescription)", true)
+                return .failed(pill: "写入失败")
+            }
 
             let elapsed = max(0.1, Date().timeIntervalSince(startTime))
             let speedMB = (Double(completedBytes) / (1024.0 * 1024.0)) / elapsed
@@ -353,13 +427,19 @@ actor DownloadService {
                     progress: progress,
                     pill: String(format: "%.1f MB/s", speedMB),
                     rightText: String(format: "%.2f / %.2f GB", doneGB, totalGB),
-                    localPath: destPath
+                    localPath: nil
                 )
             )
         }
 
         let finalRight = String(format: "%.2f GB", totalGB)
-        onLog("range-3m ▸ 下载完成并通过全量切片校验: \(filename)", true)
-        return .completed(localPath: destPath, finalTitle: filename, rightText: finalRight)
+        do {
+            let published = try PathSafety.publishFile(from: temporaryURL, toDirectory: downloadsRoot, filename: filename)
+            onLog("range-3m ▸ 下载完成并通过全量切片校验: \(published.name)", true)
+            return .completed(localPath: published.url.path, finalTitle: published.name, rightText: finalRight)
+        } catch {
+            onLog("error ▸ 无法安全发布分片下载文件: \(error.localizedDescription)", true)
+            return .failed(pill: "发布失败")
+        }
     }
 }

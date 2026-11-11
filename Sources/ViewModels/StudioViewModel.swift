@@ -80,9 +80,10 @@ final class StudioViewModel: ObservableObject {
         self.unpackTasks = saved.unpackTasks
 
         var mergedPatchTasks = saved.patchTasks
-        let scannedBottles = PatchAndBottleService.scanInstalledBottles(
-            bottlesDirectory: settingsStore.settings.bottlesDirectory
-        )
+        let bottlesDirectory = settingsStore.settings.bottlesDirectory
+        let scannedBottles = await Task.detached(priority: .utility) {
+            PatchAndBottleService.scanInstalledBottles(bottlesDirectory: bottlesDirectory)
+        }.value
         for bottleTask in scannedBottles {
             let exists = mergedPatchTasks.contains {
                 $0.title.caseInsensitiveCompare(bottleTask.title) == .orderedSame
@@ -100,22 +101,26 @@ final class StudioViewModel: ObservableObject {
     }
 
     func rescanCrossOverBottles() {
-        let scanned = PatchAndBottleService.scanInstalledBottles(
-            bottlesDirectory: settingsStore.settings.bottlesDirectory
-        )
-        var addedCount = 0
-        for bottleTask in scanned {
-            let exists = patchTasks.contains {
-                $0.title.caseInsensitiveCompare(bottleTask.title) == .orderedSame
-                    || ($0.localPath != nil && $0.localPath == bottleTask.localPath)
+        let bottlesDirectory = settingsStore.settings.bottlesDirectory
+        Task { @MainActor [weak self] in
+            let scanned = await Task.detached(priority: .utility) {
+                PatchAndBottleService.scanInstalledBottles(bottlesDirectory: bottlesDirectory)
+            }.value
+            guard let self else { return }
+            var addedCount = 0
+            for bottleTask in scanned {
+                let exists = self.patchTasks.contains {
+                    $0.title.caseInsensitiveCompare(bottleTask.title) == .orderedSame
+                        || ($0.localPath != nil && $0.localPath == bottleTask.localPath)
+                }
+                if !exists {
+                    self.patchTasks.append(bottleTask)
+                    addedCount += 1
+                }
             }
-            if !exists {
-                patchTasks.append(bottleTask)
-                addedCount += 1
-            }
+            self.scheduleTaskSave()
+            self.appendLog("crossover ▸ 容器目录扫描完成 (共识别 \(scanned.count) 款游戏，新增 \(addedCount) 款)", highlight: true)
         }
-        scheduleTaskSave()
-        appendLog("crossover ▸ 容器目录扫描完成 (共识别 \(scanned.count) 款游戏，新增 \(addedCount) 款)", highlight: true)
     }
 
     func scheduleTaskSave() {
@@ -341,12 +346,25 @@ final class StudioViewModel: ObservableObject {
             }
             activeTab = .patch
             startPatch(folderPath: url.path)
-        } else if UnpackService.isArchiveFile(url.path) || UnpackService.isInnoSetupInstaller(url.path) {
+        } else if UnpackService.isArchiveFile(url.path) {
             activeTab = .unpack
             startUnpack(filePath: url.path)
         } else if url.pathExtension.lowercased() == "exe" {
-            activeTab = .patch
-            startPatch(folderPath: url.deletingLastPathComponent().path)
+            let path = url.path
+            let parent = url.deletingLastPathComponent().path
+            Task { @MainActor [weak self] in
+                let isInstaller = await Task.detached(priority: .utility) {
+                    UnpackService.isInnoSetupInstaller(path)
+                }.value
+                guard let self else { return }
+                if isInstaller {
+                    self.activeTab = .unpack
+                    self.startUnpack(filePath: path)
+                } else {
+                    self.activeTab = .patch
+                    self.startPatch(folderPath: parent)
+                }
+            }
         } else {
             activeTab = .download
             startDownload(urlString: url.path)
@@ -355,16 +373,20 @@ final class StudioViewModel: ObservableObject {
 
     // MARK: - Task Management (Stop / Archive / Delete / Retry / Edit / Batch)
     func stopTask(_ task: StudioTask) {
+        coordinator.markTaskCancelled(task.id)
         Task { await ProcessSupervisor.shared.cancel(taskID: task.id) }
         if let i = downloadTasks.firstIndex(where: { $0.id == task.id }) {
             downloadTasks[i].status = .failed
             downloadTasks[i].pill = "已停止"
+            downloadTasks[i].rightText = "已停止"
         } else if let i = unpackTasks.firstIndex(where: { $0.id == task.id }) {
             unpackTasks[i].status = .failed
             unpackTasks[i].pill = "已停止"
+            unpackTasks[i].rightText = "已停止"
         } else if let i = patchTasks.firstIndex(where: { $0.id == task.id }) {
             patchTasks[i].status = .failed
             patchTasks[i].pill = "已停止"
+            patchTasks[i].rightText = "已停止"
         }
         scheduleTaskSave()
         appendLog("task ▸ 已终止任务: \(task.title)", highlight: false)
@@ -385,12 +407,34 @@ final class StudioViewModel: ObservableObject {
         scheduleTaskSave()
     }
 
+    private func safeLocalFileURL(for path: String) -> URL? {
+        let expandedPath = (path as NSString).expandingTildeInPath
+        guard !expandedPath.isEmpty else { return nil }
+        guard let root = try? PathSafety.canonicalDirectory(settingsStore.settings.downloadDirectory) else { return nil }
+        let candidate = URL(fileURLWithPath: expandedPath).standardizedFileURL
+        guard let contained = PathSafety.containedURL(candidate, in: root),
+              contained.path != root.path else { return nil }
+        guard let values = try? contained.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+              values.isRegularFile == true,
+              values.isSymbolicLink != true else { return nil }
+        return contained
+    }
+
     func deleteTask(_ task: StudioTask, deleteLocalFile: Bool = false) {
+        coordinator.markTaskCancelled(task.id)
         Task { await ProcessSupervisor.shared.cancel(taskID: task.id) }
-        if deleteLocalFile, let local = task.localPath, !local.isEmpty {
-            try? FileManager.default.removeItem(atPath: local)
-            try? FileManager.default.removeItem(atPath: local + ".aria2")
-            appendLog("delete ▸ 已删除记录及本地文件: \((local as NSString).lastPathComponent)", highlight: true)
+        if deleteLocalFile, let local = task.localPath, let target = safeLocalFileURL(for: local) {
+            do {
+                try FileManager.default.removeItem(at: target)
+                if let sidecar = safeLocalFileURL(for: target.path + ".aria2") {
+                    try? FileManager.default.removeItem(at: sidecar)
+                }
+                appendLog("delete ▸ 已删除记录及本地文件: \(target.lastPathComponent)", highlight: true)
+            } catch {
+                appendLog("error ▸ 本地文件删除失败，已保留文件: \(error.localizedDescription)", highlight: true)
+            }
+        } else if deleteLocalFile, task.localPath != nil {
+            appendLog("warning ▸ 为避免误删，容器/目录或下载目录外路径未删除；仅移除记录", highlight: true)
         } else {
             appendLog("delete ▸ 已移除项目记录: \(task.title)", highlight: false)
         }
@@ -507,6 +551,7 @@ final class StudioViewModel: ObservableObject {
             for t in unpackTasks { stopTask(t) }
             unpackTasks.removeAll()
         case .patch:
+            for t in patchTasks { stopTask(t) }
             patchTasks.removeAll()
         case .settings:
             break

@@ -180,7 +180,7 @@ struct ChrysaAppMain {
         let dlBin = ToolchainLocator.locateDownloadEngineBinary() ?? "missing"
         let gbe64 = ToolchainLocator.locateGbeDLL(is64Bit: true) != nil
         print("1. Infrastructure -> proxy=\(proxy ?? "none"), gofileProxy=\(gofileProxy), vfProxy=\(vfProxy), dlEngine=\((dlBin as NSString).lastPathComponent), gbe64Found=\(gbe64)")
-        assert(gofileProxy == true && vfProxy == false)
+        precondition(gofileProxy == true && vfProxy == false)
 
         // 2. AppSettingsStore & TaskStore Round-Trip + Interrupted Task Normalization
         let tmpDir = URL(fileURLWithPath: "/tmp/chrysa_selftest_\(UUID().uuidString)")
@@ -193,7 +193,7 @@ struct ChrysaAppMain {
         s1.settings.defaultLanguage = .tchinese
         s1.settings.deleteArchiveAfterUnpack = true
         let s2 = AppSettingsStore(inMemoryOnly: false, customFileURL: settingsFile)
-        assert(s2.settings.maxConcurrentConnections == 8 && s2.settings.defaultLanguage == .tchinese && s2.settings.deleteArchiveAfterUnpack == true)
+        precondition(s2.settings.maxConcurrentConnections == 8 && s2.settings.defaultLanguage == .tchinese && s2.settings.deleteArchiveAfterUnpack == true)
 
         let tasksFile = tmpDir.appendingPathComponent("tasks.json")
         let ts = TaskStore(inMemoryOnly: false, customFileURL: tasksFile)
@@ -205,8 +205,8 @@ struct ChrysaAppMain {
             )
         )
         let loaded = await ts.load()
-        assert(loaded.downloadTasks.first?.status == .failed && loaded.downloadTasks.first?.pill == "已中断")
-        assert(loaded.patchTasks.first?.title == "SavedGame")
+        precondition(loaded.downloadTasks.first?.status == .failed && loaded.downloadTasks.first?.pill == "已中断")
+        precondition(loaded.patchTasks.first?.title == "SavedGame")
         print("2. Persistence -> AppSettingsStore & TaskStore round-trip OK, interrupted task normalized to '\(loaded.downloadTasks.first?.pill ?? "")'")
 
         // 3. HostResolverRegistry Plugin Rack
@@ -221,7 +221,7 @@ struct ChrysaAppMain {
         let normRar = UnpackService.normalizeMultipartArchivePath("/tmp/TestGame.part02.rar")
         let norm7z = UnpackService.normalizeMultipartArchivePath("/tmp/TestGame.7z.003")
         let normGOG = UnpackService.normalizeMultipartArchivePath("/tmp/setup_rain_world_1.11.8_(90164)-1.bin")
-        assert(normRar.hasSuffix("TestGame.part01.rar") && norm7z.hasSuffix("TestGame.7z.001") && normGOG.hasSuffix(".exe"))
+        precondition(normRar.hasSuffix("TestGame.part01.rar") && norm7z.hasSuffix("TestGame.7z.001") && normGOG.hasSuffix(".exe"))
 
         let badArchive = "/tmp/corrupt_arch_test.7z"
         try? Data([0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00, 0x00]).write(to: URL(fileURLWithPath: badArchive))
@@ -237,7 +237,7 @@ struct ChrysaAppMain {
             if case .failed = badOut { return true }
             return false
         }()
-        assert(badRejected)
+        precondition(badRejected)
         print("4. UnpackService -> multipart normalized OK, corruptArchiveRejected=\(badRejected)")
 
         // 5. PEBinaryInspector RVA Import Table Parser + Dynamic CrossOver Bottle Scanner + PatchService Language Binding
@@ -245,7 +245,7 @@ struct ChrysaAppMain {
         if FileManager.default.fileExists(atPath: realOSS) {
             let pe = PEBinaryInspector.inspect(exePath: realOSS)
             print("5A. PEBinaryInspector (RVA Import Table) -> is64Bit=\(pe.is64Bit), importsSteamAPI=\(pe.importsSteamAPI), importsD3D12=\(pe.importsD3D12)")
-            assert(pe.is64Bit && pe.importsSteamAPI)
+            precondition(pe.is64Bit && pe.importsSteamAPI)
         }
 
         let discoveredBottles = PatchAndBottleService.scanInstalledBottles(
@@ -276,8 +276,8 @@ struct ChrysaAppMain {
             onLog: { _, _ in }
         )
         let cfgContent = (try? String(contentsOfFile: "\(gogMock)/RainWorld_Data/Plugins/x86_64/steam_settings/configs.user.ini", encoding: .utf8)) ?? ""
-        assert((patchRes.exePath as NSString?)?.lastPathComponent == "RainWorld.exe")
-        assert(cfgContent.contains("language=tchinese") && cfgContent.contains("ip_country=TW"))
+        precondition((patchRes.exePath as NSString?)?.lastPathComponent == "RainWorld.exe")
+        precondition(cfgContent.contains("language=tchinese") && cfgContent.contains("ip_country=TW"))
         print("5C. PatchAndBottleService -> selectedEXE='RainWorld.exe', dynamic language=tchinese (TW) verified!")
 
         // 6. Verify Silent Background Relay (does NOT hijack activeTab!)
@@ -293,8 +293,8 @@ struct ChrysaAppMain {
             let tid = UUID()
             vm.unpackTasks.insert(StudioTask(id: tid, title: "SilentRelay.7z", status: .locked(0.1), localPath: silentArchive), at: 0)
             await vm.coordinator.runUnpackTask(taskID: tid, archivePath: silentArchive, candidatePasswords: [""])
-            assert(vm.activeTab == .settings, "AutoRelay must NOT hijack user's activeTab!")
-            assert(!vm.patchTasks.isEmpty, "AutoRelay should enqueue downstream Patch task in background!")
+            precondition(vm.activeTab == .settings, "AutoRelay must NOT hijack user's activeTab!")
+            precondition(!vm.patchTasks.isEmpty, "AutoRelay should enqueue downstream Patch task in background!")
             print("6. PipelineCoordinator -> Silent Background Relay verified (activeTab remained .settings while patchTasks count=\(vm.patchTasks.count))")
         }
         try? FileManager.default.removeItem(atPath: silentArchiveDir)

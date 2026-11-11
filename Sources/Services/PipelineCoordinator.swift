@@ -10,6 +10,7 @@ final class PipelineCoordinator {
     let patchService: PatchAndBottleService
 
     weak var viewModel: StudioViewModel?
+    private var cancelledTaskIDs: Set<UUID> = []
 
     init(
         downloadService: DownloadService = DownloadService(),
@@ -19,6 +20,18 @@ final class PipelineCoordinator {
         self.downloadService = downloadService
         self.unpackService = unpackService
         self.patchService = patchService
+    }
+
+    func markTaskCancelled(_ taskID: UUID) {
+        cancelledTaskIDs.insert(taskID)
+    }
+
+    private func markTaskStarted(_ taskID: UUID) {
+        cancelledTaskIDs.remove(taskID)
+    }
+
+    private func acceptsProgress(for taskID: UUID) -> Bool {
+        !cancelledTaskIDs.contains(taskID)
     }
 
     func startDownload(urlString: String) {
@@ -40,6 +53,7 @@ final class PipelineCoordinator {
 
         let isMirrorWait = cleanURL.lowercased().contains("mirroruploadx.com") || cleanURL.lowercased().contains("fileditch")
         let firstTaskID = UUID()
+        markTaskStarted(firstTaskID)
         let newTask = StudioTask(
             id: firstTaskID,
             title: guessedName,
@@ -56,7 +70,7 @@ final class PipelineCoordinator {
         Task { [weak self] in
             guard let self = self else { return }
             let resolvedList = await HostResolverRegistry.resolveLinks(cleanURL, passwords: passwordsSnapshot)
-            guard let vm = self.viewModel else { return }
+            guard self.acceptsProgress(for: firstTaskID), let vm = self.viewModel else { return }
 
             guard let first = resolvedList.first else {
                 if let idx = vm.downloadTasks.firstIndex(where: { $0.id == firstTaskID }) {
@@ -129,6 +143,7 @@ final class PipelineCoordinator {
         var baseUnpackTriggered = false
 
         for (tID, rawItem) in taskPairs {
+            guard acceptsProgress(for: tID) else { continue }
             let freshItem = await MailRuResolver.refreshURLIfNeeded(rawItem)
             await runDownloadTask(taskID: tID, resolved: freshItem, suppressAutoRelay: true)
             if let fname = freshItem.suggestedFilename {
@@ -184,9 +199,12 @@ final class PipelineCoordinator {
             currentTitle: currentTitle,
             resolved: resolved,
             settings: settingsSnapshot,
-            onProgress: { [weak vm] upd in
+            onProgress: { [weak self] upd in
                 Task { @MainActor in
-                    guard let vm = vm, let idx = vm.downloadTasks.firstIndex(where: { $0.id == taskID }) else { return }
+                    guard let self = self,
+                          self.acceptsProgress(for: taskID),
+                          let vm = self.viewModel,
+                          let idx = vm.downloadTasks.firstIndex(where: { $0.id == taskID }) else { return }
                     if let p = upd.progress { vm.downloadTasks[idx].status = .running(p) }
                     if let pill = upd.pill { vm.downloadTasks[idx].pill = pill }
                     if let right = upd.rightText { vm.downloadTasks[idx].rightText = right }
@@ -202,7 +220,8 @@ final class PipelineCoordinator {
         )
 
         guard let vmAfter = viewModel,
-              let idx = vmAfter.downloadTasks.firstIndex(where: { $0.id == taskID }) else { return }
+              let idx = vmAfter.downloadTasks.firstIndex(where: { $0.id == taskID }),
+              acceptsProgress(for: taskID) else { return }
 
         switch outcome {
         case .completed(let localPath, let finalTitle, let rightText):
@@ -222,6 +241,9 @@ final class PipelineCoordinator {
             }
 
         case .cancelled:
+            vmAfter.downloadTasks[idx].status = .failed
+            vmAfter.downloadTasks[idx].pill = "已停止"
+            vmAfter.downloadTasks[idx].rightText = "已停止"
             vmAfter.scheduleTaskSave()
 
         case .failed(let pill):
@@ -245,6 +267,7 @@ final class PipelineCoordinator {
         }()
 
         let taskID = UUID()
+        markTaskStarted(taskID)
         let newTask = StudioTask(
             id: taskID,
             title: filename,
@@ -272,9 +295,12 @@ final class PipelineCoordinator {
             archivePath: archivePath,
             candidatePasswords: candidatePasswords,
             deleteArchiveAfterUnpack: deleteAfter,
-            onProgress: { [weak vm] pct, pillOpt in
+            onProgress: { [weak self] pct, pillOpt in
                 Task { @MainActor in
-                    guard let vm = vm, let idx = vm.unpackTasks.firstIndex(where: { $0.id == taskID }) else { return }
+                    guard let self = self,
+                          self.acceptsProgress(for: taskID),
+                          let vm = self.viewModel,
+                          let idx = vm.unpackTasks.firstIndex(where: { $0.id == taskID }) else { return }
                     vm.unpackTasks[idx].status = .locked(pct)
                     if let p = pillOpt { vm.unpackTasks[idx].pill = p }
                 }
@@ -287,7 +313,8 @@ final class PipelineCoordinator {
         )
 
         guard let vmAfter = viewModel,
-              let idx = vmAfter.unpackTasks.firstIndex(where: { $0.id == taskID }) else { return }
+              let idx = vmAfter.unpackTasks.firstIndex(where: { $0.id == taskID }),
+              acceptsProgress(for: taskID) else { return }
 
         switch outcome {
         case .completed(let outDir, let baseName, let pill):
@@ -303,6 +330,9 @@ final class PipelineCoordinator {
             }
 
         case .cancelled:
+            vmAfter.unpackTasks[idx].status = .failed
+            vmAfter.unpackTasks[idx].pill = "已停止"
+            vmAfter.unpackTasks[idx].rightText = "已停止"
             vmAfter.scheduleTaskSave()
 
         case .failed(let pill):
@@ -316,6 +346,7 @@ final class PipelineCoordinator {
         guard let vm = viewModel else { return }
         let gameTitle = PatchAndBottleService.cleanGameTitle(from: (folderPath as NSString).lastPathComponent)
         let taskID = UUID()
+        markTaskStarted(taskID)
         let newTask = StudioTask(
             id: taskID,
             title: gameTitle,
@@ -351,6 +382,7 @@ final class PipelineCoordinator {
         )
 
         guard let vmAfter = viewModel,
+              acceptsProgress(for: taskID),
               let idx = vmAfter.patchTasks.firstIndex(where: { $0.id == taskID }) else { return }
 
         vmAfter.patchTasks[idx].title = payload.displayTitle

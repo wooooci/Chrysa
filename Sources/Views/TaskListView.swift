@@ -83,6 +83,13 @@ struct PageHeaderView: View {
 struct TaskListSectionView: View {
     @ObservedObject var vm: StudioViewModel
     let isSnapshotMode: Bool
+    @State private var pendingDeletion: PendingDeletion?
+
+    private struct PendingDeletion: Identifiable {
+        let id = UUID()
+        let task: StudioTask
+        let deleteLocalFile: Bool
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -96,6 +103,18 @@ struct TaskListSectionView: View {
                     taskListContent
                 }
             }
+        }
+        .alert(item: $pendingDeletion) { pending in
+            Alert(
+                title: Text(pending.deleteLocalFile ? "删除记录及本地文件？" : "删除记录？"),
+                message: Text(pending.deleteLocalFile
+                    ? "仅允许删除下载目录内的普通文件；游戏目录、容器和目录不会被删除。"
+                    : "这只会移除任务记录，不会删除本地文件。"),
+                primaryButton: .destructive(Text("删除")) {
+                    vm.deleteTask(pending.task, deleteLocalFile: pending.deleteLocalFile)
+                },
+                secondaryButton: .cancel()
+            )
         }
     }
 
@@ -389,12 +408,16 @@ struct TaskListSectionView: View {
 
         Divider()
 
-        Button(role: .destructive, action: { vm.deleteTask(row, deleteLocalFile: false) }) {
+        Button(role: .destructive, action: {
+            pendingDeletion = PendingDeletion(task: row, deleteLocalFile: false)
+        }) {
             Label("删除记录", systemImage: "trash")
         }
 
         if let local = row.localPath, FileManager.default.fileExists(atPath: local) {
-            Button(role: .destructive, action: { vm.deleteTask(row, deleteLocalFile: true) }) {
+            Button(role: .destructive, action: {
+                pendingDeletion = PendingDeletion(task: row, deleteLocalFile: true)
+            }) {
                 Label("删除记录及本地文件", systemImage: "trash.fill")
             }
         }

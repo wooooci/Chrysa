@@ -1,8 +1,14 @@
 import SwiftUI
 import AppKit
 
+private struct SettingsEnvelope: Codable {
+    let schemaVersion: Int
+    let payload: AppSettings
+}
+
 @MainActor
 final class AppSettingsStore: ObservableObject {
+    private static let schemaVersion = 1
     @Published var settings: AppSettings {
         didSet {
             if !inMemoryOnly && settings != oldValue {
@@ -13,6 +19,7 @@ final class AppSettingsStore: ObservableObject {
 
     private let inMemoryOnly: Bool
     private let fileURL: URL
+    private var preserveUnsupportedFile = false
 
     let iconOptions: [AppIconOption] = [
         AppIconOption(id: "cultured_prussian",    title: "白底 3 · 学院普鲁士蓝",   subtitle: "雾银浅蓝 ➔ 学院钴蓝 ➔ 普鲁士皇家深蓝", category: "白瓷底系列"),
@@ -35,39 +42,104 @@ final class AppSettingsStore: ObservableObject {
             return
         }
 
-        if let data = try? Data(contentsOf: self.fileURL),
-           let decoded = try? JSONDecoder().decode(AppSettings.self, from: data) {
-            self.settings = decoded
-        } else {
-            var migrated = AppSettings.default
-            let defaults = UserDefaults.standard
-            if let pwds = defaults.stringArray(forKey: "Chrysa.PasswordDictionary.v1")
-                ?? defaults.stringArray(forKey: "SteamFlow.PasswordDictionary.v1"),
-               !pwds.isEmpty {
-                migrated.passwords = pwds
+        if let data = try? Data(contentsOf: self.fileURL) {
+            if Self.hasUnsupportedSchema(data) {
+                self.preserveUnsupportedFile = true
+                self.settings = .default
+                print("[persistence] settings schema is newer than this app; file left untouched: \(self.fileURL.path)")
+                return
             }
-            if let iconID = defaults.string(forKey: "Chrysa.SelectedIconID.v1")
-                ?? defaults.string(forKey: "SteamFlow.SelectedIconID.v1"),
-               iconOptions.contains(where: { $0.id == iconID }) {
-                migrated.selectedIconID = iconID
+            if let decoded = Self.decodeSettings(data) {
+                self.preserveUnsupportedFile = false
+                self.settings = decoded
+                return
             }
-            if let variant = defaults.string(forKey: "Chrysa.SelectedIconVariant.v1")
-                ?? defaults.string(forKey: "SteamFlow.SelectedIconVariant.v1"),
-               (variant == "A" || variant == "B") {
-                migrated.selectedIconVariant = variant
+            Self.preserveCorruptFile(at: self.fileURL)
+            if let backup = Self.readBackup(for: self.fileURL),
+               let decoded = Self.decodeSettings(backup) {
+                self.settings = decoded
+                print("[persistence] restored settings from backup: \(self.fileURL.path).bak")
+                return
             }
-            self.settings = migrated
-            persistToDisk()
+            print("[persistence] settings file is corrupt; defaults will be used: \(self.fileURL.path)")
+        }
+
+        var migrated = AppSettings.default
+        let defaults = UserDefaults.standard
+        if let pwds = defaults.stringArray(forKey: "Chrysa.PasswordDictionary.v1")
+            ?? defaults.stringArray(forKey: "SteamFlow.PasswordDictionary.v1"),
+           !pwds.isEmpty {
+            migrated.passwords = pwds
+        }
+        if let iconID = defaults.string(forKey: "Chrysa.SelectedIconID.v1")
+            ?? defaults.string(forKey: "SteamFlow.SelectedIconID.v1"),
+           iconOptions.contains(where: { $0.id == iconID }) {
+            migrated.selectedIconID = iconID
+        }
+        if let variant = defaults.string(forKey: "Chrysa.SelectedIconVariant.v1")
+            ?? defaults.string(forKey: "SteamFlow.SelectedIconVariant.v1"),
+           (variant == "A" || variant == "B") {
+            migrated.selectedIconVariant = variant
+        }
+        self.settings = migrated
+        persistToDisk()
+    }
+
+    private static func hasUnsupportedSchema(_ data: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let version = object["schemaVersion"] as? Int else { return false }
+        return version > schemaVersion
+    }
+
+    private static func decodeSettings(_ data: Data) -> AppSettings? {
+        let decoder = JSONDecoder()
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           object["schemaVersion"] != nil {
+            guard let envelope = try? decoder.decode(SettingsEnvelope.self, from: data),
+                  envelope.schemaVersion > 0,
+                  envelope.schemaVersion <= schemaVersion else { return nil }
+            return envelope.payload
+        }
+        // Existing installations contain the unwrapped AppSettings payload.
+        return try? decoder.decode(AppSettings.self, from: data)
+    }
+
+    private static func readBackup(for url: URL) -> Data? {
+        try? Data(contentsOf: url.appendingPathExtension("bak"))
+    }
+
+    private static func preserveCorruptFile(at url: URL) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        var target = url.appendingPathExtension("corrupt")
+        if FileManager.default.fileExists(atPath: target.path) {
+            target = url.appendingPathExtension("corrupt-\(UUID().uuidString)")
+        }
+        do {
+            try FileManager.default.moveItem(at: url, to: target)
+            print("[persistence] preserved corrupt settings file: \(target.path)")
+        } catch {
+            print("[persistence] failed to preserve corrupt settings file: \(error.localizedDescription)")
         }
     }
 
     private func persistToDisk() {
+        guard !preserveUnsupportedFile else {
+            print("[persistence] skipped settings save because the file belongs to a newer schema: \(fileURL.path)")
+            return
+        }
         let dir = fileURL.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let data = try? encoder.encode(settings) {
-            try? data.write(to: fileURL, options: .atomic)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(SettingsEnvelope(schemaVersion: Self.schemaVersion, payload: settings))
+            let backupURL = fileURL.appendingPathExtension("bak")
+            if let existingData = try? Data(contentsOf: fileURL) {
+                try existingData.write(to: backupURL, options: [.atomic])
+            }
+            try data.write(to: fileURL, options: [.atomic])
+        } catch {
+            print("[persistence] failed to save settings: \(error.localizedDescription)")
         }
         // Keep legacy UserDefaults password key synced for convenience
         UserDefaults.standard.set(settings.passwords, forKey: "Chrysa.PasswordDictionary.v1")

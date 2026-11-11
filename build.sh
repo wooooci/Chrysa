@@ -2,7 +2,7 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
-APP="/Users/woooci/Applications/Chrysa.app"
+APP="${CHRYSA_APP_PATH:-$HOME/Applications/Chrysa.app}"
 SDK_PATH="$(xcrun --show-sdk-path 2>/dev/null || echo "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk")"
 
 # Self-healing local CLT resource-dir shim inside .build/ (eliminates /tmp dependency & survives macOS reboots)
