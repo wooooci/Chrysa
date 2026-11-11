@@ -8,22 +8,27 @@ final class PipelineCoordinator {
     let downloadService: DownloadService
     let unpackService: UnpackService
     let patchService: PatchAndBottleService
+    let jobStore: JobStore
 
     weak var viewModel: StudioViewModel?
     private var cancelledTaskIDs: Set<UUID> = []
+    private var pendingJobStoreWrite: Task<Void, Never>?
 
     init(
         downloadService: DownloadService = DownloadService(),
         unpackService: UnpackService = UnpackService(),
-        patchService: PatchAndBottleService = PatchAndBottleService()
+        patchService: PatchAndBottleService = PatchAndBottleService(),
+        jobStore: JobStore = JobStore()
     ) {
         self.downloadService = downloadService
         self.unpackService = unpackService
         self.patchService = patchService
+        self.jobStore = jobStore
     }
 
     func markTaskCancelled(_ taskID: UUID) {
         cancelledTaskIDs.insert(taskID)
+        updateJob(taskID, status: .cancelled, message: "已停止")
     }
 
     private func markTaskStarted(_ taskID: UUID) {
@@ -32,6 +37,55 @@ final class PipelineCoordinator {
 
     private func acceptsProgress(for taskID: UUID) -> Bool {
         !cancelledTaskIDs.contains(taskID)
+    }
+
+    func restoreJobs(from snapshot: PersistedTaskSnapshot) async {
+        for task in snapshot.downloadTasks {
+            await jobStore.upsert(Job.fromLegacy(task, kind: .download))
+        }
+        for task in snapshot.unpackTasks {
+            await jobStore.upsert(Job.fromLegacy(task, kind: .unpack))
+        }
+        for task in snapshot.patchTasks {
+            await jobStore.upsert(Job.fromLegacy(task, kind: .patch))
+        }
+    }
+
+    private func enqueueJobStoreWrite(_ operation: @escaping @Sendable (JobStore) async -> Void) {
+        let previous = pendingJobStoreWrite
+        let store = jobStore
+        pendingJobStoreWrite = Task {
+            await previous?.value
+            await operation(store)
+        }
+    }
+
+    private func registerJob(_ job: Job) {
+        enqueueJobStoreWrite { store in await store.upsert(job) }
+    }
+
+    private func updateJob(
+        _ id: UUID,
+        status: JobStatus? = nil,
+        progress: Double? = nil,
+        title: String? = nil,
+        output: ArtifactRef? = nil,
+        message: String? = nil
+    ) {
+        enqueueJobStoreWrite { store in
+            await store.update(
+                id: id,
+                status: status,
+                progress: progress,
+                title: title,
+                output: output,
+                message: message
+            )
+        }
+    }
+
+    func removeJob(_ id: UUID) {
+        enqueueJobStoreWrite { store in await store.remove(id: id) }
     }
 
     func startDownload(urlString: String) {
@@ -63,6 +117,15 @@ final class PipelineCoordinator {
             sourceURL: cleanURL
         )
         vm.downloadTasks.insert(newTask, at: 0)
+        registerJob(Job(
+            id: firstTaskID,
+            kind: .download,
+            title: guessedName,
+            status: .running,
+            progress: 0.02,
+            source: ArtifactRef(kind: .remoteURL, value: cleanURL),
+            message: isMirrorWait ? "优选分流" : "嗅探中"
+        ))
         vm.scheduleTaskSave()
         vm.appendLog("sniff ▸ 开始解析链接: \(cleanURL)", highlight: true)
 
@@ -79,6 +142,7 @@ final class PipelineCoordinator {
                     vm.downloadTasks[idx].rightText = "无法获取直链"
                     vm.scheduleTaskSave()
                 }
+                self.updateJob(firstTaskID, status: .failed, message: "无法获取直链")
                 vm.appendLog("error ▸ 无法从该分享页解析出有效文件直链: \(cleanURL)", highlight: true)
                 return
             }
@@ -91,6 +155,7 @@ final class PipelineCoordinator {
                     vm.downloadTasks[idx].pill = "连接中"
                     vm.scheduleTaskSave()
                 }
+                self.updateJob(firstTaskID, title: first.suggestedFilename, message: "连接中")
                 vm.appendLog("dl ▸ 启动高速下载: \(first.suggestedFilename ?? first.finalURL)", highlight: false)
                 await self.runDownloadTask(taskID: firstTaskID, resolved: first, suppressAutoRelay: false)
             } else {
@@ -122,6 +187,13 @@ final class PipelineCoordinator {
                 sourceURL: pair.1.originalURL
             )
             vm.downloadTasks.insert(t, at: min(idxOffset + 1, vm.downloadTasks.count))
+            registerJob(Job(
+                id: pair.0,
+                kind: .download,
+                title: pair.1.suggestedFilename ?? "分卷文件",
+                status: .queued,
+                source: ArtifactRef(kind: .remoteURL, value: pair.1.originalURL)
+            ))
         }
         vm.scheduleTaskSave()
         vm.appendLog("folder ▸ 检测到分享文件夹 [\(folderTitle)]，共 \(taskPairs.count) 个文件，开始顺序拉取...", highlight: true)
@@ -192,6 +264,7 @@ final class PipelineCoordinator {
     func runDownloadTask(taskID: UUID, resolved: ResolvedDownload, suppressAutoRelay: Bool = false) async {
         guard let vm = viewModel else { return }
         let currentTitle = vm.downloadTasks.first(where: { $0.id == taskID })?.title ?? (resolved.suggestedFilename ?? "Download")
+        updateJob(taskID, status: .running, title: currentTitle)
         let settingsSnapshot = vm.settingsStore.settings
 
         let outcome = await downloadService.executeDownload(
@@ -210,6 +283,7 @@ final class PipelineCoordinator {
                     if let right = upd.rightText { vm.downloadTasks[idx].rightText = right }
                     if let path = upd.localPath { vm.downloadTasks[idx].localPath = path }
                     if let title = upd.resolvedTitle { vm.downloadTasks[idx].title = title }
+                    self.updateJob(taskID, status: .running, progress: upd.progress, title: upd.resolvedTitle, message: upd.pill)
                 }
             },
             onLog: { [weak vm] msg, hl in
@@ -229,6 +303,7 @@ final class PipelineCoordinator {
             vmAfter.downloadTasks[idx].pill = nil
             vmAfter.downloadTasks[idx].title = finalTitle
             vmAfter.downloadTasks[idx].localPath = localPath
+            updateJob(taskID, status: .succeeded, progress: 1, title: finalTitle, output: ArtifactRef(kind: .file, value: localPath), message: "下载完成")
             if let r = rightText {
                 vmAfter.downloadTasks[idx].rightText = r
             }
@@ -244,11 +319,13 @@ final class PipelineCoordinator {
             vmAfter.downloadTasks[idx].status = .failed
             vmAfter.downloadTasks[idx].pill = "已停止"
             vmAfter.downloadTasks[idx].rightText = "已停止"
+            updateJob(taskID, status: .cancelled, message: "已停止")
             vmAfter.scheduleTaskSave()
 
         case .failed(let pill):
             vmAfter.downloadTasks[idx].status = .failed
             vmAfter.downloadTasks[idx].pill = pill
+            updateJob(taskID, status: .failed, message: pill)
             vmAfter.scheduleTaskSave()
         }
     }
@@ -277,6 +354,15 @@ final class PipelineCoordinator {
             localPath: normalizedPath
         )
         vm.unpackTasks.insert(newTask, at: 0)
+        registerJob(Job(
+            id: taskID,
+            kind: .unpack,
+            title: filename,
+            status: .running,
+            progress: 0.08,
+            source: ArtifactRef(kind: .file, value: normalizedPath),
+            message: "准备解压"
+        ))
         vm.scheduleTaskSave()
         vm.appendLog("unpack ▸ 准备解压 \(filename)...", highlight: false)
 
@@ -303,6 +389,7 @@ final class PipelineCoordinator {
                           let idx = vm.unpackTasks.firstIndex(where: { $0.id == taskID }) else { return }
                     vm.unpackTasks[idx].status = .locked(pct)
                     if let p = pillOpt { vm.unpackTasks[idx].pill = p }
+                    self.updateJob(taskID, status: .running, progress: pct, message: pillOpt)
                 }
             },
             onLog: { [weak vm] msg, hl in
@@ -321,6 +408,7 @@ final class PipelineCoordinator {
             vmAfter.unpackTasks[idx].status = .done
             vmAfter.unpackTasks[idx].pill = pill
             vmAfter.unpackTasks[idx].localPath = outDir
+            updateJob(taskID, status: .succeeded, progress: 1, output: ArtifactRef(kind: .directory, value: outDir), message: pill)
             vmAfter.scheduleTaskSave()
 
             // Silent background relay (does NOT hijack activeTab!)
@@ -333,11 +421,13 @@ final class PipelineCoordinator {
             vmAfter.unpackTasks[idx].status = .failed
             vmAfter.unpackTasks[idx].pill = "已停止"
             vmAfter.unpackTasks[idx].rightText = "已停止"
+            updateJob(taskID, status: .cancelled, message: "已停止")
             vmAfter.scheduleTaskSave()
 
         case .failed(let pill):
             vmAfter.unpackTasks[idx].status = .failed
             vmAfter.unpackTasks[idx].pill = pill
+            updateJob(taskID, status: .failed, message: pill)
             vmAfter.scheduleTaskSave()
         }
     }
@@ -357,6 +447,15 @@ final class PipelineCoordinator {
             expanded: true
         )
         vm.patchTasks.insert(newTask, at: 0)
+        registerJob(Job(
+            id: taskID,
+            kind: .patch,
+            title: gameTitle,
+            status: .running,
+            progress: 0.35,
+            source: ArtifactRef(kind: .directory, value: folderPath),
+            message: "扫描中"
+        ))
         vm.scheduleTaskSave()
         vm.appendLog("pe-scan ▸ 开始扫描目录与 PE 导入表: \(gameTitle)", highlight: false)
 
@@ -392,6 +491,7 @@ final class PipelineCoordinator {
         vmAfter.patchTasks[idx].exePath = payload.exePath
         vmAfter.patchTasks[idx].appID = payload.appID
         vmAfter.patchTasks[idx].checklist = payload.checklist
+        updateJob(taskID, status: .succeeded, progress: 1, title: payload.displayTitle, message: payload.pill)
         vmAfter.scheduleTaskSave()
     }
 

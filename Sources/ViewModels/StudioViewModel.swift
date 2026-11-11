@@ -97,6 +97,11 @@ final class StudioViewModel: ObservableObject {
             mergedPatchTasks[0].expanded = true
         }
         self.patchTasks = mergedPatchTasks
+        await coordinator.restoreJobs(from: PersistedTaskSnapshot(
+            downloadTasks: downloadTasks,
+            unpackTasks: unpackTasks,
+            patchTasks: mergedPatchTasks
+        ))
         scheduleTaskSave()
     }
 
@@ -422,6 +427,7 @@ final class StudioViewModel: ObservableObject {
 
     func deleteTask(_ task: StudioTask, deleteLocalFile: Bool = false) {
         coordinator.markTaskCancelled(task.id)
+        coordinator.removeJob(task.id)
         Task { await ProcessSupervisor.shared.cancel(taskID: task.id) }
         if deleteLocalFile, let local = task.localPath, let target = safeLocalFileURL(for: local) {
             do {
@@ -448,15 +454,18 @@ final class StudioViewModel: ObservableObject {
         Task { await ProcessSupervisor.shared.clearCancellation(for: task.id) }
         if let i = downloadTasks.firstIndex(where: { $0.id == task.id }) {
             let src = downloadTasks[i].sourceURL ?? downloadTasks[i].title
+            coordinator.removeJob(task.id)
             downloadTasks.remove(at: i)
             startDownload(urlString: src)
         } else if let i = unpackTasks.firstIndex(where: { $0.id == task.id }) {
             if let path = unpackTasks[i].localPath, !path.isEmpty {
+                coordinator.removeJob(task.id)
                 unpackTasks.remove(at: i)
                 startUnpack(filePath: path)
             }
         } else if let i = patchTasks.firstIndex(where: { $0.id == task.id }) {
             if let path = patchTasks[i].localPath, !path.isEmpty {
+                coordinator.removeJob(task.id)
                 patchTasks.remove(at: i)
                 startPatch(folderPath: path)
             }

@@ -209,6 +209,36 @@ struct ChrysaAppMain {
         precondition(loaded.patchTasks.first?.title == "SavedGame")
         print("2. Persistence -> AppSettingsStore & TaskStore round-trip OK, interrupted task normalized to '\(loaded.downloadTasks.first?.pill ?? "")'")
 
+        let migratedDownload = Job.fromLegacy(loaded.downloadTasks[0], kind: .download)
+        precondition(migratedDownload.status == .failed)
+        let jobStore = JobStore()
+        let liveJob = Job(kind: .download, title: "JobStoreCheck.7z", status: .running, progress: 0.4)
+        await jobStore.upsert(liveJob)
+        await jobStore.update(id: liveJob.id, status: .succeeded, progress: 1)
+        await jobStore.update(id: liveJob.id, status: .running, progress: 0.2)
+        let savedJob = await jobStore.job(for: liveJob.id)
+        precondition(savedJob?.status == .succeeded && savedJob?.progress == 1)
+
+        let cancelledJob = Job(kind: .unpack, title: "CancelledCheck.7z", status: .running, progress: 0.6)
+        await jobStore.upsert(cancelledJob)
+        await jobStore.update(id: cancelledJob.id, status: .cancelled, message: "已停止")
+        await jobStore.update(id: cancelledJob.id, status: .running, progress: 0.9, message: "迟到进度")
+        let savedCancelledJob = await jobStore.job(for: cancelledJob.id)
+        precondition(savedCancelledJob?.status == .cancelled && savedCancelledJob?.progress == 0.6)
+
+        var stageRegistry = StageRegistry()
+        let passthroughStage = SelfTestPassthroughStage()
+        stageRegistry.register(passthroughStage)
+        let stageInput = ArtifactRef(kind: .file, value: "/tmp/stage-input")
+        guard let registeredStage = stageRegistry.stage(for: passthroughStage.id) else {
+            preconditionFailure("Stage registry failed to retain a registered stage")
+        }
+        let stageOutput = try? await registeredStage.execute(
+            context: StageContext(jobID: UUID(), input: stageInput)
+        )
+        precondition(stageOutput?.artifact == stageInput)
+        print("2B. Job/Stage Core -> legacy migration, terminal-state guard, and registry execution OK")
+
         // 3. HostResolverRegistry Plugin Rack
         let pdResolved = await HostResolverRegistry.resolveSingleLink("https://pixeldrain.com/u/zeC9sxvA")
         let mailItems = await HostResolverRegistry.resolveLinks("https://cloud.mail.ru/public/BqBr/K7pB3Myfy")
@@ -302,5 +332,13 @@ struct ChrysaAppMain {
 
         await ProcessSupervisor.shared.terminateAll()
         print("=== [All Decoupled Architecture Self-Tests PASSED] ===")
+    }
+}
+
+private struct SelfTestPassthroughStage: Stage {
+    let id = StageID("self-test.passthrough")
+
+    func execute(context: StageContext) async throws -> StageOutput {
+        StageOutput(artifact: context.input)
     }
 }
