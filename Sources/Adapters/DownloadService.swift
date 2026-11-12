@@ -49,7 +49,7 @@ package actor DownloadService {
         let downloadsRoot: URL
         let downloadsDirectory: URL
         do {
-            downloadsRoot = try PathSafety.canonicalDirectory(settings.downloadDirectory)
+            downloadsRoot = try PathSafety.canonicalDirectory(settings.download.downloadDirectory)
             guard downloadsRoot.path != "/" else { return .failed(pill: "下载目录无效") }
             if let rawSubdirectory = resolved.subDirectory, !rawSubdirectory.isEmpty {
                 guard let subdirectory = PathSafety.safeRelativeDirectory(rawSubdirectory) else {
@@ -103,7 +103,7 @@ package actor DownloadService {
         let lowerFinal = resolved.finalURL.lowercased()
         let isPixeldrain = lowerFinal.contains("pixeldrain.com")
         let isFileDitch = lowerFinal.contains("fileditch")
-        let configuredMax = max(1, min(16, settings.maxConcurrentConnections))
+        let configuredMax = max(1, min(16, settings.download.maxConcurrentConnections))
         let effectiveThreads = isFileDitch ? min(2, configuredMax) : (isPixeldrain ? min(4, configuredMax) : configuredMax)
         let threadsStr = "\(effectiveThreads)"
 
@@ -276,7 +276,7 @@ package actor DownloadService {
     ) async -> DownloadOutcome {
         let downloadsRoot: URL
         do {
-            downloadsRoot = try PathSafety.canonicalDirectory(settings.downloadDirectory)
+            downloadsRoot = try PathSafety.canonicalDirectory(settings.download.downloadDirectory)
             guard downloadsRoot.path != "/" else { return .failed(pill: "下载目录无效") }
         } catch {
             await onLog("error ▸ 无法准备下载目录", true)

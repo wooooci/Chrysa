@@ -196,11 +196,11 @@ struct ChrysaAppMain {
 
         let settingsFile = tmpDir.appendingPathComponent("settings.json")
         let s1 = AppSettingsStore(inMemoryOnly: false, customFileURL: settingsFile)
-        s1.settings.maxConcurrentConnections = 8
-        s1.settings.defaultLanguage = .tchinese
-        s1.settings.deleteArchiveAfterUnpack = true
+        s1.settings.download.maxConcurrentConnections = 8
+        s1.settings.patch.defaultLanguage = .tchinese
+        s1.settings.unpack.deleteArchiveAfterUnpack = true
         let s2 = AppSettingsStore(inMemoryOnly: false, customFileURL: settingsFile)
-        precondition(s2.settings.maxConcurrentConnections == 8 && s2.settings.defaultLanguage == .tchinese && s2.settings.deleteArchiveAfterUnpack == true)
+        precondition(s2.settings.download.maxConcurrentConnections == 8 && s2.settings.patch.defaultLanguage == .tchinese && s2.settings.unpack.deleteArchiveAfterUnpack == true)
 
         let tasksFile = tmpDir.appendingPathComponent("tasks.json")
         let ts = TaskStore(inMemoryOnly: false, customFileURL: tasksFile)
@@ -418,8 +418,8 @@ struct ChrysaAppMain {
     @MainActor
     private static func runLocalPipelineSelfTest(url: String, directory: URL) async {
         let vm = AppComposition.makeViewModel(inMemoryOnly: true)
-        vm.settingsStore.settings.downloadDirectory = directory.appendingPathComponent("downloads").path
-        vm.settingsStore.settings.autoRelay = true
+        vm.settingsStore.settings.download.downloadDirectory = directory.appendingPathComponent("downloads").path
+        vm.settingsStore.settings.unpack.autoRelay = true
         vm.activeTab = .settings
         vm.startDownload(urlString: url)
         await waitForSelfTest({
@@ -468,9 +468,9 @@ struct ChrysaAppMain {
     private static func runFolderPipelineSelfTest(url: String, directory: URL) async {
         let vm = AppComposition.makeViewModel(inMemoryOnly: true)
         let root = directory.appendingPathComponent("folder-downloads", isDirectory: true)
-        vm.settingsStore.settings.downloadDirectory = root.path
+        vm.settingsStore.settings.download.downloadDirectory = root.path
         vm.autoRelay = true
-        vm.settingsStore.settings.deleteArchiveAfterUnpack = false
+        vm.settingsStore.settings.unpack.deleteArchiveAfterUnpack = false
         vm.activeTab = .settings
         try! FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let oldFile = root.appendingPathComponent("fixture.7z")
@@ -514,7 +514,7 @@ struct ChrysaAppMain {
     private static func runActiveDownloadCancellationSelfTest(url: String, directory: URL) async {
         let vm = AppComposition.makeViewModel(inMemoryOnly: true)
         let root = directory.appendingPathComponent("cancelled-download", isDirectory: true)
-        vm.settingsStore.settings.downloadDirectory = root.path
+        vm.settingsStore.settings.download.downloadDirectory = root.path
         vm.autoRelay = true
         vm.startDownload(urlString: url)
         await waitForSelfTest({ !vm.jobs(of: .download).isEmpty }, message: "Cancellation test download was not published")

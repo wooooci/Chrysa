@@ -290,9 +290,9 @@ package actor PatchService {
             }
         }
 
-        let langValue = settings.defaultLanguage.rawValue
-        let countryValue = settings.defaultLanguage.ipCountry
-        let langShort = settings.defaultLanguage.shortLabel
+        let langValue = settings.patch.defaultLanguage.rawValue
+        let countryValue = settings.patch.defaultLanguage.ipCountry
+        let langShort = settings.patch.defaultLanguage.shortLabel
 
         for dir in targetDLLDirs {
             try await checkCancellation()
@@ -334,14 +334,14 @@ package actor PatchService {
                 taskID: taskID,
                 gameTitle: effectiveTitle,
                 exePath: mainEXE,
-                bottlesDirectory: settings.bottlesDirectory,
+                bottlesDirectory: settings.patch.bottlesDirectory,
                 hasD3D12: hasD3D12,
                 hasWinHTTP: hasWinHTTP,
                 isCancelled: isCancelled
             )
         try await checkCancellation()
 
-        let bottlePath = ((settings.bottlesDirectory as NSString).expandingTildeInPath as NSString)
+        let bottlePath = ((settings.patch.bottlesDirectory as NSString).expandingTildeInPath as NSString)
             .appendingPathComponent(configuredBottle)
         let bottleReady = configuredBottle != "Default" && fm.fileExists(atPath: bottlePath)
         let gfxDesc = hasD3D12 ? "D3DMetal" : "DXMT"
