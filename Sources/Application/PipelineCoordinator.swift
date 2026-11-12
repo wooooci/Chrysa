@@ -12,6 +12,10 @@ package enum PipelineEvent: Sendable {
 package final class PipelineCoordinator {
     private let services: any WorkflowServices
     package let jobStore: any JobRepository
+    
+    package func flushPersistence() async {
+        await jobStore.flush()
+    }
     package let events: AsyncStream<PipelineEvent>
 
     private let eventContinuation: AsyncStream<PipelineEvent>.Continuation

@@ -24,15 +24,17 @@ package actor GameLauncher {
     ) async -> GameLaunchOutcome {
         let fm = FileManager.default
         let cxAppsDir = ("~/Applications/CrossOver" as NSString).expandingTildeInPath
-        let shortcutApp = (cxAppsDir as NSString).appendingPathComponent("\(request.title).app")
         guard !Task.isCancelled, !(await isCancelled()) else { return .cancelled }
 
         do {
             // Prefer the dedicated CrossOver Menu Helper when available.
-            if PathSafety.safeFilename(request.title) == request.title, fm.fileExists(atPath: shortcutApp) {
-                onLog("crossover ▸ 正在通过容器快捷方式启动: \(request.title).app", true)
-                try await open([shortcutApp], taskID: request.jobID)
-                return .launched
+            if let safeTitle = PathSafety.safeFilename(request.title) {
+                let shortcutApp = (cxAppsDir as NSString).appendingPathComponent("\(safeTitle).app")
+                if fm.fileExists(atPath: shortcutApp) {
+                    onLog("crossover ▸ 正在通过容器快捷方式启动: \(safeTitle).app", true)
+                    try await open([shortcutApp], taskID: request.jobID)
+                    return .launched
+                }
             }
 
             if let exe = request.executablePath, fm.fileExists(atPath: exe) {

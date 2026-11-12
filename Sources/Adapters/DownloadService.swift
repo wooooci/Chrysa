@@ -24,6 +24,23 @@ package actor DownloadService {
         self.supervisor = supervisor
     }
 
+    package static func cleanupStaging(for taskID: UUID, downloadDirectory: String) {
+        guard let root = try? PathSafety.canonicalDirectory(downloadDirectory), root.path != "/" else { return }
+        let directStage = root.appendingPathComponent(".chrysa-\(taskID.uuidString)", isDirectory: true)
+        try? FileManager.default.removeItem(at: directStage)
+        if let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsPackageDescendants]
+        ) {
+            let targetName = ".chrysa-\(taskID.uuidString)"
+            for case let url as URL in enumerator where url.lastPathComponent == targetName {
+                try? FileManager.default.removeItem(at: url)
+                enumerator.skipDescendants()
+            }
+        }
+    }
+
     package func executeDownload(
         taskID: UUID,
         currentTitle: String,
@@ -76,22 +93,12 @@ package actor DownloadService {
             await onLog("error ▸ 远端文件名无效或包含路径分隔符", true)
             return .failed(pill: "文件名无效")
         }
-        let stagingDirectory = downloadsDirectory.appendingPathComponent(".chrysa-\(UUID().uuidString)", isDirectory: true)
-        guard PathSafety.containedURL(stagingDirectory, in: downloadsRoot) != nil else {
-            return .failed(pill: "路径无效")
-        }
+        let stagingDirectory = downloadsDirectory.appendingPathComponent(".chrysa-\(taskID.uuidString)", isDirectory: true)
         do {
-            try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: false)
+            try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
         } catch {
             await onLog("error ▸ 无法建立下载暂存目录", true)
             return .failed(pill: "目录错误")
-        }
-        defer {
-            if let safeStage = PathSafety.containedURL(stagingDirectory, in: downloadsRoot),
-               safeStage.path == stagingDirectory.standardizedFileURL.path,
-               safeStage.path != downloadsRoot.path {
-                try? FileManager.default.removeItem(at: safeStage)
-            }
         }
         let stagedFile = stagingDirectory.appendingPathComponent(filename)
 
@@ -127,7 +134,7 @@ package actor DownloadService {
             "--dir=\(stagingDirectory.path)",
             "--summary-interval=1",
             "--console-log-level=warn",
-            "--allow-overwrite=true"
+            "--auto-file-renaming=false"
         ]
 
         if ToolchainLocator.hostNeedsProxy(resolved.finalURL), let sysProxy = ToolchainLocator.detectSystemProxy() {
@@ -207,6 +214,7 @@ package actor DownloadService {
                 }
                 do {
                     let published = try PathSafety.publishFile(from: stagedFile, toDirectory: downloadsDirectory, filename: filename)
+                    try? FileManager.default.removeItem(at: stagingDirectory)
                     await onLog("dl ▸ 下载完成: \(published.name)", true)
                     return .completed(localPath: published.url.path, finalTitle: published.name, rightText: streamRight)
                 } catch {
@@ -288,13 +296,8 @@ package actor DownloadService {
             return .failed(pill: "文件名无效")
         }
         let temporaryURL = downloadsRoot.appendingPathComponent(".chrysa-range-\(UUID().uuidString).tmp")
-        guard PathSafety.containedURL(temporaryURL, in: downloadsRoot) != nil else { return .failed(pill: "路径无效") }
         defer {
-            if let safeTemporary = PathSafety.containedURL(temporaryURL, in: downloadsRoot),
-               safeTemporary.path == temporaryURL.standardizedFileURL.path,
-               safeTemporary.path != downloadsRoot.path {
-                try? FileManager.default.removeItem(at: safeTemporary)
-            }
+            try? FileManager.default.removeItem(at: temporaryURL)
         }
 
         await onLog("range-3m ▸ 检测到 VikingFile 限速策略，启用 8 路 × 3MB 切片校验引擎！", true)

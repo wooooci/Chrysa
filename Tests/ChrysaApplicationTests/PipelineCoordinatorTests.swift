@@ -267,6 +267,8 @@ private actor MemoryRepository: JobRepository {
     func job(for id: UUID) -> Job? { jobs[id] }
     func all() -> [Job] { Array(jobs.values) }
     func remove(id: UUID) { jobs[id] = nil }
+    func resetForRetry(id: UUID, title: String?, source: ArtifactRef?, input: ArtifactRef?) -> Job? { nil }
+    func flush() {}
     func update(
         id: UUID, kind: JobKind?, status: JobStatus?, progress: Double?, title: String?, source: ArtifactRef?, input: ArtifactRef?, output: ArtifactRef?,
         message: String?, clearMessage: Bool, rightText: String?, appID: String?, checklist: [CheckItem]?,

@@ -10,10 +10,11 @@ package enum PathSafety {
               !value.contains("/"),
               !value.contains("\\"),
               !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
-              value != ".", value != ".." else { return nil }
-        let name = value.trimmingCharacters(in: CharacterSet(charactersIn: ". "))
-        guard !name.isEmpty, name != ".", name != ".." else { return nil }
-        return name
+              !value.allSatisfy({ $0 == "." }) else { return nil }
+        let sanitized = value.replacingOccurrences(of: ":", with: "_")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sanitized.isEmpty, !sanitized.allSatisfy({ $0 == "." }) else { return nil }
+        return sanitized
     }
 
     package static func safeRelativeDirectory(_ raw: String?) -> String? {
@@ -21,9 +22,13 @@ package enum PathSafety {
               !raw.hasPrefix("/"), !raw.contains("\\"),
               !raw.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return nil }
         let components = raw.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
-        guard !components.isEmpty,
-              components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && !$0.contains(":") }) else { return nil }
-        return components.joined(separator: "/")
+        guard !components.isEmpty else { return nil }
+        var sanitizedComponents: [String] = []
+        for component in components {
+            guard let clean = safeFilename(component) else { return nil }
+            sanitizedComponents.append(clean)
+        }
+        return sanitizedComponents.joined(separator: "/")
     }
 
     package static func canonicalDirectory(_ path: String) throws -> URL {
@@ -43,9 +48,16 @@ package enum PathSafety {
     }
 
     package static func uniqueChildDirectory(parent: URL, proposedName: String?) throws -> (url: URL, name: String) {
-        let base = safeFilename(proposedName) ?? "Unpacked-\(UUID().uuidString)"
-        for attempt in 0..<8 {
-            let name = attempt == 0 ? base : "\(base)-\(UUID().uuidString)"
+        let base = safeFilename(proposedName) ?? "Unpacked"
+        for attempt in 0..<64 {
+            let name: String
+            if attempt == 0 {
+                name = base
+            } else if attempt < 63 {
+                name = "\(base) (\(attempt + 1))"
+            } else {
+                name = "\(base)-\(UUID().uuidString.prefix(8))"
+            }
             let candidate = parent.appendingPathComponent(name, isDirectory: true).standardizedFileURL
             guard containedURL(candidate, in: parent) != nil else { continue }
             do {
@@ -64,14 +76,14 @@ package enum PathSafety {
               containedURL(temporaryURL, in: directory) != nil else {
             throw CocoaError(.fileWriteInvalidFileName)
         }
-        for attempt in 0..<8 {
+        for attempt in 0..<64 {
             let name: String
             if attempt == 0 {
                 name = safeName
             } else {
-                let base = (safeName as NSString).deletingPathExtension
-                let ext = (safeName as NSString).pathExtension
-                name = ext.isEmpty ? "\(base)-\(UUID().uuidString)" : "\(base)-\(UUID().uuidString).\(ext)"
+                let suffix = attempt < 63 ? " (\(attempt + 1))" : "-\(UUID().uuidString.prefix(8))"
+                let (stem, ext) = splitArchiveStemAndExtension(safeName)
+                name = ext.isEmpty ? "\(stem)\(suffix)" : "\(stem)\(suffix).\(ext)"
             }
             let destination = directory.appendingPathComponent(name).standardizedFileURL
             guard containedURL(destination, in: directory) != nil else { continue }
@@ -84,5 +96,17 @@ package enum PathSafety {
             }
         }
         throw CocoaError(.fileWriteFileExists)
+    }
+
+    private static func splitArchiveStemAndExtension(_ filename: String) -> (String, String) {
+        let lower = filename.lowercased()
+        for compound in ["tar.zst", "tar.xz", "tar.gz"] where lower.hasSuffix("." + compound) {
+            let stemEnd = filename.index(filename.endIndex, offsetBy: -(compound.count + 1))
+            let stem = String(filename[..<stemEnd])
+            if !stem.isEmpty { return (stem, compound) }
+        }
+        let base = (filename as NSString).deletingPathExtension
+        let ext = (filename as NSString).pathExtension
+        return base.isEmpty ? (filename, "") : (base, ext)
     }
 }

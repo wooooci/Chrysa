@@ -29,7 +29,18 @@ package protocol JobRepository: Sendable {
         expanded: Bool?,
         listPosition: Int?
     ) async -> Job?
+    @discardableResult func resetForRetry(
+        id: UUID,
+        title: String?,
+        source: ArtifactRef?,
+        input: ArtifactRef?
+    ) async -> Job?
     func remove(id: UUID) async
+    func flush() async
+}
+
+package extension JobRepository {
+    func flush() async {}
 }
 
 /// Creates the registered operations and provides the platform queries used by the workflow.
@@ -53,5 +64,12 @@ package protocol WorkflowServices: Sendable {
     func mergeDLC(installer: String, directory: String, taskID: UUID) async -> Bool
     func cancel(taskID: UUID) async
     func clearCancellation(taskID: UUID) async
+    func canDeleteDownloadedFile(_ path: String, downloadDirectory: String) -> Bool
     func deleteDownloadedFile(_ path: String, downloadDirectory: String) throws -> Bool
+    func cleanupDownloadStaging(taskID: UUID, downloadDirectory: String)
+}
+
+package extension WorkflowServices {
+    func canDeleteDownloadedFile(_ path: String, downloadDirectory: String) -> Bool { false }
+    func cleanupDownloadStaging(taskID: UUID, downloadDirectory: String) {}
 }

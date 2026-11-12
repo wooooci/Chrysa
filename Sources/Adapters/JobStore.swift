@@ -35,6 +35,10 @@ package actor JobStore: JobRepository {
     private let fileURL: URL
     private var preserveUnsupportedFile = false
     private var legacyTaskMigrationCompleted = false
+    private var diskFileVerifiedValid = false
+    private var hasUnflushedProgress = false
+    private var lastPersistTime: ContinuousClock.Instant?
+    package private(set) var persistCount = 0
     private var jobs: [UUID: Job]
 
     package init(inMemoryOnly: Bool = false, customFileURL: URL? = nil, seed: [Job] = []) {
@@ -59,6 +63,7 @@ package actor JobStore: JobRepository {
 
         if let data, let decoded = Self.decodeArchive(data) {
             preserveUnsupportedFile = false
+            diskFileVerifiedValid = true
             legacyTaskMigrationCompleted = decoded.legacyTaskMigrationCompleted
             jobs = Self.normalizeInterruptedJobs(decoded.jobs)
             if jobs.values.sorted(by: Self.jobOrder) != decoded.jobs.sorted(by: Self.jobOrder) {
@@ -67,7 +72,10 @@ package actor JobStore: JobRepository {
             return .loaded(all())
         }
 
-        if fileExists { Self.preserveCorruptFile(at: fileURL) }
+        if fileExists {
+            diskFileVerifiedValid = false
+            Self.preserveCorruptFile(at: fileURL)
+        }
         let backup = Self.readBackup(for: fileURL)
         if let backup, Self.hasUnsupportedSchema(backup) {
             preserveUnsupportedFile = true
@@ -206,24 +214,52 @@ package actor JobStore: JobRepository {
         if let listPosition { job.listPosition = listPosition }
         job.updatedAt = Date()
         jobs[id] = job
-        persist()
+        hasUnflushedProgress = true
+        return job
+    }
+
+    package func flush() {
+        if hasUnflushedProgress {
+            _ = persist(force: true)
+        }
+    }
+    
+    package func resetForRetry(id: UUID, title: String?, source: ArtifactRef?, input: ArtifactRef?) -> Job? {
+        guard var job = jobs[id] else { return nil }
+        if let title { job.title = title }
+        if let source { job.source = source }
+        if let input { job.input = input }
+        job.status = .running
+        job.progress = 0
+        job.message = nil
+        job.updatedAt = Date()
+        jobs[id] = job
+        _ = persist(force: true)
         return job
     }
 
     package func remove(id: UUID) {
         guard jobs.removeValue(forKey: id) != nil else { return }
-        persist()
+        _ = persist()
     }
 
     package func removeAll() {
         guard !jobs.isEmpty else { return }
         jobs.removeAll()
-        persist()
+        _ = persist()
     }
 
     @discardableResult
-    private func persist() -> Bool {
+    private func persist(force: Bool = false) -> Bool {
         guard !inMemoryOnly else { return true }
+        if !force {
+            let now = ContinuousClock.now
+            if let last = lastPersistTime, now < last.advanced(by: .seconds(2)) {
+                hasUnflushedProgress = true
+                return true
+            }
+        }
+        
         guard !preserveUnsupportedFile else {
             print("[persistence] skipped job save because the file belongs to a newer schema: \(fileURL.path)")
             return false
@@ -239,11 +275,19 @@ package actor JobStore: JobRepository {
                 jobs: all(),
                 legacyTaskMigrationCompleted: legacyTaskMigrationCompleted
             ))
+            
+            // Atomic update strategy: only back up if we have a known valid file
             let backupURL = fileURL.appendingPathExtension("bak")
-            if let existingData = try? Data(contentsOf: fileURL), Self.decodeArchive(existingData) != nil {
-                try existingData.write(to: backupURL, options: [.atomic])
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                try? FileManager.default.removeItem(at: backupURL)
+                try? FileManager.default.copyItem(at: fileURL, to: backupURL)
             }
+            
             try data.write(to: fileURL, options: [.atomic])
+            diskFileVerifiedValid = true
+            hasUnflushedProgress = false
+            lastPersistTime = .now
+            persistCount += 1
             return true
         } catch {
             print("[persistence] failed to save jobs: \(error.localizedDescription)")

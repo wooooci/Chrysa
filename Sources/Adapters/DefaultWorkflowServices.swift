@@ -107,6 +107,10 @@ package struct DefaultWorkflowServices: WorkflowServices {
     package func cancel(taskID: UUID) async { await supervisor.cancel(taskID: taskID) }
     package func clearCancellation(taskID: UUID) async { await supervisor.clearCancellation(for: taskID) }
 
+    package func canDeleteDownloadedFile(_ path: String, downloadDirectory: String) -> Bool {
+        safeDownloadedFile(path, directory: downloadDirectory) != nil
+    }
+
     package func deleteDownloadedFile(_ path: String, downloadDirectory: String) throws -> Bool {
         guard let target = safeDownloadedFile(path, directory: downloadDirectory) else { return false }
         try FileManager.default.removeItem(at: target)
@@ -114,6 +118,10 @@ package struct DefaultWorkflowServices: WorkflowServices {
             try? FileManager.default.removeItem(at: sidecar)
         }
         return true
+    }
+
+    package func cleanupDownloadStaging(taskID: UUID, downloadDirectory: String) {
+        DownloadService.cleanupStaging(for: taskID, downloadDirectory: downloadDirectory)
     }
 
     private func safeDownloadedFile(_ path: String, directory: String) -> URL? {

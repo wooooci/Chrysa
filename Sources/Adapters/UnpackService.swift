@@ -122,11 +122,10 @@ package actor UnpackService {
         let output: (url: URL, name: String)
         do {
             parentURL = try PathSafety.canonicalDirectory(parentPath)
-            let archiveValues = try archiveURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            let resolvedArchiveURL = archiveURL.resolvingSymlinksInPath()
+            let archiveValues = try resolvedArchiveURL.resourceValues(forKeys: [.isRegularFileKey])
             guard parentURL.path != "/",
-                  PathSafety.containedURL(archiveURL, in: parentURL) != nil,
-                  archiveValues.isRegularFile == true,
-                  archiveValues.isSymbolicLink != true else {
+                  archiveValues.isRegularFile == true else {
                 await onLog("error ▸ 压缩包路径无效", true)
                 return .failed(pill: "路径无效")
             }
@@ -151,11 +150,6 @@ package actor UnpackService {
             if !preserveOutputDirectory {
                 removeOutputDirectoryIfSafe(output.url, parent: parentURL)
             }
-        }
-        guard PathSafety.containedURL(output.url, in: parentURL)?.path == output.url.standardizedFileURL.path,
-              (try? output.url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
-            await onLog("error ▸ 解压目录被替换或不再安全", true)
-            return .failed(pill: "路径无效")
         }
         let baseName = output.name
 

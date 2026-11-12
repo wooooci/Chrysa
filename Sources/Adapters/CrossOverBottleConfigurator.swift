@@ -27,7 +27,7 @@ package actor CrossOverBottleConfigurator {
         try await checkCancellation()
         guard fm.fileExists(atPath: bottlesRoot) else { return "Default" }
 
-        let normalizedTitle: String = {
+        let rawTitle: String = {
             let trimmed = gameTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed == trimmed.lowercased() {
                 return trimmed.capitalized
@@ -35,7 +35,7 @@ package actor CrossOverBottleConfigurator {
             return trimmed
         }()
 
-        guard PathSafety.safeFilename(normalizedTitle) == normalizedTitle else {
+        guard let normalizedTitle = PathSafety.safeFilename(rawTitle) else {
             throw CocoaError(.fileWriteInvalidFileName)
         }
 
