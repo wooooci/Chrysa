@@ -9,7 +9,8 @@ import Foundation
 enum PatchWorkflowChecks {
     static func run() async throws {
         let fm = FileManager.default
-        let root = URL(fileURLWithPath: "/tmp/chrysa-patch-checks-\(UUID().uuidString)", isDirectory: true)
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chrysa-patch-checks-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: root) }
         let game = root.appendingPathComponent("Manual Game", isDirectory: true)

@@ -34,7 +34,7 @@ package struct ArtifactRef: Codable, Equatable, Sendable {
 /// A single source of truth for one download, unpack, or patch operation.
 package struct Job: Identifiable, Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
-        case id, kind, title, status, progress, source, output, message
+        case id, kind, title, status, progress, source, input, output, message
         case rightText, appID, isArchived, expanded, checklist, listPosition, createdAt, updatedAt
     }
 
@@ -45,7 +45,11 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
     package var progress: Double {
         didSet { progress = Self.clampedProgress(progress) }
     }
+    /// Stable origin supplied by the user, such as the original share URL.
     package var source: ArtifactRef?
+    /// Input consumed by the current stage.
+    package var input: ArtifactRef?
+    /// Most recent successful artifact produced by a stage.
     package var output: ArtifactRef?
     package var message: String?
     package var rightText: String
@@ -67,6 +71,7 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
             status: try container.decodeIfPresent(JobStatus.self, forKey: .status) ?? .queued,
             progress: try container.decodeIfPresent(Double.self, forKey: .progress) ?? 0,
             source: try container.decodeIfPresent(ArtifactRef.self, forKey: .source),
+            input: try container.decodeIfPresent(ArtifactRef.self, forKey: .input),
             output: try container.decodeIfPresent(ArtifactRef.self, forKey: .output),
             message: try container.decodeIfPresent(String.self, forKey: .message),
             rightText: try container.decodeIfPresent(String.self, forKey: .rightText) ?? "",
@@ -88,6 +93,7 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
         try container.encode(status, forKey: .status)
         try container.encode(progress, forKey: .progress)
         try container.encodeIfPresent(source, forKey: .source)
+        try container.encodeIfPresent(input, forKey: .input)
         try container.encodeIfPresent(output, forKey: .output)
         try container.encodeIfPresent(message, forKey: .message)
         try container.encode(rightText, forKey: .rightText)
@@ -107,6 +113,7 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
         status: JobStatus = .queued,
         progress: Double = 0,
         source: ArtifactRef? = nil,
+        input: ArtifactRef? = nil,
         output: ArtifactRef? = nil,
         message: String? = nil,
         rightText: String = "",
@@ -124,6 +131,7 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
         self.status = status
         self.progress = Self.clampedProgress(progress)
         self.source = source
+        self.input = input
         self.output = output
         self.message = message
         self.rightText = rightText
@@ -155,16 +163,20 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
         }
 
         let source: ArtifactRef?
+        let input: ArtifactRef?
         let output: ArtifactRef?
         switch kind {
         case .download:
             source = task.sourceURL.map { ArtifactRef(kind: .remoteURL, value: $0) }
+            input = source
             output = task.localPath.map { ArtifactRef(kind: .file, value: $0) }
         case .unpack:
             source = task.status == .done ? nil : task.localPath.map { ArtifactRef(kind: .file, value: $0) }
+            input = task.status == .done ? nil : source
             output = task.status == .done ? task.localPath.map { ArtifactRef(kind: .directory, value: $0) } : nil
         case .patch:
             source = task.localPath.map { ArtifactRef(kind: .directory, value: $0) }
+            input = source
             output = task.exePath.map { ArtifactRef(kind: .file, value: $0) }
         }
 
@@ -175,6 +187,7 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
             status: status,
             progress: progress,
             source: source,
+            input: input,
             output: output,
             message: task.pill,
             rightText: task.rightText,
@@ -198,7 +211,7 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
             legacyStatus = .failed
         }
 
-        let sourceURL = kind == .download && source?.kind == .remoteURL ? source?.value : nil
+        let sourceURL = source?.kind == .remoteURL ? source?.value : nil
         let localPath: String?
         let exePath: String?
         switch kind {
@@ -206,10 +219,10 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
             localPath = output?.kind == .file ? output?.value : nil
             exePath = nil
         case .unpack:
-            localPath = status == .succeeded ? output?.value : source?.value
+            localPath = status == .succeeded ? output?.value : (input?.value ?? source?.value)
             exePath = nil
         case .patch:
-            localPath = source?.value
+            localPath = input?.kind == .directory ? input?.value : source?.value
             exePath = output?.kind == .file ? output?.value : nil
         }
 
@@ -245,7 +258,7 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
     package var pill: String? { message }
 
     package var sourceURL: String? {
-        kind == .download && source?.kind == .remoteURL ? source?.value : nil
+        source?.kind == .remoteURL ? source?.value : nil
     }
 
     package var localPath: String? {
@@ -253,9 +266,9 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
         case .download:
             return output?.kind == .file ? output?.value : nil
         case .unpack:
-            return status == .succeeded ? output?.value : source?.value
+            return status == .succeeded ? output?.value : (input?.value ?? source?.value)
         case .patch:
-            return source?.value
+            return input?.kind == .directory ? input?.value : source?.value
         }
     }
 

@@ -4,7 +4,12 @@ import Foundation
 
 package protocol HostResolver: Sendable {
     func canHandle(host: String, url: URL) -> Bool
+    func initialDownloadMessage(for url: URL) -> String?
     func resolve(input: String, url: URL, passwords: [String]) async -> [ResolvedDownload]
+}
+
+package extension HostResolver {
+    func initialDownloadMessage(for url: URL) -> String? { nil }
 }
 
 package enum HostResolverRegistry {
@@ -19,6 +24,11 @@ package enum HostResolverRegistry {
         MediaFireResolver(),
         GoogleDriveResolver()
     ]
+
+    package static func initialDownloadMessage(for input: String) -> String? {
+        guard let url = URL(string: input), let host = url.host?.lowercased() else { return nil }
+        return plugins.first(where: { $0.canHandle(host: host, url: url) })?.initialDownloadMessage(for: url)
+    }
 
     package static func normalizeDownloadInput(_ raw: String) -> String? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)

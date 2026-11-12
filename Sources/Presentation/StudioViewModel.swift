@@ -102,7 +102,7 @@ package final class StudioViewModel: ObservableObject {
         case .migrationPending(let jobs):
             restoredJobs = jobs
             canWriteJobs = true
-            appendLog("persistence ▸ 已载入 \(jobs.count) 项旧记录，迁移写入失败，后续保存时将重试", highlight: true)
+            appendLog("persistence ▸ 已载入 \(jobs.count) 项记录，旧任务迁移尚未完成，将在条件恢复后重试", highlight: true)
         case .missing, .corrupt:
             restoredJobs = []
             canWriteJobs = true

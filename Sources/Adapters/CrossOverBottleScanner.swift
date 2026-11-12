@@ -6,6 +6,7 @@ package enum CrossOverBottleScanner {
     /// Dynamically discovers installed CrossOver game bottles & shortcuts without any hardcoded game names.
     package static func scanInstalledBottles(
         bottlesDirectory: String,
+        crossOverAppsDirectory: String? = nil,
         isCancelled: @Sendable () -> Bool = { Task.isCancelled }
     ) -> [Job] {
         let fm = FileManager.default
@@ -14,7 +15,7 @@ package enum CrossOverBottleScanner {
 
         // Map bottleName -> helper shortcut display name from ~/Applications/CrossOver/*.app
         var shortcutNameByBottle: [String: String] = [:]
-        let cxAppsDir = ("~/Applications/CrossOver" as NSString).expandingTildeInPath
+        let cxAppsDir = ((crossOverAppsDirectory ?? "~/Applications/CrossOver") as NSString).expandingTildeInPath
         if let appBundles = try? fm.contentsOfDirectory(atPath: cxAppsDir) {
             for bundleName in appBundles where bundleName.hasSuffix(".app") {
                 guard !isCancelled() else { return [] }

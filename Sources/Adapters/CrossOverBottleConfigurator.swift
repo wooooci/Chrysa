@@ -27,7 +27,6 @@ package actor CrossOverBottleConfigurator {
         try await checkCancellation()
         guard fm.fileExists(atPath: bottlesRoot) else { return "Default" }
 
-        let isTempTest = (exePath?.hasPrefix("/tmp/") == true) || (exePath?.hasPrefix("/private/tmp/") == true)
         let normalizedTitle: String = {
             let trimmed = gameTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed == trimmed.lowercased() {
@@ -56,7 +55,7 @@ package actor CrossOverBottleConfigurator {
                        || $0.replacingOccurrences(of: " ", with: "").lowercased() == condensedTarget
                }) {
                 targetBottleName = match
-            } else if !isTempTest, let cxBottleBin = ToolchainLocator.locateCrossOverBin("cxbottle") {
+            } else if let cxBottleBin = ToolchainLocator.locateCrossOverBin("cxbottle") {
                 try await checkCancellation()
                 let creation = try await supervisor.run(
                     executable: cxBottleBin,
@@ -85,7 +84,7 @@ package actor CrossOverBottleConfigurator {
         let confPath = (bottlePath as NSString).appendingPathComponent("cxbottle.conf")
 
         // 3. Symlink external game folder into bottle's drive_c/<bottleName>
-        if let exe = exePath, !exe.hasPrefix(bottlesRoot) && !isTempTest {
+        if let exe = exePath, !exe.hasPrefix(bottlesRoot) {
             try await checkCancellation()
             let exeDir = (exe as NSString).deletingLastPathComponent
             let driveCDir = (bottlePath as NSString).appendingPathComponent("drive_c")
@@ -107,7 +106,8 @@ package actor CrossOverBottleConfigurator {
                let cxMenu = ToolchainLocator.locateCrossOverBin("cxmenu") {
                 try await checkCancellation()
                 let exeFileName = (exe as NSString).lastPathComponent
-                let vbsPath = "/tmp/chrysa_lnk_\(UUID().uuidString).vbs"
+                let vbsURL = fm.temporaryDirectory.appendingPathComponent("chrysa_lnk_\(UUID().uuidString).vbs")
+                let vbsPath = vbsURL.path
                 let vbsContent = """
                 Set oWS = WScript.CreateObject("WScript.Shell")
                 Set oLink = oWS.CreateShortcut("C:\\users\\crossover\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\\(bottleName).lnk")
@@ -128,35 +128,29 @@ package actor CrossOverBottleConfigurator {
                     try await checkCancellation()
                     _ = try? await supervisor.run(executable: cxMenu, arguments: args, taskID: taskID)
                 }
-                try await checkCancellation()
-                _ = try? await supervisor.run(
-                    executable: "/bin/sh",
-                    arguments: ["-c", "if pgrep -x CrossOver >/dev/null 2>&1; then killall CrossOver && sleep 0.8 && open -g -a /Applications/CrossOver.app; fi"],
-                    taskID: taskID
-                )
+                // Never force-quit or restart CrossOver behind the user's back.
+                // The menu sync applies where possible; otherwise the user can restart it manually.
             }
         }
 
         // 5. Ensure [EnvironmentVariables] in cxbottle.conf has WINEMSYNC=1 (+ d3dmetal / winhttp if detected)
-        if !isTempTest {
-            try await checkCancellation()
-            var confText = try String(contentsOfFile: confPath, encoding: .utf8)
-            var changed = false
-            if !confText.contains("\"WINEMSYNC\"") {
-                confText += "\n\"WINEMSYNC\" = \"1\"\n"
-                changed = true
-            }
-            if hasD3D12 && !confText.contains("\"d3dmetal\"") {
-                confText += "\"CX_GRAPHICS_BACKEND\" = \"d3dmetal\"\n"
-                changed = true
-            }
-            if hasWinHTTP && !confText.contains("winhttp=n,b") {
-                confText += "\"WINEDLLOVERRIDES\" = \"winhttp=n,b\"\n"
-                changed = true
-            }
-            if changed {
-                try confText.write(toFile: confPath, atomically: true, encoding: .utf8)
-            }
+        try await checkCancellation()
+        var confText = try String(contentsOfFile: confPath, encoding: .utf8)
+        var changed = false
+        if !confText.contains("\"WINEMSYNC\"") {
+            confText += "\n\"WINEMSYNC\" = \"1\"\n"
+            changed = true
+        }
+        if hasD3D12 && !confText.contains("\"d3dmetal\"") {
+            confText += "\"CX_GRAPHICS_BACKEND\" = \"d3dmetal\"\n"
+            changed = true
+        }
+        if hasWinHTTP && !confText.contains("winhttp=n,b") {
+            confText += "\"WINEDLLOVERRIDES\" = \"winhttp=n,b\"\n"
+            changed = true
+        }
+        if changed {
+            try confText.write(toFile: confPath, atomically: true, encoding: .utf8)
         }
 
         return bottleName

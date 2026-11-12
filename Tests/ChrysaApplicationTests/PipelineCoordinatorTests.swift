@@ -26,6 +26,9 @@ struct PipelineCoordinatorTests {
         #expect(jobs.count == 1)
         #expect(jobs[0].id == calls[0].2)
         #expect(jobs[0].kind == .patch && jobs[0].status == .succeeded && jobs[0].progress == 1)
+        #expect(jobs[0].source == ArtifactRef(kind: .remoteURL, value: "https://example.test/game.7z"))
+        #expect(jobs[0].input == ArtifactRef(kind: .directory, value: "/published/game"))
+        #expect(jobs[0].sourceURL == "https://example.test/game.7z")
     }
 
     @MainActor
@@ -56,6 +59,40 @@ struct PipelineCoordinatorTests {
         #expect(jobs.count == 2)
         #expect(jobs.contains { $0.id == primaryJob.id && $0.kind == .patch && $0.status == .succeeded })
         #expect(jobs.filter { $0.id != primaryJob.id }.allSatisfy { $0.kind == .download && $0.status == .succeeded })
+    }
+
+    @MainActor
+    @Test
+    func testStoppingFolderPrimaryDoesNotStopRemainingFiles() async throws {
+        let gate = StageGate()
+        let trace = WorkflowTrace()
+        let folderURL = "https://example.test/share"
+        let services = StubWorkflowServices(
+            trace: trace,
+            gate: gate,
+            resolvedDownloads: [
+                ResolvedDownload(originalURL: folderURL, finalURL: "https://cdn.example.test/game.7z", headers: [], suggestedFilename: "game.7z"),
+                ResolvedDownload(originalURL: "https://cdn.example.test/readme.txt", finalURL: "https://cdn.example.test/readme.txt", headers: [], suggestedFilename: "readme.txt")
+            ]
+        )
+        let store = MemoryRepository()
+        let coordinator = PipelineCoordinator(services: services, jobStore: store)
+        coordinator.startDownload(urlString: folderURL, settings: .default)
+        try await waitUntil { await gate.started }
+
+        let jobs = await store.all()
+        try #require(jobs.count == 2)
+        let primary = try #require(jobs.first(where: { $0.sourceURL == folderURL }))
+        let remaining = try #require(jobs.first(where: { $0.title == "readme.txt" }))
+        await coordinator.cancelTask(primary.id)
+        await gate.release()
+        try await waitUntil { await store.job(for: remaining.id)?.status == .succeeded }
+
+        #expect(await store.job(for: primary.id)?.status == .cancelled)
+        #expect(await store.job(for: remaining.id)?.status == .succeeded)
+        let calls = await trace.calls
+        #expect(calls.map(\.0) == ["download", "download"])
+        #expect(calls.last?.2 == remaining.id)
     }
 
     @MainActor
@@ -150,9 +187,11 @@ private actor WorkflowTrace {
 
 private actor StageGate {
     private(set) var started = false
+    private var released = false
     private var completion: CheckedContinuation<Void, Never>?
 
     func pause() async {
+        guard !released else { return }
         await withCheckedContinuation { continuation in
             completion = continuation
             started = true
@@ -160,6 +199,7 @@ private actor StageGate {
     }
 
     func release() {
+        released = true
         completion?.resume()
         completion = nil
     }
@@ -184,6 +224,7 @@ private struct StubWorkflowServices: WorkflowServices {
     let trace: WorkflowTrace
     var downloadResult: StageResult = .success(StageOutput(artifact: ArtifactRef(kind: .file, value: "/published/game (2).7z")))
     var gate: StageGate?
+    var resolvedDownloads: [ResolvedDownload]? = nil
     let resolved = ResolvedDownload(finalURL: "https://example.test/game.7z", headers: [], suggestedFilename: "game.7z")
 
     func downloadStage(title: String, resolved: ResolvedDownload, settings: AppSettings) -> any Stage {
@@ -199,8 +240,9 @@ private struct StubWorkflowServices: WorkflowServices {
         StubStage(id: StageID("launch"), trace: trace, result: .success(StageOutput()))
     }
     func normalizeDownloadInput(_ input: String) -> String? { input }
+    func initialDownloadMessage(for input: String) -> String? { nil }
     func suggestedDownloadName(_ input: String) -> String? { "game.7z" }
-    func resolveDownloads(_ input: String, passwords: [String]) async -> [ResolvedDownload] { [resolved] }
+    func resolveDownloads(_ input: String, passwords: [String]) async -> [ResolvedDownload] { resolvedDownloads ?? [resolved] }
     func refreshDownload(_ item: ResolvedDownload) async -> ResolvedDownload { item }
     func isArchiveFile(_ path: String) -> Bool { path.hasSuffix(".7z") }
     func normalizeArchivePath(_ path: String) -> String { path }
@@ -226,7 +268,7 @@ private actor MemoryRepository: JobRepository {
     func all() -> [Job] { Array(jobs.values) }
     func remove(id: UUID) { jobs[id] = nil }
     func update(
-        id: UUID, kind: JobKind?, status: JobStatus?, progress: Double?, title: String?, source: ArtifactRef?, output: ArtifactRef?,
+        id: UUID, kind: JobKind?, status: JobStatus?, progress: Double?, title: String?, source: ArtifactRef?, input: ArtifactRef?, output: ArtifactRef?,
         message: String?, clearMessage: Bool, rightText: String?, appID: String?, checklist: [CheckItem]?,
         isArchived: Bool?, expanded: Bool?, listPosition: Int?
     ) -> Job? {
@@ -236,6 +278,7 @@ private actor MemoryRepository: JobRepository {
         if let progress { job.progress = progress }
         if let title { job.title = title }
         if let source { job.source = source }
+        if let input { job.input = input }
         if let output { job.output = output }
         if clearMessage { job.message = nil } else if let message { job.message = message }
         if let rightText { job.rightText = rightText }
