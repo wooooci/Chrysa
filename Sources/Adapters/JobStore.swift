@@ -60,7 +60,8 @@ package actor JobStore: JobRepository {
         if let data, let decoded = Self.decodeArchive(data) {
             preserveUnsupportedFile = false
             legacyTaskMigrationCompleted = decoded.legacyTaskMigrationCompleted
-            jobs = Self.normalizeInterruptedJobs(decoded.jobs)
+            let deduped = Job.deduplicatePatchJobs(decoded.jobs.sorted(by: Self.jobOrder))
+            jobs = Self.normalizeInterruptedJobs(deduped)
             if jobs.values.sorted(by: Self.jobOrder) != decoded.jobs.sorted(by: Self.jobOrder) {
                 persist()
             }
@@ -75,7 +76,8 @@ package actor JobStore: JobRepository {
         }
         if let backup, let restored = Self.decodeArchive(backup) {
             legacyTaskMigrationCompleted = restored.legacyTaskMigrationCompleted
-            jobs = Self.normalizeInterruptedJobs(restored.jobs)
+            let deduped = Job.deduplicatePatchJobs(restored.jobs.sorted(by: Self.jobOrder))
+            jobs = Self.normalizeInterruptedJobs(deduped)
             persist()
             print("[persistence] restored jobs from backup: \(fileURL.path).bak")
             return .recovered(all())
@@ -92,13 +94,13 @@ package actor JobStore: JobRepository {
 
         switch await legacyStore.loadResult() {
         case .loaded(let snapshot), .recovered(let snapshot):
-            // Merge by stable ID. This also repairs older valid jobs.json files that were
-            // created before the legacy tasks.json migration completed.
+            // Merge by stable ID and collapse duplicate patch records created before migration completed.
             var merged = Self.indexed(Self.jobs(from: snapshot))
             for current in jobs.values {
                 merged[current.id] = current
             }
-            jobs = merged
+            let deduped = Job.deduplicatePatchJobs(merged.values.sorted(by: Self.jobOrder))
+            jobs = Self.indexed(deduped)
             legacyTaskMigrationCompleted = true
             return persist() ? .migrated(all()) : .migrationPending(all())
         case .missing:

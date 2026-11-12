@@ -6,6 +6,7 @@ package struct MailRuResolver: HostResolver {
     package func canHandle(host: String, url: URL) -> Bool {
         host.contains("cloud.mail.ru")
     }
+    package func proxyNeeds() -> Bool { false }
 
     package func resolve(input: String, url: URL, passwords: [String]) async -> [ResolvedDownload] {
         await Self.resolveMailRu(input: input, url: url)

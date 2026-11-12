@@ -40,6 +40,20 @@ package struct DefaultWorkflowServices: WorkflowServices {
         LaunchGameStage(service: launcher, request: request)
     }
 
+    package func allStages(for kind: JobKind, job: Job, settings: AppSettings) -> [any Stage] {
+        switch kind {
+        case .download:
+            let origin = job.source?.value ?? job.input?.value ?? ""
+            let target = job.input?.value ?? origin
+            let resolved = ResolvedDownload(originalURL: origin, finalURL: target, headers: [], suggestedFilename: job.title)
+            return [downloadStage(title: job.title, resolved: resolved, settings: settings)]
+        case .unpack:
+            return [unpackStage(passwords: [""] + settings.unpack.passwords, deleteArchive: settings.unpack.deleteArchiveAfterUnpack)]
+        case .patch:
+            return [patchStage(title: job.title, settings: settings)]
+        }
+    }
+
     package func normalizeDownloadInput(_ input: String) -> String? {
         HostResolverRegistry.normalizeDownloadInput(input)
     }

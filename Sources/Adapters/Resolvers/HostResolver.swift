@@ -6,10 +6,14 @@ package protocol HostResolver: Sendable {
     func canHandle(host: String, url: URL) -> Bool
     func initialDownloadMessage(for url: URL) -> String?
     func resolve(input: String, url: URL, passwords: [String]) async -> [ResolvedDownload]
+    func proxyNeeds() -> Bool
+    func maxThreads() -> Int
 }
 
 package extension HostResolver {
     func initialDownloadMessage(for url: URL) -> String? { nil }
+    func proxyNeeds() -> Bool { true }
+    func maxThreads() -> Int { 16 }
 }
 
 package enum HostResolverRegistry {
@@ -30,6 +34,17 @@ package enum HostResolverRegistry {
         return plugins.first(where: { $0.canHandle(host: host, url: url) })?.initialDownloadMessage(for: url)
     }
 
+    package static func maxThreads(for urlString: String, configuredMax: Int) -> Int {
+        let clamped = max(1, min(16, configuredMax))
+        if let url = URL(string: urlString), let host = url.host?.lowercased(),
+           let plugin = plugins.first(where: { $0.canHandle(host: host, url: url) }) {
+            return min(plugin.maxThreads(), clamped)
+        }
+        let lower = urlString.lowercased()
+        if lower.contains("fileditch") { return min(2, clamped) }
+        if lower.contains("pixeldrain.com") { return min(4, clamped) }
+        return clamped
+    }
     package static func normalizeDownloadInput(_ raw: String) -> String? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }

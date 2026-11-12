@@ -6,14 +6,9 @@ import AppKit
 struct SettingsView: View {
     @ObservedObject var vm: StudioViewModel
     let isSnapshotMode: Bool
+    @Environment(\.appTheme) private var theme
 
-    @State private var pressingSettingsCategory: SettingsCategory? = nil
     @State private var hoveredSettingsCategory: SettingsCategory? = nil
-
-    private var effectiveSettingsCategory: SettingsCategory {
-        pressingSettingsCategory ?? vm.settingsCategory
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Secondary Category Menu Bar with Magpie `.seg > .thumb` shared gliding capsule
@@ -25,13 +20,13 @@ struct SettingsView: View {
             }
             .backgroundPreferenceValue(SettingsCategoryBoundsKey.self) { bounds in
                 GeometryReader { proxy in
-                    if let anchor = bounds[effectiveSettingsCategory] {
+                    if let anchor = bounds[vm.settingsCategory] {
                         let rect = proxy[anchor]
                         Capsule(style: .continuous)
-                            .fill(Color(red: 0.675, green: 0.706, blue: 0.753))
+                            .fill(theme.accent)
                             .frame(width: rect.width, height: rect.height)
                             .offset(x: rect.minX, y: rect.minY)
-                            .animation(.spring(response: 0.30, dampingFraction: 0.86), value: effectiveSettingsCategory)
+                            .animation(.spring(response: 0.18, dampingFraction: 0.92), value: vm.settingsCategory)
                     }
                 }
             }
@@ -43,7 +38,6 @@ struct SettingsView: View {
                 alignment: .bottom
             )
             .padding(.bottom, 16)
-
             Group {
                 switch vm.settingsCategory {
                 case .appearance:
@@ -56,22 +50,25 @@ struct SettingsView: View {
                     settingsPatchView
                 }
             }
-            .id(vm.settingsCategory)
-            .transition(.opacity.animation(.easeOut(duration: 0.14)))
         }
     }
 
     private func settingsCategoryPill(_ cat: SettingsCategory) -> some View {
-        let isHighlighted = (effectiveSettingsCategory == cat)
+        let isHighlighted = (vm.settingsCategory == cat)
         let isHovered = (hoveredSettingsCategory == cat && !isHighlighted)
 
         return Text(cat.rawValue)
-            .font(.system(size: 12, weight: isHighlighted ? .semibold : .medium))
-            .foregroundColor(
-                isHighlighted
-                    ? .white
-                    : (isHovered ? .t3TextMain : .t3TextSub)
-            )
+            .font(.system(size: 12, weight: .semibold))
+            .opacity(0)
+            .overlay {
+                Text(cat.rawValue)
+                    .font(.system(size: 12, weight: isHighlighted ? .semibold : .medium))
+                    .foregroundColor(
+                        isHighlighted
+                            ? .white
+                            : (isHovered ? .t3TextMain : .t3TextSub)
+                    )
+            }
             .padding(.horizontal, 12)
             .padding(.vertical, 3.5)
             .contentShape(Rectangle())
@@ -83,28 +80,11 @@ struct SettingsView: View {
                     hoveredSettingsCategory = nil
                 }
             }
-            .gesture(
-                DragGesture(minimumDistance: 0, coordinateSpace: .local)
-                    .onChanged { value in
-                        let pillBounds = CGRect(x: -4, y: -4, width: 64, height: 32)
-                        if pillBounds.contains(value.location) {
-                            if pressingSettingsCategory != cat {
-                                pressingSettingsCategory = cat
-                            }
-                        } else if pressingSettingsCategory == cat {
-                            pressingSettingsCategory = nil
-                        }
-                    }
-                    .onEnded { value in
-                        let pillBounds = CGRect(x: -4, y: -4, width: 64, height: 32)
-                        if pillBounds.contains(value.location) {
-                            vm.settingsCategory = cat
-                        }
-                        pressingSettingsCategory = nil
-                    }
-            )
-            .animation(.easeOut(duration: 0.16), value: isHighlighted)
-            .animation(.easeOut(duration: 0.16), value: isHovered)
+            .onInstantPress {
+                if vm.settingsCategory != cat {
+                    vm.settingsCategory = cat
+                }
+            }
     }
 
     // MARK: 1. Appearance Settings
@@ -112,56 +92,76 @@ struct SettingsView: View {
         let columns = Array(repeating: GridItem(.flexible(), spacing: 12), count: 6)
         let selectedID = vm.settingsStore.settings.selectedIconID
         let variant = vm.settingsStore.settings.selectedIconVariant
+        let followTheme = (vm.settingsStore.settings.accentColorMode == .followAppIcon)
 
-        return LazyVGrid(columns: columns, spacing: 12) {
-            ForEach(vm.iconOptions) { opt in
-                let isSelected = (selectedID == opt.id)
-                Button(action: {
-                    vm.selectAppIcon(id: opt.id)
-                }) {
-                    ZStack {
-                        if let nsImg = NSImage(contentsOfFile: vm.iconPreviewPath(id: opt.id, variant: variant)) {
-                            Image(nsImage: nsImg)
-                                .resizable()
-                                .interpolation(.high)
-                                .frame(width: 58, height: 58)
-                        } else {
-                            RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                .fill(Color.t3TopBoxBg)
-                                .frame(width: 58, height: 58)
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 80)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(isSelected ? Color.t3Blue.opacity(0.06) : Color.t3TopBoxBg.opacity(0.65))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .stroke(isSelected ? Color.t3Blue : Color.t3Divider, lineWidth: isSelected ? 1.8 : 1)
-                            )
-                    )
-                    .overlay(alignment: .topTrailing) {
-                        if isSelected {
-                            ZStack {
-                                Circle()
-                                    .fill(Color.t3Blue)
-                                    .frame(width: 16, height: 16)
-                                    .shadow(color: Color.black.opacity(0.15), radius: 2, x: 0, y: 1)
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 8.5, weight: .bold))
-                                    .foregroundColor(.white)
-                            }
-                            .padding(5)
-                        }
-                    }
-                    .contentShape(Rectangle())
+        return VStack(alignment: .leading, spacing: 0) {
+            LazyVGrid(columns: columns, spacing: 12) {
+                ForEach(vm.iconOptions) { opt in
+                    appIconCard(opt, isSelected: selectedID == opt.id, variant: variant)
                 }
-                .buttonStyle(.plain)
+            }
+            .padding(.bottom, 16)
+            .overlay(
+                Rectangle()
+                    .fill(Color.t3Divider)
+                    .frame(height: 1),
+                alignment: .bottom
+            )
+
+            t3SettingRow(title: "跟随主题色") {
+                T3ToggleSwitch(isOn: followTheme)
+            }
+            .contentShape(Rectangle())
+            .onInstantPress {
+                vm.toggleFollowAppIconTheme()
             }
         }
     }
 
+    private func appIconCard(_ opt: AppIconOption, isSelected: Bool, variant: String) -> some View {
+        ZStack {
+            if let nsImg = vm.iconPreviewImage(id: opt.id, variant: variant) {
+                Image(nsImage: nsImg)
+                    .frame(width: 58, height: 58)
+            } else {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(AppThemePalette.logoAccentColor(for: opt.id).opacity(0.16))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 13, style: .continuous)
+                            .stroke(AppThemePalette.logoAccentColor(for: opt.id).opacity(0.40), lineWidth: 1)
+                    )
+                    .frame(width: 58, height: 58)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 80)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(isSelected ? theme.accent.opacity(0.06) : Color.t3TopBoxBg.opacity(0.65))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(isSelected ? theme.accent : Color.t3Divider, lineWidth: isSelected ? 1.8 : 1)
+                )
+        )
+        .overlay(alignment: .topTrailing) {
+            if isSelected {
+                ZStack {
+                    Circle()
+                        .fill(theme.accent)
+                        .frame(width: 16, height: 16)
+                        .shadow(color: Color.black.opacity(0.15), radius: 2, x: 0, y: 1)
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 8.5, weight: .bold))
+                        .foregroundColor(.white)
+                }
+                .padding(5)
+            }
+        }
+        .contentShape(Rectangle())
+        .onInstantPress {
+            vm.selectAppIcon(id: opt.id)
+        }
+    }
     // MARK: 2. Download Settings (Interactive Directory & Concurrent Connections)
     private var settingsDownloadView: some View {
         let dirLabel = vm.settingsStore.settings.displayDownloadDirectory
@@ -252,7 +252,7 @@ struct SettingsView: View {
                 Button(action: { vm.addPassword() }) {
                     Text("+ 添加")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.t3Blue)
+                        .foregroundColor(theme.accent)
                 }
                 .buttonStyle(.plain)
             }
@@ -385,15 +385,14 @@ struct SettingsView: View {
     }
 
     private func t3SettingRow<Trailing: View>(title: String, @ViewBuilder trailing: () -> Trailing) -> some View {
-        HStack(alignment: .center) {
+        HStack(alignment: .center, spacing: 12) {
             Text(title)
                 .font(.system(size: 13.5, weight: .regular))
                 .foregroundColor(.t3TextMain)
             Spacer()
             trailing()
         }
-        .padding(.horizontal, 12)
-        .frame(height: 36)
+        .frame(height: 40)
         .overlay(
             Rectangle()
                 .fill(Color.t3Divider)

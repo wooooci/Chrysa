@@ -34,7 +34,7 @@ package struct ArtifactRef: Codable, Equatable, Sendable {
 /// A single source of truth for one download, unpack, or patch operation.
 package struct Job: Identifiable, Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
-        case id, kind, title, status, progress, source, input, output, message
+        case id, kind, title, status, progress, source, input, output, message, pill
         case rightText, appID, isArchived, expanded, checklist, listPosition, createdAt, updatedAt
     }
 
@@ -52,6 +52,10 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
     /// Most recent successful artifact produced by a stage.
     package var output: ArtifactRef?
     package var message: String?
+    package var pill: String? {
+        get { message }
+        set { message = newValue }
+    }
     package var rightText: String
     package var appID: String?
     package var isArchived: Bool
@@ -73,7 +77,8 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
             source: try container.decodeIfPresent(ArtifactRef.self, forKey: .source),
             input: try container.decodeIfPresent(ArtifactRef.self, forKey: .input),
             output: try container.decodeIfPresent(ArtifactRef.self, forKey: .output),
-            message: try container.decodeIfPresent(String.self, forKey: .message),
+            message: try container.decodeIfPresent(String.self, forKey: .message)
+                ?? container.decodeIfPresent(String.self, forKey: .pill),
             rightText: try container.decodeIfPresent(String.self, forKey: .rightText) ?? "",
             appID: try container.decodeIfPresent(String.self, forKey: .appID),
             isArchived: try container.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false,
@@ -116,6 +121,7 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
         input: ArtifactRef? = nil,
         output: ArtifactRef? = nil,
         message: String? = nil,
+        pill: String? = nil,
         rightText: String = "",
         appID: String? = nil,
         isArchived: Bool = false,
@@ -133,7 +139,7 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
         self.source = source
         self.input = input
         self.output = output
-        self.message = message
+        self.message = message ?? pill
         self.rightText = rightText
         self.appID = appID
         self.isArchived = isArchived
@@ -255,7 +261,6 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
         }
     }
 
-    package var pill: String? { message }
 
     package var sourceURL: String? {
         source?.kind == .remoteURL ? source?.value : nil
@@ -274,6 +279,134 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
 
     package var exePath: String? {
         kind == .patch && output?.kind == .file ? output?.value : nil
+    }
+
+    /// True when this patch record was synthesized by `CrossOverBottleScanner` rather than a direct user pipeline run.
+    package var isScannerDiscoveredPatch: Bool {
+        kind == .patch && input == nil && checklist.contains { $0.title.hasPrefix("CrossOver 容器 [") }
+    }
+
+    package static func normalizedPatchIdentityTitle(_ raw: String) -> String {
+        let folded = raw
+            .lowercased()
+            .replacingOccurrences(of: "‘", with: "'")
+            .replacingOccurrences(of: "’", with: "'")
+        let allowed = CharacterSet.alphanumerics
+        return String(folded.unicodeScalars.filter { allowed.contains($0) })
+    }
+
+    private static func standardizedPath(_ raw: String?) -> String? {
+        guard let raw, !raw.isEmpty else { return nil }
+        return URL(fileURLWithPath: raw).standardizedFileURL.path
+    }
+
+    private var candidatePatchDirectories: [String] {
+        var dirs: [String] = []
+        if input?.kind == .directory, let p = Self.standardizedPath(input?.value) {
+            dirs.append(p)
+        }
+        if source?.kind == .directory, let p = Self.standardizedPath(source?.value), !dirs.contains(p) {
+            dirs.append(p)
+        }
+        return dirs
+    }
+
+    /// Determines whether a newly scanned bottle record refers to the same installed game as an existing patch job.
+    package func matchesDiscoveredPatchBottle(_ discovered: Job) -> Bool {
+        guard kind == .patch, discovered.kind == .patch else { return false }
+
+        let lhsTitle = Self.normalizedPatchIdentityTitle(title)
+        let rhsTitle = Self.normalizedPatchIdentityTitle(discovered.title)
+        if !lhsTitle.isEmpty, lhsTitle == rhsTitle {
+            return true
+        }
+
+        if let lhsExe = Self.standardizedPath(exePath),
+           let rhsExe = Self.standardizedPath(discovered.exePath),
+           lhsExe == rhsExe {
+            return true
+        }
+
+        let lhsDirs = candidatePatchDirectories
+        let rhsDirs = discovered.candidatePatchDirectories
+        for d1 in lhsDirs {
+            for d2 in rhsDirs {
+                if d1 == d2 || d2.hasPrefix(d1 + "/") || d1.hasPrefix(d2 + "/") {
+                    return true
+                }
+            }
+        }
+
+        if let a = appID, let b = discovered.appID, !a.isEmpty, a != "480", a == b {
+            return true
+        }
+
+        return false
+    }
+
+    /// Collapses duplicate `.patch` records produced by legacy migration or bottle scanning while keeping distinct user pipeline runs intact.
+    package static func deduplicatePatchJobs(_ jobs: [Job]) -> [Job] {
+        var result: [Job] = []
+        result.reserveCapacity(jobs.count)
+
+        for candidate in jobs {
+            guard candidate.kind == .patch else {
+                result.append(candidate)
+                continue
+            }
+
+            if let idx = result.firstIndex(where: { existing in
+                guard existing.kind == .patch else { return false }
+                if existing.id == candidate.id { return true }
+
+                // Exact same game directory or exact same executable file on disk
+                if let e1 = standardizedPath(existing.exePath),
+                   let e2 = standardizedPath(candidate.exePath),
+                   e1 == e2 {
+                    return true
+                }
+                let dirs1 = existing.candidatePatchDirectories
+                let dirs2 = candidate.candidatePatchDirectories
+                if !dirs1.isEmpty, !dirs2.isEmpty, dirs1.contains(where: { dirs2.contains($0) }) {
+                    return true
+                }
+
+                // If either entry is a scanner-synthesized bottle record, also match by normalized title / nested game folder / non-480 AppID
+                if existing.isScannerDiscoveredPatch || candidate.isScannerDiscoveredPatch {
+                    return existing.matchesDiscoveredPatchBottle(candidate)
+                }
+                return false
+            }) {
+                result[idx] = mergeDuplicatePatchPair(result[idx], candidate)
+            } else {
+                result.append(candidate)
+            }
+        }
+        return result
+    }
+
+    private static func mergeDuplicatePatchPair(_ lhs: Job, _ rhs: Job) -> Job {
+        // Prefer the direct/migrated user job (which has `input != nil` and detailed patch checklist) over a synthetic scanner job
+        let primary: Job
+        let secondary: Job
+        if lhs.isScannerDiscoveredPatch && !rhs.isScannerDiscoveredPatch {
+            primary = rhs
+            secondary = lhs
+        } else {
+            primary = lhs
+            secondary = rhs
+        }
+
+        var merged = primary
+        if merged.source == nil { merged.source = secondary.source }
+        if merged.input == nil { merged.input = secondary.input }
+        if merged.output == nil { merged.output = secondary.output }
+        if merged.appID == nil || merged.appID?.isEmpty == true { merged.appID = secondary.appID }
+        if merged.checklist.isEmpty { merged.checklist = secondary.checklist }
+        merged.isArchived = lhs.isArchived || rhs.isArchived
+        merged.expanded = lhs.expanded || rhs.expanded
+        merged.listPosition = min(lhs.listPosition, rhs.listPosition)
+        return merged
     }
 
     package static func clampedProgress(_ value: Double) -> Double {

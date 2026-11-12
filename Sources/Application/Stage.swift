@@ -95,11 +95,13 @@ package enum StageResult: Sendable, Equatable {
 package enum StageError: LocalizedError, Equatable, Sendable {
     case missingInput(stage: StageID)
     case unavailable(stage: StageID)
+    case cancelled
 
     package var errorDescription: String? {
         switch self {
         case .missingInput(let stage): return "Stage \(stage) requires an input artifact"
         case .unavailable(let stage): return "Stage \(stage) is not registered"
+        case .cancelled: return "Stage execution was cancelled"
         }
     }
 }

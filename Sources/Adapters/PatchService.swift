@@ -318,7 +318,11 @@ package actor PatchService {
                 }
                 if let countryRegex = try? NSRegularExpression(pattern: #"(?m)^ip_country\s*=\s*[^\r\n]+"#) {
                     let range = NSRange(existingCfg.startIndex..., in: existingCfg)
-                    existingCfg = countryRegex.stringByReplacingMatches(in: existingCfg, range: range, withTemplate: "ip_country=\(countryValue)")
+                    if countryRegex.firstMatch(in: existingCfg, range: range) != nil {
+                        existingCfg = countryRegex.stringByReplacingMatches(in: existingCfg, range: range, withTemplate: "ip_country=\(countryValue)")
+                    } else {
+                        existingCfg += (existingCfg.hasSuffix("\n") ? "" : "\n") + "ip_country=\(countryValue)\n"
+                    }
                 }
                 try writer.write(existingCfg, to: cfgFile)
             } else {
@@ -346,13 +350,14 @@ package actor PatchService {
         let bottleReady = configuredBottle != "Default" && fm.fileExists(atPath: bottlePath)
         let gfxDesc = hasD3D12 ? "D3DMetal" : "DXMT"
         let dllOverrideDesc = hasWinHTTP ? " + winhttp" : ""
+        let primaryDLLLabel = patchModePill.hasSuffix("x86") ? "steam_api.dll" : "steam_api64.dll"
         let checklist: [CheckItem] = isStandalonePatchPack
             ? [
                 CheckItem(title: "Goldberg 补丁 (\(finalAppID)) · 已切换\(langShort)配置", isChecked: true),
                 CheckItem(title: "独立补丁包 (不含主程序 .exe，请覆盖至游戏目录)", isChecked: true)
             ]
             : [
-                CheckItem(title: "steam_api64.dll ➔ Goldberg (\(finalAppID)) · \(langShort)", isChecked: true),
+                CheckItem(title: "\(primaryDLLLabel) ➔ Goldberg (\(finalAppID)) · \(langShort)", isChecked: true),
                 CheckItem(title: "CrossOver 容器环境 (\(gfxDesc) + MSync\(dllOverrideDesc))", isChecked: bottleReady)
             ]
 

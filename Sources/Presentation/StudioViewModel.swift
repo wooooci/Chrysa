@@ -38,6 +38,11 @@ package final class StudioViewModel: ObservableObject {
 
     package var iconOptions: [AppIconOption] { settingsStore.iconOptions }
     package var passwords: [String] { settingsStore.settings.passwords }
+    package var themePalette: AppThemePalette { AppThemePalette.resolve(settings: settingsStore.settings) }
+    package var accentColorMode: AccentColorMode {
+        get { settingsStore.settings.accentColorMode }
+        set { settingsStore.settings.accentColorMode = newValue }
+    }
     package var autoRelay: Bool {
         get { settingsStore.settings.autoRelay }
         set { settingsStore.settings.autoRelay = newValue }
@@ -78,6 +83,7 @@ package final class StudioViewModel: ObservableObject {
         } else {
             canWriteJobs = false
             appendLog("daemon ▸ 引擎就绪 (aria2c + 7zz + gbe_fork + CrossOver 动态扫描)", highlight: false)
+            resolvedSettings.warmPreviewCache()
             _ = resolvedSettings.applyAppIcon(
                 id: resolvedSettings.settings.selectedIconID,
                 variant: resolvedSettings.settings.selectedIconVariant
@@ -173,13 +179,27 @@ package final class StudioViewModel: ObservableObject {
     // MARK: - Settings Intents
     package func selectAppIcon(id: String, variant: String? = nil) {
         let targetVariant = variant ?? settingsStore.settings.selectedIconVariant
-        if let opt = settingsStore.applyAppIcon(id: id, variant: targetVariant) {
-            appendLog("icon ▸ 已切换应用图标: \(opt.title) (微调版 \(targetVariant))", highlight: true)
+        guard settingsStore.settings.selectedIconID != id || settingsStore.settings.selectedIconVariant != targetVariant else {
+            return
         }
+        _ = settingsStore.applyAppIcon(id: id, variant: targetVariant)
+    }
+
+    package func setAccentColorMode(_ mode: AccentColorMode) {
+        guard settingsStore.settings.accentColorMode != mode else { return }
+        settingsStore.settings.accentColorMode = mode
+    }
+    package func toggleFollowAppIconTheme() {
+        let next: AccentColorMode = (settingsStore.settings.accentColorMode == .followAppIcon) ? .monochrome : .followAppIcon
+        setAccentColorMode(next)
     }
 
     package func iconPreviewPath(id: String, variant: String) -> String {
         settingsStore.iconPreviewPath(id: id, variant: variant)
+    }
+
+    package func iconPreviewImage(id: String, variant: String) -> NSImage? {
+        settingsStore.iconPreviewImage(id: id, variant: variant)
     }
 
     package func toggleAutoRelay() {
@@ -417,7 +437,16 @@ package final class StudioViewModel: ObservableObject {
     package func beginEditTask(_ task: StudioTask) {
         editingTask = task
         editTitleInput = task.title
-        editPathOrURLInput = task.sourceURL ?? task.localPath ?? ""
+        if let job = jobs.first(where: { $0.id == task.id }) {
+            switch job.kind {
+            case .download:
+                editPathOrURLInput = task.sourceURL ?? task.localPath ?? ""
+            case .unpack, .patch:
+                editPathOrURLInput = task.localPath ?? task.sourceURL ?? ""
+            }
+        } else {
+            editPathOrURLInput = task.sourceURL ?? task.localPath ?? ""
+        }
     }
 
     package func saveEditedTask(andRetry: Bool) {
@@ -431,12 +460,19 @@ package final class StudioViewModel: ObservableObject {
         if !newTitle.isEmpty { job.title = newTitle }
         if !newTarget.isEmpty {
             let artifactKind: ArtifactKind = job.kind == .download ? .remoteURL : job.kind == .unpack ? .file : .directory
-            job.source = ArtifactRef(kind: artifactKind, value: newTarget)
+            let updatedRef = ArtifactRef(kind: artifactKind, value: newTarget)
+            if job.kind == .download || job.source?.kind != .remoteURL {
+                job.source = updatedRef
+            }
+            job.input = updatedRef
+            if job.kind == .unpack && job.status == .succeeded {
+                job.output = ArtifactRef(kind: .directory, value: newTarget)
+            }
         }
         editingTask = nil
         appendLog("edit ▸ 已更新\(Self.taskTypeName(job.kind))项目: \(job.title)", highlight: false)
         Task {
-            await coordinator.updateJob(job.id, title: job.title, source: job.source)
+            await coordinator.updateJob(job.id, title: job.title, source: job.source, input: job.input, output: job.output)
             if andRetry {
                 await coordinator.removeJob(job.id)
                 retry(job)
@@ -499,11 +535,17 @@ package final class StudioViewModel: ObservableObject {
     private func retry(_ job: Job) {
         switch job.kind {
         case .download:
-            startDownload(urlString: job.sourceURL ?? job.title)
+            startDownload(urlString: job.sourceURL ?? job.input?.value ?? job.title)
         case .unpack:
-            if let path = job.source?.value, !path.isEmpty { startUnpack(filePath: path) }
+            let target = (job.input?.kind == .file ? job.input?.value : nil)
+                ?? (job.source?.kind == .file ? job.source?.value : nil)
+                ?? job.localPath
+            if let path = target, !path.isEmpty { startUnpack(filePath: path) }
         case .patch:
-            if let path = job.source?.value, !path.isEmpty { startPatch(folderPath: path) }
+            let target = (job.input?.kind == .directory ? job.input?.value : nil)
+                ?? (job.source?.kind == .directory ? job.source?.value : nil)
+                ?? job.localPath
+            if let path = target, !path.isEmpty { startPatch(folderPath: path) }
         }
     }
 
@@ -524,19 +566,21 @@ package final class StudioViewModel: ObservableObject {
     }
 
     // MARK: - Logging & Showcase Seed
+    private static let logTimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+
     package func appendLog(_ text: String, highlight: Bool = false) {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        let tStr = formatter.string(from: Date())
+        let tStr = Self.logTimeFormatter.string(from: Date())
         let entry = LogEntry(time: tStr, message: text, highlight: highlight)
         logs.append(entry)
         if logs.count > 200 {
             logs.removeFirst(logs.count - 200)
         }
         print("[\(tStr)] \(text)")
-        fflush(stdout)
     }
-
     package func clearLogs() {
         logs.removeAll()
     }

@@ -67,7 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
-        window.isMovableByWindowBackground = true
+        window.isMovableByWindowBackground = false
         window.center()
         window.contentView = NSHostingView(rootView: contentView)
         window.makeKeyAndOrderFront(nil)
@@ -114,6 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             await ProcessSupervisor.shared.terminateAll()
             await vmRef?.flushTasksImmediately()
+            vmRef?.settingsStore.flushPendingPersistence()
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
@@ -340,7 +341,8 @@ struct ChrysaAppMain {
         try? "312520\n".write(toFile: "\(gogMock)/steam_appid.txt", atomically: true, encoding: .utf8)
 
         var customSettings = AppSettings.default
-        customSettings.defaultLanguage = .tchinese
+        customSettings.patch.defaultLanguage = .tchinese
+        customSettings.patch.bottlesDirectory = tmpDir.appendingPathComponent("absent-bottles").path
         let patchSvc = PatchService()
         let patchRes = try! await patchSvc.executePatch(
             taskID: UUID(),
@@ -365,6 +367,7 @@ struct ChrysaAppMain {
         let vm = AppComposition.makeViewModel(inMemoryOnly: true)
         vm.activeTab = .settings
         vm.autoRelay = true
+        vm.settingsStore.settings.patch.bottlesDirectory = tmpDir.appendingPathComponent("absent-bottles").path
         let silentArchiveDir = tmpDir.appendingPathComponent("silent-relay-source").path
         let silentArchive = tmpDir.appendingPathComponent("silent-relay.7z").path
         try? FileManager.default.createDirectory(atPath: silentArchiveDir, withIntermediateDirectories: true)
@@ -419,6 +422,7 @@ struct ChrysaAppMain {
     private static func runLocalPipelineSelfTest(url: String, directory: URL) async {
         let vm = AppComposition.makeViewModel(inMemoryOnly: true)
         vm.settingsStore.settings.download.downloadDirectory = directory.appendingPathComponent("downloads").path
+        vm.settingsStore.settings.patch.bottlesDirectory = directory.appendingPathComponent("absent-bottles").path
         vm.settingsStore.settings.unpack.autoRelay = true
         vm.activeTab = .settings
         vm.startDownload(urlString: url)
@@ -469,6 +473,7 @@ struct ChrysaAppMain {
         let vm = AppComposition.makeViewModel(inMemoryOnly: true)
         let root = directory.appendingPathComponent("folder-downloads", isDirectory: true)
         vm.settingsStore.settings.download.downloadDirectory = root.path
+        vm.settingsStore.settings.patch.bottlesDirectory = directory.appendingPathComponent("absent-bottles").path
         vm.autoRelay = true
         vm.settingsStore.settings.unpack.deleteArchiveAfterUnpack = false
         vm.activeTab = .settings

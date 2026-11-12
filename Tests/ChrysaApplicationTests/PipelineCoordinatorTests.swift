@@ -63,6 +63,29 @@ struct PipelineCoordinatorTests {
 
     @MainActor
     @Test
+    func testFolderDownloadWaitsForAllMultipartVolumesBeforeUnpack() async throws {
+        let trace = WorkflowTrace()
+        let services = StubWorkflowServices(trace: trace)
+        let store = MemoryRepository()
+        let coordinator = PipelineCoordinator(services: services, jobStore: store)
+        let primaryJob = Job(kind: .download, title: "game.part1.rar", status: .running)
+        await coordinator.addJob(primaryJob)
+
+        await coordinator.runFolderDownloadPipeline(
+            firstTaskID: primaryJob.id,
+            guessedName: "game.part1.rar",
+            items: [
+                ResolvedDownload(finalURL: "https://example.test/game.part1.rar", headers: [], suggestedFilename: "game.part1.rar"),
+                ResolvedDownload(finalURL: "https://example.test/game.part2.rar", headers: [], suggestedFilename: "game.part2.rar")
+            ],
+            settings: .default
+        )
+
+        let calls = await trace.calls
+        #expect(calls.map(\.0) == ["download", "download", "unpack", "patch"])
+    }
+    @MainActor
+    @Test
     func testStoppingFolderPrimaryDoesNotStopRemainingFiles() async throws {
         let gate = StageGate()
         let trace = WorkflowTrace()
@@ -239,12 +262,20 @@ private struct StubWorkflowServices: WorkflowServices {
     func launchStage(request: GameLaunchRequest) -> any Stage {
         StubStage(id: StageID("launch"), trace: trace, result: .success(StageOutput()))
     }
+
+    func allStages(for kind: JobKind, job: Job, settings: AppSettings) -> [any Stage] {
+        switch kind {
+        case .download: return [downloadStage(title: job.title, resolved: resolved, settings: settings)]
+        case .unpack: return [unpackStage(passwords: [], deleteArchive: false)]
+        case .patch: return [patchStage(title: job.title, settings: settings)]
+        }
+    }
     func normalizeDownloadInput(_ input: String) -> String? { input }
     func initialDownloadMessage(for input: String) -> String? { nil }
     func suggestedDownloadName(_ input: String) -> String? { "game.7z" }
     func resolveDownloads(_ input: String, passwords: [String]) async -> [ResolvedDownload] { resolvedDownloads ?? [resolved] }
     func refreshDownload(_ item: ResolvedDownload) async -> ResolvedDownload { item }
-    func isArchiveFile(_ path: String) -> Bool { path.hasSuffix(".7z") }
+    func isArchiveFile(_ path: String) -> Bool { path.hasSuffix(".7z") || path.hasSuffix(".rar") }
     func normalizeArchivePath(_ path: String) -> String { path }
     func fileSize(_ path: String) -> Int64? { nil }
     func fileExists(_ path: String) -> Bool { true }

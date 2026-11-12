@@ -32,11 +32,14 @@ package struct ThingsStudioMainView: View {
         }
         .frame(minWidth: 820, minHeight: 560)
         .background(Color.white)
+        .environment(\.appTheme, vm.themePalette)
         .onDrop(of: [.fileURL, .plainText, .url], isTargeted: nil) { providers in
             vm.handleDroppedProviders(providers)
         }
         .sheet(item: $vm.editingTask) { task in
             EditTaskSheetView(vm: vm, task: task)
+                .environment(\.appTheme, vm.themePalette)
+                .tint(vm.themePalette.accent)
         }
     }
 
@@ -56,8 +59,6 @@ package struct ThingsStudioMainView: View {
                         TaskListSectionView(vm: vm, isSnapshotMode: isSnapshotMode)
                     }
                 }
-                .id(vm.activeTab)
-                .transition(.opacity.animation(.easeOut(duration: 0.16)))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
                 if vm.activeTab != .settings {
@@ -88,7 +89,7 @@ package struct ThingsStudioMainView: View {
                 vm.settingsCategory = .unpack
             }) {
                 Image(systemName: "tag")
-                    .foregroundColor(vm.activeTab == .settings && vm.settingsCategory == .unpack ? .t3Blue : .t3TextSub)
+                    .foregroundColor(vm.activeTab == .settings && vm.settingsCategory == .unpack ? vm.themePalette.accent : .t3TextSub)
             }
             .buttonStyle(.plain)
 
@@ -106,7 +107,7 @@ package struct ThingsStudioMainView: View {
                 vm.activeTab = .settings
             }) {
                 Image(systemName: "slider.horizontal.3")
-                    .foregroundColor(vm.activeTab == .settings ? .t3Blue : .t3TextSub)
+                    .foregroundColor(vm.activeTab == .settings ? vm.themePalette.accent : .t3TextSub)
             }
             .buttonStyle(.plain)
         }

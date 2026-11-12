@@ -11,6 +11,7 @@ package struct FileDitchResolver: HostResolver {
         "优选分流 (约10s)"
     }
 
+    package func maxThreads() -> Int { 2 }
     package func resolve(input: String, url: URL, passwords: [String]) async -> [ResolvedDownload] {
         let filename = url.lastPathComponent
         if let decoded = HostResolverRegistry.decodeBase64FilenameIfPossible(filename) {

@@ -6,16 +6,15 @@ import AppKit
 struct PageHeaderView: View {
     @ObservedObject var vm: StudioViewModel
     let isSnapshotMode: Bool
+    @Environment(\.appTheme) private var theme
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            T3SidebarIcon(tab: vm.activeTab, size: 23)
-                .frame(width: 24, height: 24, alignment: .center)
+        HStack(alignment: .center, spacing: 9) {
+            T3SidebarIcon(tab: vm.activeTab, placement: .pageHeader)
 
             Text(tabTitle)
                 .font(.system(size: 24, weight: .bold))
                 .foregroundColor(.t3TextMain)
-
             if vm.activeTab != .settings && !isSnapshotMode {
                 Menu {
                     Button(action: { vm.archiveAllCompletedInActiveTab() }) {
@@ -62,7 +61,7 @@ struct PageHeaderView: View {
                         .background(
                             Capsule().fill(
                                 vm.showArchived
-                                    ? Color.t3Blue
+                                    ? theme.accent
                                     : Color.t3TopBoxBg
                             )
                         )
@@ -86,7 +85,7 @@ struct TaskListSectionView: View {
     @ObservedObject var vm: StudioViewModel
     let isSnapshotMode: Bool
     @State private var pendingDeletion: PendingDeletion?
-
+    @Environment(\.appTheme) private var theme
     private struct PendingDeletion: Identifiable {
         let id = UUID()
         let task: StudioTask
@@ -153,7 +152,7 @@ struct TaskListSectionView: View {
             }) {
                 Text(activeTabActionTitle)
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.t3Blue)
+                    .foregroundColor(theme.accent)
             }
             .buttonStyle(.plain)
         }
@@ -228,11 +227,11 @@ struct TaskListSectionView: View {
                                     Text("重试")
                                         .font(.system(size: 11, weight: .semibold))
                                 }
-                                .foregroundColor(.t3Blue)
+                                .foregroundColor(theme.accent)
                                 .padding(.horizontal, 7)
                                 .padding(.vertical, 2)
                                 .background(
-                                    Capsule().fill(Color.t3Blue.opacity(0.10))
+                                    Capsule().fill(theme.accent.opacity(0.10))
                                 )
                             }
                             .buttonStyle(.plain)
@@ -258,7 +257,7 @@ struct TaskListSectionView: View {
                             Button(action: { vm.launchGame(row) }) {
                                 Text(row.rightText)
                                     .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
-                                    .foregroundColor(.t3Blue)
+                                    .foregroundColor(theme.accent)
                             }
                             .buttonStyle(.plain)
                         } else {
@@ -303,7 +302,7 @@ struct TaskListSectionView: View {
                                 HStack(alignment: .center, spacing: 8) {
                                     ZStack {
                                         RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                            .fill(item.isChecked ? Color.t3Blue : Color.white)
+                                            .fill(item.isChecked ? theme.accent : Color.white)
                                             .frame(width: 12, height: 12)
                                         if !item.isChecked {
                                             RoundedRectangle(cornerRadius: 3, style: .continuous)
@@ -420,13 +419,14 @@ struct TaskListSectionView: View {
 
 struct LogBoxSectionView: View {
     @ObservedObject var vm: StudioViewModel
+    @Environment(\.appTheme) private var theme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center) {
                 Text("日志")
                     .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(.t3Blue)
+                    .foregroundColor(theme.accent)
                 Spacer()
                 Button(action: { vm.clearLogs() }) {
                     Image(systemName: "ellipsis")
@@ -450,7 +450,7 @@ struct LogBoxSectionView: View {
                         Text(line.time)
                             .foregroundColor(.t3TextMuted)
                         Text(line.message)
-                            .foregroundColor(line.highlight ? .t3Blue : .t3TextSub)
+                            .foregroundColor(line.highlight ? theme.accent : .t3TextSub)
                             .lineLimit(1)
                         Spacer()
                     }

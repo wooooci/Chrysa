@@ -116,4 +116,8 @@ private struct GatedBottleScanServices: WorkflowServices {
     func deleteDownloadedFile(_ path: String, downloadDirectory: String) throws -> Bool {
         try base.deleteDownloadedFile(path, downloadDirectory: downloadDirectory)
     }
+
+    func allStages(for kind: JobKind, job: Job, settings: AppSettings) -> [any Stage] {
+        base.allStages(for: kind, job: job, settings: settings)
+    }
 }

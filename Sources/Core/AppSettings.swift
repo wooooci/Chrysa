@@ -1,16 +1,54 @@
 import Foundation
 
+package enum AccentColorMode: String, CaseIterable, Codable, Equatable, Sendable, Identifiable {
+    case monochrome = "monochrome"
+    case followAppIcon = "followAppIcon"
+
+    package var id: String { rawValue }
+
+    package var displayName: String {
+        switch self {
+        case .monochrome:
+            return "基础纯黑"
+        case .followAppIcon:
+            return "跟随 Logo 主题色"
+        }
+    }
+}
+
 package struct AppearanceSettings: Codable, Equatable, Sendable {
+    private enum CodingKeys: String, CodingKey {
+        case selectedIconID
+        case selectedIconVariant
+        case accentColorMode
+    }
+
     package var selectedIconID: String
     package var selectedIconVariant: String
+    package var accentColorMode: AccentColorMode
 
-    package init(selectedIconID: String = "dark_nebula", selectedIconVariant: String = "B") {
+    package init(
+        selectedIconID: String = "dark_nebula",
+        selectedIconVariant: String = "B",
+        accentColorMode: AccentColorMode = .monochrome
+    ) {
         self.selectedIconID = selectedIconID
         self.selectedIconVariant = selectedIconVariant
+        self.accentColorMode = accentColorMode
+    }
+
+    package init(from decoder: Decoder) throws {
+        let defaults = AppearanceSettings()
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        selectedIconID = try container.decodeIfPresent(String.self, forKey: .selectedIconID) ?? defaults.selectedIconID
+        selectedIconVariant = try container.decodeIfPresent(String.self, forKey: .selectedIconVariant) ?? defaults.selectedIconVariant
+        accentColorMode = (try? container.decodeIfPresent(AccentColorMode.self, forKey: .accentColorMode)) ?? defaults.accentColorMode
     }
 }
 
 package struct DownloadSettings: Codable, Equatable, Sendable {
+    private enum CodingKeys: String, CodingKey { case downloadDirectory, maxConcurrentConnections }
+
     package var downloadDirectory: String
     package var maxConcurrentConnections: Int
 
@@ -21,9 +59,18 @@ package struct DownloadSettings: Codable, Equatable, Sendable {
         self.downloadDirectory = downloadDirectory
         self.maxConcurrentConnections = maxConcurrentConnections
     }
+
+    package init(from decoder: Decoder) throws {
+        let defaults = DownloadSettings()
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        downloadDirectory = try container.decodeIfPresent(String.self, forKey: .downloadDirectory) ?? defaults.downloadDirectory
+        maxConcurrentConnections = try container.decodeIfPresent(Int.self, forKey: .maxConcurrentConnections) ?? defaults.maxConcurrentConnections
+    }
 }
 
 package struct UnpackSettings: Codable, Equatable, Sendable {
+    private enum CodingKeys: String, CodingKey { case autoRelay, deleteArchiveAfterUnpack, passwords }
+
     package var autoRelay: Bool
     package var deleteArchiveAfterUnpack: Bool
     package var passwords: [String]
@@ -37,9 +84,19 @@ package struct UnpackSettings: Codable, Equatable, Sendable {
         self.deleteArchiveAfterUnpack = deleteArchiveAfterUnpack
         self.passwords = passwords
     }
+
+    package init(from decoder: Decoder) throws {
+        let defaults = UnpackSettings()
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        autoRelay = try container.decodeIfPresent(Bool.self, forKey: .autoRelay) ?? defaults.autoRelay
+        deleteArchiveAfterUnpack = try container.decodeIfPresent(Bool.self, forKey: .deleteArchiveAfterUnpack) ?? defaults.deleteArchiveAfterUnpack
+        passwords = try container.decodeIfPresent([String].self, forKey: .passwords) ?? defaults.passwords
+    }
 }
 
 package struct PatchSettings: Codable, Equatable, Sendable {
+    private enum CodingKeys: String, CodingKey { case bottlesDirectory, defaultLanguage }
+
     package var bottlesDirectory: String
     package var defaultLanguage: SteamLanguageOption
 
@@ -49,6 +106,13 @@ package struct PatchSettings: Codable, Equatable, Sendable {
     ) {
         self.bottlesDirectory = bottlesDirectory
         self.defaultLanguage = defaultLanguage
+    }
+
+    package init(from decoder: Decoder) throws {
+        let defaults = PatchSettings()
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        bottlesDirectory = try container.decodeIfPresent(String.self, forKey: .bottlesDirectory) ?? defaults.bottlesDirectory
+        defaultLanguage = (try? container.decodeIfPresent(SteamLanguageOption.self, forKey: .defaultLanguage)) ?? defaults.defaultLanguage
     }
 }
 
@@ -67,6 +131,7 @@ package struct AppSettings: Codable, Equatable, Sendable {
         case defaultLanguage
         case selectedIconID
         case selectedIconVariant
+        case accentColorMode
         case passwords
     }
 
@@ -115,6 +180,10 @@ package struct AppSettings: Codable, Equatable, Sendable {
         set { appearance.selectedIconVariant = newValue }
     }
 
+    package var accentColorMode: AccentColorMode {
+        get { appearance.accentColorMode }
+        set { appearance.accentColorMode = newValue }
+    }
     package var passwords: [String] {
         get { unpack.passwords }
         set { unpack.passwords = newValue }
@@ -141,9 +210,14 @@ package struct AppSettings: Codable, Equatable, Sendable {
         defaultLanguage: SteamLanguageOption,
         selectedIconID: String,
         selectedIconVariant: String,
+        accentColorMode: AccentColorMode = .monochrome,
         passwords: [String]
     ) {
-        self.appearance = AppearanceSettings(selectedIconID: selectedIconID, selectedIconVariant: selectedIconVariant)
+        self.appearance = AppearanceSettings(
+            selectedIconID: selectedIconID,
+            selectedIconVariant: selectedIconVariant,
+            accentColorMode: accentColorMode
+        )
         self.download = DownloadSettings(downloadDirectory: downloadDirectory, maxConcurrentConnections: maxConcurrentConnections)
         self.unpack = UnpackSettings(autoRelay: autoRelay, deleteArchiveAfterUnpack: deleteArchiveAfterUnpack, passwords: passwords)
         self.patch = PatchSettings(bottlesDirectory: bottlesDirectory, defaultLanguage: defaultLanguage)
@@ -162,7 +236,8 @@ package struct AppSettings: Codable, Equatable, Sendable {
             ?? decodedAppearance?.selectedIconID ?? defaults.selectedIconID
         let iconVariant = try container.decodeIfPresent(String.self, forKey: .selectedIconVariant)
             ?? decodedAppearance?.selectedIconVariant ?? defaults.selectedIconVariant
-
+        let accentMode = (try? container.decodeIfPresent(AccentColorMode.self, forKey: .accentColorMode))
+            ?? decodedAppearance?.accentColorMode ?? defaults.accentColorMode
         let dlDir = try container.decodeIfPresent(String.self, forKey: .downloadDirectory)
             ?? decodedDownload?.downloadDirectory ?? defaults.downloadDirectory
         let maxConn = try container.decodeIfPresent(Int.self, forKey: .maxConcurrentConnections)
@@ -189,6 +264,7 @@ package struct AppSettings: Codable, Equatable, Sendable {
             defaultLanguage: lang,
             selectedIconID: iconID,
             selectedIconVariant: iconVariant,
+            accentColorMode: accentMode,
             passwords: pwds
         )
     }

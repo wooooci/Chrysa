@@ -6,6 +6,8 @@ package struct VikingFileResolver: HostResolver {
     package func canHandle(host: String, url: URL) -> Bool {
         host.contains("vikingfile.com")
     }
+    package func proxyNeeds() -> Bool { false }
+    package func maxThreads() -> Int { 8 }
 
     package func resolve(input: String, url: URL, passwords: [String]) async -> [ResolvedDownload] {
         var dURL = input
@@ -68,6 +70,7 @@ package struct PixeldrainResolver: HostResolver {
         let parts = url.pathComponents.filter { $0 != "/" }
         return host.contains("pixeldrain.com") && parts.count >= 2 && (parts[0] == "u" || parts[0] == "l")
     }
+    package func maxThreads() -> Int { 4 }
 
     package func resolve(input: String, url: URL, passwords: [String]) async -> [ResolvedDownload] {
         let parts = url.pathComponents.filter { $0 != "/" }
@@ -104,6 +107,7 @@ package struct BuzzheavierResolver: HostResolver {
     package func canHandle(host: String, url: URL) -> Bool {
         host.contains("buzzheavier.com")
     }
+    package func proxyNeeds() -> Bool { false }
 
     package func resolve(input: String, url: URL, passwords: [String]) async -> [ResolvedDownload] {
         let parts = url.pathComponents.filter { $0 != "/" }

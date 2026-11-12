@@ -16,6 +16,9 @@ package struct GofileResolver: HostResolver {
         return await Self.resolveGofileList(contentId: parts[1], passwords: passwords)
     }
 
+    package func proxyNeeds() -> Bool { true }
+    package func maxThreads() -> Int { 16 }
+
     private static func sha256HexString(_ input: String) -> String {
         let digest = SHA256.hash(data: Data(input.utf8))
         return digest.map { String(format: "%02x", $0) }.joined()

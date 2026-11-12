@@ -6,17 +6,7 @@ struct SidebarView: View {
     @ObservedObject var vm: StudioViewModel
     let isSnapshotMode: Bool
 
-    // Magpie-style `.nav-top-hl` follower state:
-    // - Immediate pointer-down pre-glide (`onpointerdown` -> glide to pressed tab; drag out -> spring back)
-    // - `navlamp.js` continuous pointer torch on hovered sidebar rows
-    @State private var pressingSidebarTab: StudioTab? = nil
     @State private var hoveredSidebarTab: StudioTab? = nil
-    @State private var hoverSidebarX: CGFloat = 45
-
-    private var effectiveSidebarTab: StudioTab {
-        pressingSidebarTab ?? vm.activeTab
-    }
-
     private var topBarHeight: CGFloat {
         isSnapshotMode ? 38 : 10
     }
@@ -55,13 +45,13 @@ struct SidebarView: View {
             .padding(.horizontal, 10)
             .backgroundPreferenceValue(SidebarTabBoundsKey.self) { bounds in
                 GeometryReader { proxy in
-                    if let anchor = bounds[effectiveSidebarTab] {
+                    if let anchor = bounds[vm.activeTab] {
                         let rect = proxy[anchor]
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .fill(Color.t3SidebarActive)
                             .frame(width: rect.width, height: rect.height)
                             .offset(x: rect.minX, y: rect.minY)
-                            .animation(.spring(response: 0.42, dampingFraction: 0.84), value: effectiveSidebarTab)
+                            .animation(.spring(response: 0.18, dampingFraction: 0.92), value: vm.activeTab)
                     }
                 }
             }
@@ -72,46 +62,36 @@ struct SidebarView: View {
                 .fill(Color.t3SidebarBorder)
                 .frame(height: 1)
 
-            Button(action: {
-                vm.toggleAutoRelay()
-            }) {
-                HStack(alignment: .center, spacing: 0) {
-                    Text("自动流转")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(.t3TextSub)
-                    Spacer()
-                    T3ToggleSwitch(isOn: vm.settingsStore.settings.autoRelay)
-                }
-                .padding(.horizontal, 18)
-                .frame(height: 40)
-                .contentShape(Rectangle())
+            HStack(alignment: .center, spacing: 0) {
+                Text("自动流转")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.t3TextSub)
+                Spacer()
+                T3ToggleSwitch(isOn: vm.settingsStore.settings.autoRelay)
             }
-            .buttonStyle(.plain)
+            .padding(.horizontal, 18)
+            .frame(height: 40)
+            .contentShape(Rectangle())
+            .onInstantPress {
+                vm.toggleAutoRelay()
+            }
         }
         .background(Color.t3SidebarBg)
     }
 
     private func sidebarRow(tab: StudioTab, title: String, count: String) -> some View {
-        let isHighlighted = (effectiveSidebarTab == tab)
+        let isHighlighted = (vm.activeTab == tab)
         let isHovered = (hoveredSidebarTab == tab && !isHighlighted)
 
-        return HStack(alignment: .center, spacing: 9) {
-            T3SidebarIcon(tab: tab, size: 17)
-                .frame(width: 18, height: 18, alignment: .center)
+        return HStack(alignment: .center, spacing: 8) {
+            T3SidebarIcon(tab: tab, placement: .sidebar(isActive: isHighlighted))
 
             Text(title)
                 .font(.system(size: 14.5, weight: isHighlighted ? .semibold : .medium))
-                .foregroundStyle(
-                    isHovered
-                        ? AnyShapeStyle(
-                            RadialGradient(
-                                colors: [Color.black, Color.t3TextMain.opacity(0.88)],
-                                center: UnitPoint(x: min(max((hoverSidebarX - 35) / 60, 0), 1), y: 0.5),
-                                startRadius: 2,
-                                endRadius: 42
-                            )
-                        )
-                        : AnyShapeStyle(isHighlighted ? Color.t3TextMain : Color.t3TextMain.opacity(0.86))
+                .foregroundColor(
+                    isHighlighted
+                        ? .t3TextMain
+                        : (isHovered ? .t3TextMain : .t3TextMain.opacity(0.86))
                 )
 
             Spacer(minLength: 0)
@@ -125,40 +105,17 @@ struct SidebarView: View {
         .frame(height: 30)
         .contentShape(Rectangle())
         .anchorPreference(key: SidebarTabBoundsKey.self, value: .bounds) { [tab: $0] }
-        .onContinuousHover { phase in
-            switch phase {
-            case .active(let loc):
+        .onHover { hovering in
+            if hovering {
                 hoveredSidebarTab = tab
-                withAnimation(.linear(duration: 0.08)) {
-                    hoverSidebarX = loc.x
-                }
-            case .ended:
-                if hoveredSidebarTab == tab {
-                    hoveredSidebarTab = nil
-                }
+            } else if hoveredSidebarTab == tab {
+                hoveredSidebarTab = nil
             }
         }
-        .gesture(
-            DragGesture(minimumDistance: 0, coordinateSpace: .local)
-                .onChanged { value in
-                    let rowBounds = CGRect(x: -4, y: -4, width: 174, height: 38)
-                    if rowBounds.contains(value.location) {
-                        if pressingSidebarTab != tab {
-                            pressingSidebarTab = tab
-                        }
-                    } else if pressingSidebarTab == tab {
-                        pressingSidebarTab = nil
-                    }
-                }
-                .onEnded { value in
-                    let rowBounds = CGRect(x: -4, y: -4, width: 174, height: 38)
-                    if rowBounds.contains(value.location) {
-                        vm.activeTab = tab
-                    }
-                    pressingSidebarTab = nil
-                }
-        )
-        .animation(.easeOut(duration: 0.18), value: isHighlighted)
-        .animation(.easeOut(duration: 0.18), value: isHovered)
+        .onInstantPress {
+            if vm.activeTab != tab {
+                vm.activeTab = tab
+            }
+        }
     }
 }

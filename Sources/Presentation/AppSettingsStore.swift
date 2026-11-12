@@ -10,11 +10,12 @@ private struct SettingsEnvelope: Codable {
 
 @MainActor
 package final class AppSettingsStore: ObservableObject {
-    private static let schemaVersion = 1
+    private nonisolated static let schemaVersion = 1
+    private nonisolated static let persistenceQueue = DispatchQueue(label: "com.chrysa.settings-persistence", qos: .utility)
     @Published package var settings: AppSettings {
         didSet {
             if !inMemoryOnly && settings != oldValue {
-                persistToDisk()
+                enqueuePersistToDisk()
             }
         }
     }
@@ -22,6 +23,9 @@ package final class AppSettingsStore: ObservableObject {
     private let inMemoryOnly: Bool
     private let fileURL: URL
     private var preserveUnsupportedFile = false
+    private var previewImageCache: [String: NSImage] = [:]
+    private var dockIconCache: [String: NSImage] = [:]
+    private var dockIconTask: Task<Void, Never>?
 
     package let iconOptions: [AppIconOption] = [
         AppIconOption(id: "cultured_prussian",    title: "白底 3 · 学院普鲁士蓝",   subtitle: "雾银浅蓝 ➔ 学院钴蓝 ➔ 普鲁士皇家深蓝", category: "白瓷底系列"),
@@ -43,6 +47,8 @@ package final class AppSettingsStore: ObservableObject {
             self.settings = .default
             return
         }
+
+        Self.persistenceQueue.sync {}
 
         if let data = try? Data(contentsOf: self.fileURL) {
             if Self.hasUnsupportedSchema(data) {
@@ -84,7 +90,7 @@ package final class AppSettingsStore: ObservableObject {
             migrated.selectedIconVariant = variant
         }
         self.settings = migrated
-        persistToDisk()
+        enqueuePersistToDisk()
     }
 
     private static func hasUnsupportedSchema(_ data: Data) -> Bool {
@@ -123,28 +129,38 @@ package final class AppSettingsStore: ObservableObject {
             print("[persistence] failed to preserve corrupt settings file: \(error.localizedDescription)")
         }
     }
-
-    private func persistToDisk() {
+    private func enqueuePersistToDisk() {
         guard !preserveUnsupportedFile else {
             print("[persistence] skipped settings save because the file belongs to a newer schema: \(fileURL.path)")
             return
         }
-        let dir = fileURL.deletingLastPathComponent()
+        let snapshot = settings
+        let targetURL = fileURL
+        Self.persistenceQueue.async {
+            Self.writeSettingsSynchronously(snapshot, to: targetURL)
+        }
+    }
+
+    package nonisolated func flushPendingPersistence() {
+        Self.persistenceQueue.sync {}
+    }
+
+    private nonisolated static func writeSettingsSynchronously(_ snapshot: AppSettings, to targetURL: URL) {
+        let dir = targetURL.deletingLastPathComponent()
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(SettingsEnvelope(schemaVersion: Self.schemaVersion, payload: settings))
-            let backupURL = fileURL.appendingPathExtension("bak")
-            if let existingData = try? Data(contentsOf: fileURL) {
+            let data = try encoder.encode(SettingsEnvelope(schemaVersion: Self.schemaVersion, payload: snapshot))
+            let backupURL = targetURL.appendingPathExtension("bak")
+            if let existingData = try? Data(contentsOf: targetURL) {
                 try existingData.write(to: backupURL, options: [.atomic])
             }
-            try data.write(to: fileURL, options: [.atomic])
+            try data.write(to: targetURL, options: [.atomic])
         } catch {
             print("[persistence] failed to save settings: \(error.localizedDescription)")
         }
-        // Keep legacy UserDefaults password key synced for convenience
-        UserDefaults.standard.set(settings.passwords, forKey: "Chrysa.PasswordDictionary.v1")
+        UserDefaults.standard.set(snapshot.passwords, forKey: "Chrysa.PasswordDictionary.v1")
     }
 
     package func iconPreviewPath(id: String, variant: String) -> String {
@@ -155,13 +171,74 @@ package final class AppSettingsStore: ObservableObject {
         return ("~/Applications/Chrysa.app/Contents/Resources/Icons/\(id)_\(variant).png" as NSString).expandingTildeInPath
     }
 
+    package func warmPreviewCache() {
+        let variant = settings.selectedIconVariant
+        for opt in iconOptions {
+            _ = iconPreviewImage(id: opt.id, variant: variant)
+        }
+    }
+
+    package func iconPreviewImage(id: String, variant: String) -> NSImage? {
+        let key = "\(id)_\(variant)"
+        if let cached = previewImageCache[key] {
+            return cached
+        }
+        let path = iconPreviewPath(id: id, variant: variant)
+        guard FileManager.default.fileExists(atPath: path),
+              let raw = NSImage(contentsOfFile: path) else {
+            return nil
+        }
+        let thumb = Self.makePreviewBitmap(from: raw, pointSize: 58)
+        previewImageCache[key] = thumb
+        return thumb
+    }
+
+    private static func makePreviewBitmap(from source: NSImage, pointSize: CGFloat) -> NSImage {
+        let pixelSize = Int(pointSize * 2)
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: pixelSize,
+            pixelsHigh: pixelSize,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .calibratedRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else {
+            return source
+        }
+        rep.size = NSSize(width: pointSize, height: pointSize)
+        NSGraphicsContext.saveGraphicsState()
+        if let ctx = NSGraphicsContext(bitmapImageRep: rep) {
+            NSGraphicsContext.current = ctx
+            ctx.imageInterpolation = .high
+            source.draw(
+                in: NSRect(x: 0, y: 0, width: pointSize, height: pointSize),
+                from: .zero,
+                operation: .copy,
+                fraction: 1.0
+            )
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        let out = NSImage(size: NSSize(width: pointSize, height: pointSize))
+        out.addRepresentation(rep)
+        return out
+    }
+
     @discardableResult
     package func applyAppIcon(id: String, variant: String) -> AppIconOption? {
-        settings.selectedIconID = id
-        settings.selectedIconVariant = variant
+        var updated = settings
+        updated.selectedIconID = id
+        updated.selectedIconVariant = variant
+        if updated != settings {
+            settings = updated
+        }
 
+        let matched = iconOptions.first(where: { $0.id == id })
         guard !inMemoryOnly else {
-            return iconOptions.first(where: { $0.id == id })
+            return matched
         }
 
         let appBundlePath: String = {
@@ -171,13 +248,33 @@ package final class AppSettingsStore: ObservableObject {
             return ("~/Applications/Chrysa.app" as NSString).expandingTildeInPath
         }()
 
-        let icnsPath = (appBundlePath as NSString).appendingPathComponent("Contents/Resources/Icons/\(id)_\(variant).icns")
-        if FileManager.default.fileExists(atPath: icnsPath),
-           let img = NSImage(contentsOfFile: icnsPath) {
-            // Keep the saved selection in the Dock without modifying the signed bundle.
-            NSApplication.shared.applicationIconImage = img
-            return iconOptions.first(where: { $0.id == id })
+        let key = "\(id)_\(variant)"
+        let pngPath = (appBundlePath as NSString).appendingPathComponent("Contents/Resources/Icons/\(key).png")
+        let icnsPath = (appBundlePath as NSString).appendingPathComponent("Contents/Resources/Icons/\(key).icns")
+        let chosenPath = FileManager.default.fileExists(atPath: pngPath) ? pngPath : icnsPath
+        guard FileManager.default.fileExists(atPath: chosenPath) else {
+            return matched
         }
-        return nil
+
+        dockIconTask?.cancel()
+        if let cached = dockIconCache[key] {
+            dockIconTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                guard !Task.isCancelled else { return }
+                NSApplication.shared.applicationIconImage = cached
+            }
+        } else {
+            dockIconTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                guard !Task.isCancelled else { return }
+                let rawData = await Task.detached(priority: .utility) { () -> Data? in
+                    try? Data(contentsOf: URL(fileURLWithPath: chosenPath))
+                }.value
+                guard !Task.isCancelled, let rawData, let img = NSImage(data: rawData) else { return }
+                self?.dockIconCache[key] = img
+                NSApplication.shared.applicationIconImage = img
+            }
+        }
+        return matched
     }
 }

@@ -54,9 +54,8 @@ package final class PipelineCoordinator {
         var addedCount = 0
 
         for discoveredJob in discoveredJobs where discoveredJob.kind == .patch {
-            let exists = patchJobs.contains {
-                $0.title.caseInsensitiveCompare(discoveredJob.title) == .orderedSame
-                    || ($0.source?.value != nil && $0.source?.value == discoveredJob.source?.value)
+            let exists = patchJobs.contains { existing in
+                existing.matchesDiscoveredPatchBottle(discoveredJob)
             }
             guard !exists else { continue }
             var job = discoveredJob
@@ -231,21 +230,15 @@ package final class PipelineCoordinator {
         emitLog("folder ▸ 检测到分享文件夹 [\(folderTitle)]，共 \(taskPairs.count) 个文件，开始顺序拉取...", highlight: true)
 
         let names = taskPairs.compactMap { $0.1.suggestedFilename }
-        let primaryFile = names.first(where: services.isArchiveFile)
-        let primaryBase = primaryFile.map { (($0 as NSString).deletingPathExtension).lowercased() }
-        let requiredBinSlices: Set<String> = {
-            guard let primaryBase else { return [] }
-            return Set(names.filter {
-                let lower = $0.lowercased()
-                return lower.hasPrefix(primaryBase + "-") && lower.hasSuffix(".bin")
-            })
-        }()
+        let primaryFile = Self.selectPrimaryArchive(from: names, isArchiveFile: services.isArchiveFile)
+        let requiredBinSlices = Self.requiredCompanionVolumes(for: primaryFile, in: names)
         let primaryTaskID = primaryFile.flatMap { filename in
             taskPairs.first(where: { $0.1.suggestedFilename == filename })?.0
         }
         var completedPaths: [String: String] = [:]
         var baseUnpackTriggered = false
         var relayTask: Task<Void, Never>?
+        var pendingDLCInstallers: [(taskID: UUID, filename: String, path: String)] = []
 
         for (taskID, rawItem) in taskPairs {
             guard acceptsProgress(for: taskID) else { continue }
@@ -294,16 +287,7 @@ package final class PipelineCoordinator {
                 }
             } else if baseUnpackTriggered,
                       filename.lowercased().hasPrefix("setup_"), filename.lowercased().hasSuffix(".exe") {
-                let dlcPath = output
-                if let primaryFile, let primaryPath = completedPaths[primaryFile] {
-                    var rawBase = ((primaryPath as NSString).lastPathComponent as NSString).deletingPathExtension
-                    if rawBase.lowercased().hasPrefix("setup_") { rawBase = String(rawBase.dropFirst("setup_".count)) }
-                    let outputDirectory = ((primaryPath as NSString).deletingLastPathComponent as NSString)
-                        .appendingPathComponent(GameTitle.cleanGameTitle(from: rawBase))
-                    emitLog("innoextract ▸ DLC 下载完成，正在合并至主游戏目录: \(filename)", highlight: true)
-                    let merged = await services.mergeDLC(installer: dlcPath, directory: outputDirectory, taskID: taskID)
-                    if merged { emitLog("innoextract ▸ DLC 合并完成: \(filename)", highlight: true) }
-                }
+                pendingDLCInstallers.append((taskID: taskID, filename: filename, path: output))
             }
         }
 
@@ -315,6 +299,73 @@ package final class PipelineCoordinator {
                   primaryJob.output != nil, acceptsProgress(for: primaryTaskID) {
             await updateJob(primaryTaskID, status: .succeeded, progress: 1, clearMessage: true)
         }
+
+        if !pendingDLCInstallers.isEmpty,
+           let primaryFile,
+           let primaryPath = completedPaths[primaryFile] {
+            let primaryJob = primaryTaskID != nil ? await jobStore.job(for: primaryTaskID!) : nil
+            let unpackedDir: String = {
+                if let input = primaryJob?.input, input.kind == .directory { return input.value }
+                if let output = primaryJob?.output, output.kind == .directory { return output.value }
+                var rawBase = ((primaryPath as NSString).lastPathComponent as NSString).deletingPathExtension
+                if rawBase.lowercased().hasPrefix("setup_") { rawBase = String(rawBase.dropFirst("setup_".count)) }
+                return ((primaryPath as NSString).deletingLastPathComponent as NSString)
+                    .appendingPathComponent(GameTitle.cleanGameTitle(from: rawBase))
+            }()
+            for dlc in pendingDLCInstallers where acceptsProgress(for: dlc.taskID) {
+                emitLog("innoextract ▸ DLC 下载完成，正在合并至主游戏目录: \(dlc.filename)", highlight: true)
+                let merged = await services.mergeDLC(installer: dlc.path, directory: unpackedDir, taskID: dlc.taskID)
+                if merged { emitLog("innoextract ▸ DLC 合并完成: \(dlc.filename)", highlight: true) }
+            }
+        }
+    }
+
+    private static func selectPrimaryArchive(from names: [String], isArchiveFile: (String) -> Bool) -> String? {
+        names.first { name in
+            guard isArchiveFile(name) else { return false }
+            let lower = name.lowercased()
+            if lower.hasSuffix(".bin") { return false }
+            if let rarRegex = try? NSRegularExpression(pattern: #"\.part([0-9]+)\.rar$"#, options: .caseInsensitive),
+               let match = rarRegex.firstMatch(in: lower, range: NSRange(lower.startIndex..., in: lower)),
+               let numRange = Range(match.range(at: 1), in: lower),
+               Int(lower[numRange]) != 1 {
+                return false
+            }
+            return true
+        } ?? names.first(where: isArchiveFile)
+    }
+
+    private static func requiredCompanionVolumes(for primaryFile: String?, in names: [String]) -> Set<String> {
+        guard let primaryFile else { return [] }
+        let lowerPrimary = primaryFile.lowercased()
+        let primaryBase = ((primaryFile as NSString).deletingPathExtension).lowercased()
+        var required: Set<String> = []
+
+        for name in names {
+            let lower = name.lowercased()
+            // 1. GOG Inno Setup companion data slices: setup_xxx-1.bin
+            if lower.hasPrefix(primaryBase + "-") && lower.hasSuffix(".bin") {
+                required.insert(name)
+            }
+            // 2. Split .7z volumes: game.7z.001, game.7z.002, ...
+            if lowerPrimary.hasSuffix(".7z.001") {
+                let prefix = String(lowerPrimary.dropLast(3))
+                if lower.hasPrefix(prefix),
+                   lower.range(of: #"\.[0-9]{3}$"#, options: .regularExpression) != nil {
+                    required.insert(name)
+                }
+            }
+            // 3. Multipart RAR volumes: game.part1.rar, game.part2.rar, ...
+            if let rarMatch = try? NSRegularExpression(pattern: #"^(.+)\.part0*1\.rar$"#, options: .caseInsensitive)
+                .firstMatch(in: primaryFile, range: NSRange(primaryFile.startIndex..., in: primaryFile)),
+               let prefixRange = Range(rarMatch.range(at: 1), in: primaryFile) {
+                let basePrefix = String(primaryFile[prefixRange]).lowercased() + ".part"
+                if lower.hasPrefix(basePrefix) && lower.hasSuffix(".rar") {
+                    required.insert(name)
+                }
+            }
+        }
+        return required
     }
 
     package func runDownloadTask(

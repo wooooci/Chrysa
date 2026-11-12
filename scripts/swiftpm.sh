@@ -32,4 +32,8 @@ if [[ -f "$TOOLCHAIN/include/swift/module.modulemap" && -f "$TOOLCHAIN/include/s
   RESOURCE_ARGS=(-Xswiftc -resource-dir -Xswiftc "$SHIM/usr/lib/swift")
 fi
 
-exec "$SWIFT_BIN" "$@" "${RESOURCE_ARGS[@]}"
+if [[ "${1:-}" == "run" ]]; then
+  exec "$SWIFT_BIN" "$1" "${RESOURCE_ARGS[@]}" "${@:2}"
+else
+  exec "$SWIFT_BIN" "$@" "${RESOURCE_ARGS[@]}"
+fi

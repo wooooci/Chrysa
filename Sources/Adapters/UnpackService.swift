@@ -10,9 +10,14 @@ package enum UnpackOutcome: Sendable {
 
 package actor UnpackService {
     private let supervisor: ProcessSupervisor
+    private let postProcessors: [any UnpackPostProcessor]
 
-    package init(supervisor: ProcessSupervisor = .shared) {
+    package init(
+        supervisor: ProcessSupervisor = .shared,
+        postProcessors: [any UnpackPostProcessor] = [MacOSPermissionFixer()]
+    ) {
         self.supervisor = supervisor
+        self.postProcessors = postProcessors
     }
 
     package static func isArchiveFile(_ path: String) -> Bool {
@@ -207,7 +212,9 @@ package actor UnpackService {
                 return .failed(pill: "缺少 .bin 分卷")
             }
 
-            await repairMacOSPermissions(outDir: outDir, parent: parentURL)
+            for processor in postProcessors {
+                try? await processor.process(outDir: outDir, parentURL: parentURL)
+            }
             if await supervisor.isCancelled(taskID, checking: isCancelled) { return .cancelled }
             if deleteArchiveAfterUnpack {
                 await cleanupSourceArchive(archivePath: archivePath, onLog: onLog)
@@ -227,9 +234,10 @@ package actor UnpackService {
         let isRarArchive = archivePath.lowercased().hasSuffix(".rar")
 
         // Instant 5ms Password Header / Smallest-File Probe
+        let probePasswords = candidatePasswords.first == "" ? candidatePasswords : ([""] + candidatePasswords)
         var foundPwd: String? = nil
         var foundIdx: Int = 0
-        for (idx, pwd) in candidatePasswords.enumerated() {
+        for (idx, pwd) in probePasswords.enumerated() {
             if await supervisor.isCancelled(taskID, checking: isCancelled) { return .cancelled }
             guard let listRes = try? await supervisor.run(
                 executable: sevenZip,
@@ -256,7 +264,7 @@ package actor UnpackService {
                         }
                     }
                     if let sf = sampleFile {
-                        for (pIdx, cPwd) in candidatePasswords.enumerated() where !cPwd.isEmpty {
+                        for (pIdx, cPwd) in probePasswords.enumerated() where !cPwd.isEmpty {
                             if await supervisor.isCancelled(taskID, checking: isCancelled) { return .cancelled }
                             let exe = (isRarArchive && unrarBin != nil) ? unrarBin! : sevenZip
                             let args = (isRarArchive && unrarBin != nil)
@@ -366,7 +374,9 @@ package actor UnpackService {
                 return .failed(pill: "密码错误/失败")
             }
 
-            await repairMacOSPermissions(outDir: outDir, parent: parentURL)
+            for processor in postProcessors {
+                try? await processor.process(outDir: outDir, parentURL: parentURL)
+            }
             await onLog("perm ▸ 已修复读写权限 (chmod u+rwX) 并清除隔离锁 (xattr -cr)", false)
             if await supervisor.isCancelled(taskID, checking: isCancelled) { return .cancelled }
 
@@ -390,17 +400,6 @@ package actor UnpackService {
               target.path != parent.resolvingSymlinksInPath().standardizedFileURL.path,
               target.path != "/" else { return }
         try? FileManager.default.removeItem(at: target)
-    }
-
-    private func repairMacOSPermissions(outDir: String, parent: URL) async {
-        let output = URL(fileURLWithPath: outDir, isDirectory: true)
-        guard let target = PathSafety.containedURL(output, in: parent),
-              target.path == output.standardizedFileURL.path,
-              target.path != parent.resolvingSymlinksInPath().standardizedFileURL.path,
-              target.path != "/",
-              (try? target.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { return }
-        _ = try? await supervisor.run(executable: "/bin/chmod", arguments: ["-R", "u+rwX", target.path])
-        _ = try? await supervisor.run(executable: "/usr/bin/xattr", arguments: ["-cr", target.path])
     }
 
     private func cleanupSourceArchive(archivePath: String, onLog: @escaping @Sendable (String, Bool) async -> Void) async {

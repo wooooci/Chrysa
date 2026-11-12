@@ -100,11 +100,10 @@ package actor DownloadService {
             return .failed(pill: "缺少内核")
         }
 
-        let lowerFinal = resolved.finalURL.lowercased()
-        let isPixeldrain = lowerFinal.contains("pixeldrain.com")
-        let isFileDitch = lowerFinal.contains("fileditch")
-        let configuredMax = max(1, min(16, settings.download.maxConcurrentConnections))
-        let effectiveThreads = isFileDitch ? min(2, configuredMax) : (isPixeldrain ? min(4, configuredMax) : configuredMax)
+        let effectiveThreads = HostResolverRegistry.maxThreads(
+            for: resolved.finalURL,
+            configuredMax: settings.download.maxConcurrentConnections
+        )
         let threadsStr = "\(effectiveThreads)"
 
         let customUA: String = {
@@ -275,9 +274,25 @@ package actor DownloadService {
         onLog: @escaping @Sendable (String, Bool) async -> Void
     ) async -> DownloadOutcome {
         let downloadsRoot: URL
+        let downloadsDirectory: URL
         do {
             downloadsRoot = try PathSafety.canonicalDirectory(settings.download.downloadDirectory)
             guard downloadsRoot.path != "/" else { return .failed(pill: "下载目录无效") }
+            if let rawSubdirectory = resolved.subDirectory, !rawSubdirectory.isEmpty {
+                guard let subdirectory = PathSafety.safeRelativeDirectory(rawSubdirectory) else {
+                    await onLog("error ▸ 下载子目录包含不安全路径", true)
+                    return .failed(pill: "路径无效")
+                }
+                let candidate = downloadsRoot.appendingPathComponent(subdirectory, isDirectory: true)
+                try FileManager.default.createDirectory(at: candidate, withIntermediateDirectories: true)
+                guard let contained = PathSafety.containedURL(candidate, in: downloadsRoot) else {
+                    await onLog("error ▸ 下载子目录越出下载目录", true)
+                    return .failed(pill: "路径无效")
+                }
+                downloadsDirectory = contained
+            } else {
+                downloadsDirectory = downloadsRoot
+            }
         } catch {
             await onLog("error ▸ 无法准备下载目录", true)
             return .failed(pill: "目录错误")
@@ -287,7 +302,7 @@ package actor DownloadService {
             await onLog("error ▸ 远端文件名无效或包含路径分隔符", true)
             return .failed(pill: "文件名无效")
         }
-        let temporaryURL = downloadsRoot.appendingPathComponent(".chrysa-range-\(UUID().uuidString).tmp")
+        let temporaryURL = downloadsDirectory.appendingPathComponent(".chrysa-range-\(UUID().uuidString).tmp")
         guard PathSafety.containedURL(temporaryURL, in: downloadsRoot) != nil else { return .failed(pill: "路径无效") }
         defer {
             if let safeTemporary = PathSafety.containedURL(temporaryURL, in: downloadsRoot),
@@ -325,7 +340,7 @@ package actor DownloadService {
         }
 
         let startTime = Date()
-        let batchSize = min(8, max(2, settings.maxConcurrentConnections))
+        let batchSize = min(8, max(2, settings.download.maxConcurrentConnections))
         var completedBytes: Int64 = 0
         let totalGB = Double(totalSize) / (1024.0 * 1024.0 * 1024.0)
         var activeCDNURL = resolved.finalURL
@@ -362,7 +377,7 @@ package actor DownloadService {
                                     return (cIdx, cStart, cEnd, nil, nil)
                                 }
                                 if attempt >= 2 {
-                                    let refreshed = await HostResolverRegistry.resolveSingleLink(resolved.originalURL)
+                                    let refreshed = await HostResolverRegistry.resolveSingleLink(resolved.originalURL, passwords: settings.unpack.passwords)
                                     if !refreshed.finalURL.isEmpty {
                                         currentURL = refreshed.finalURL
                                     }
@@ -451,7 +466,7 @@ package actor DownloadService {
         if await supervisor.isCancelled(taskID, checking: isCancelled) { return .cancelled }
         let finalRight = String(format: "%.2f GB", totalGB)
         do {
-            let published = try PathSafety.publishFile(from: temporaryURL, toDirectory: downloadsRoot, filename: filename)
+            let published = try PathSafety.publishFile(from: temporaryURL, toDirectory: downloadsDirectory, filename: filename)
             await onLog("range-3m ▸ 下载完成并通过全量切片校验: \(published.name)", true)
             return .completed(localPath: published.url.path, finalTitle: published.name, rightText: finalRight)
         } catch {

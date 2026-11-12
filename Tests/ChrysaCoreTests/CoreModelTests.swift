@@ -5,13 +5,29 @@ import ChrysaCore
 struct CoreModelTests {
     @Test
     func testSettingsDecodeUsesDefaultsForMissingFields() throws {
-        let data = Data(#"{"autoRelay":false}"#.utf8)
+        let data = Data(#"{"autoRelay":false,"download":{"maxConcurrentConnections":8}}"#.utf8)
         let settings = try JSONDecoder().decode(AppSettings.self, from: data)
 
         #expect(!settings.autoRelay)
-        #expect(settings.maxConcurrentConnections == AppSettings.default.maxConcurrentConnections)
+        #expect(settings.maxConcurrentConnections == 8)
         #expect(settings.downloadDirectory == AppSettings.default.downloadDirectory)
         #expect(settings.passwords == AppSettings.default.passwords)
+        #expect(settings.accentColorMode == .monochrome)
+    }
+
+    @Test
+    func testAccentColorModeDefaultsToMonochromeAndRoundTrips() throws {
+        var settings = AppSettings.default
+        #expect(settings.accentColorMode == .monochrome)
+        #expect(settings.appearance.accentColorMode == .monochrome)
+
+        settings.selectedIconID = "w6_burgundy"
+        settings.accentColorMode = .followAppIcon
+
+        let encoded = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: encoded)
+        #expect(decoded.selectedIconID == "w6_burgundy")
+        #expect(decoded.accentColorMode == .followAppIcon)
     }
 
     @Test
@@ -39,13 +55,15 @@ struct CoreModelTests {
     func testJobRoundTripPreservesIdentityArtifactsAndPresentationState() throws {
         let job = Job(
             kind: .patch, title: "Game", status: .succeeded, progress: 1,
-            source: ArtifactRef(kind: .directory, value: "/games/Game"),
             output: ArtifactRef(kind: .file, value: "/games/Game/Game.exe"),
+            pill: "已就绪",
             appID: "480", isArchived: true, expanded: true,
             checklist: [CheckItem(title: "Configured", isChecked: true)], listPosition: 5
         )
         let restored = try JSONDecoder().decode(Job.self, from: JSONEncoder().encode(job))
         #expect(restored == job)
+        #expect(restored.pill == "已就绪" && restored.message == "已就绪")
+        #expect(restored.legacyTask().pill == "已就绪")
         #expect(restored.legacyTask().id == job.id)
     }
 

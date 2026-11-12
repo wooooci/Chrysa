@@ -39,6 +39,9 @@ package protocol WorkflowServices: Sendable {
     func patchStage(title: String, settings: AppSettings) -> any Stage
     func launchStage(request: GameLaunchRequest) -> any Stage
 
+    // New registry method
+    func allStages(for kind: JobKind, job: Job, settings: AppSettings) -> [any Stage]
+
     func normalizeDownloadInput(_ input: String) -> String?
     func initialDownloadMessage(for input: String) -> String?
     func suggestedDownloadName(_ input: String) -> String?

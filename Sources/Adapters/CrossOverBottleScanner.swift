@@ -86,6 +86,8 @@ package enum CrossOverBottleScanner {
                             .trimmingCharacters(in: .whitespacesAndNewlines)
                         if let t = txt, !t.isEmpty { foundAppID = t }
                     } else if foundEXE == nil, lower.hasSuffix(".exe"),
+                              !rel.lowercased().contains("__redist"),
+                              !lower.contains("scriptinterpreter"),
                               !lower.contains("unitycrashhandler"),
                               !lower.contains("unins"),
                               !lower.contains("vc_redist"),
