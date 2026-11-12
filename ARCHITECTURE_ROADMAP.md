@@ -1,6 +1,6 @@
 # Chrysa 架构重构路线
 
-**更新日期：** 2026-11-11
+**更新日期：** 2026-11-12
 
 **目的：** 在不重写现有应用、不改变用户主要操作方式的前提下，逐步整理任务流程和模块边界，让后续多个大版本可以扩展而不必反复改动核心流程。
 
@@ -22,32 +22,35 @@
 ## 2. 目标结构
 
 ```text
-Presentation  SwiftUI 页面、用户操作、显示状态
-      |
-Application   下载/解压/补丁用例、任务编排、Stage 注册
-      |
-Core          Job、状态规则、产物描述、必要的领域类型
-      ^
-Adapters      下载、解压、补丁、启动、持久化等接口实现
-      |
-Platform       macOS、文件系统、进程、CrossOver 和外部工具
+                    Chrysa
+                   /      \
+                  v        v
+   ChrysaPresentation   ChrysaAdapters
+             \           /
+              v         v
+              ChrysaApplication
+                     |
+                     v
+                 ChrysaCore
 ```
+
+实际 SwiftPM targets 为 `ChrysaCore`、`ChrysaApplication`、`ChrysaAdapters`、`ChrysaPresentation` 和可执行 target `Chrysa`。Presentation 与 Adapters 分别直接依赖 Core 和 Application。macOS、文件系统、CrossOver 与外部工具实现在 `ChrysaAdapters` 中，没有另拆 `Platform` target。可执行入口 `AppComposition` 负责组装实现。
 
 依赖方向的约束：
 
 - `Presentation` 调用 `Application`，不直接编排下载到补丁的整条流程。
 - `Application` 依赖稳定接口，不依赖具体 SwiftUI、下载引擎或压缩工具。
 - `Core` 只使用 Foundation，不依赖 SwiftUI、AppKit 或外部服务。
-- `Adapters` 和 `Platform` 实现上层定义的接口；替换具体实现时尽可能不改任务模型。
+- `Adapters` 承载平台实现并实现上层定义的接口；替换具体实现时尽可能不改任务模型。
 - 解析器等扩展采用明确的编译期注册点，不引入通用事件总线或运行时插件加载框架。
 
-这是逻辑边界的目标。SwiftPM target 的拆分会在类型和接口稳定后进行，避免过早拆 target 导致大量只为访问权限而做的改动。
+SwiftPM target 依赖关系落实上述主要边界。`ChrysaPresentation` 依赖 Core 与 Application，Adapters 实现 Application ports，Core 只依赖 Foundation。应用组合根依赖并组装各模块。
 
 ## 3. 关键模型
 
 ### Job：一张完整任务单
 
-一个 `Job` 表示用户发起的一项下载、解压或补丁工作，包含稳定 ID、任务类型、名称、状态、进度、来源、产物和时间信息。状态按一致规则变化：
+一个 `Job` 表示用户发起的一项完整工作，包含稳定 ID、当前阶段、名称、状态、进度、来源、产物和时间信息。自动接力从下载进入解压和补丁时更新这张任务单，不另建下游 Job。状态按一致规则变化：
 
 ```text
 queued -> running -> succeeded / failed / cancelled
@@ -80,7 +83,9 @@ queued -> running -> succeeded / failed / cancelled
 - 删除本地记录前增加确认，并限制实际可删除的文件范围。
 - 增加 XCTest target 和安全测试源码。
 
-### 已完成：Job/Stage 核心与兼容桥
+### 已完成并提交的 Job/Stage 核心与兼容桥
+
+提交 `969e901`（`Add Job and Stage compatibility bridge`）完成了这一阶段。
 
 - 新增 `Job`、任务状态、产物引用和旧任务转换规则。
 - 新增内存版 `JobStore`，终态保护迟到更新。
@@ -90,15 +95,47 @@ queued -> running -> succeeded / failed / cancelled
 - 删除或重试旧任务时同步清除对应 JobStore 记录。
 - 发布版自检覆盖 Job 状态保护、旧记录转换和 Stage 注册执行。
 
-这一版是迁移桥，不是最终架构：JobStore 还没有自己的持久化，Stage 尚未取代现有服务，协调器仍引用 `StudioViewModel`，界面仍使用三组数组。
+这一阶段建立了统一模型与旧任务列表之间的兼容桥，第 3 阶段继续迁移持久化及下载、解压服务。
 
-### 下一步：统一任务持久化与下载/解压迁移
+### 已实现并通过本机自检的统一任务持久化与下载/解压迁移
 
-按第 3 个提交的范围推进，保留旧格式备份和兼容迁移，并先明确 Stage 的进度与取消契约。
+第 3 阶段的代码和验证已完成，改动保留在工作区，待提交。
+
+- `JobStore` 使用带 schema 版本的 `jobs.json`，成为应用任务档案的统一写入入口。旧 `TaskStore` 用于读取和迁移 `tasks.json`。
+- 迁移保留旧任务 ID、列表顺序、归档、展开、检查项和启动信息。正常迁移保留旧文件，写入失败时保留已读任务并在后续保存时重试。
+- 增加备份恢复、损坏文件保留和未来 schema 保护。重建 Store 后，运行中或排队中的记录会标记为中断，完成状态和展示信息可以恢复。
+- `DownloadStage` 和 `UnpackStage` 通过 Stage 接口执行，传递输入、输出、进度、日志、取消及失败结果。同步进程回调经过有序队列交付，结束前等待进度处理。
+- 下载和解压的自动流转使用本次成功任务的实际产物路径。目录中已有同名文件、下载失败和任务停止的情形均经过自检。
+- 修复归档运行中任务时意外终止底层进程的问题。
+- 第 3 阶段使用 ViewModel 的三组任务数组承担展示适配，第 4 阶段已将其替换为统一 Job 列表。
+
+### 已实现并通过本机自检的补丁流程迁移与界面解耦
+
+第 4 阶段的代码和验证已完成，与第 3 阶段改动一起保留在工作区，待提交。
+
+- 拆分原 `PatchAndBottleService`，由 `PEBinaryInspector`、`PatchService`、`CrossOverBottleScanner`、`CrossOverBottleConfigurator`、`SteamAppIDLookup` 和 `GameLauncher` 分别承担检测、补丁、扫描、容器配置、AppID 查询和启动。名称清理由 `GameTitle` 提供。
+- 新增 `PatchStage` 和 `LaunchGameStage`，明确输入、输出、失败及取消结果。补丁日志按顺序交付，终态发布前等待日志处理完毕。
+- `PipelineCoordinator` 持有统一 JobStore，通过类型明确的 `PipelineEvent` 流向界面交付任务和日志，不再引用 `StudioViewModel`。文件拖入分类和容器扫描由协调器处理，耗时检查移出主线程。
+- ViewModel 只发布一份 `jobs`，列表、侧栏和旧行组件从同一份 Job 生成展示数据。归档、展开、检查项、编辑、重试和删除通过 JobStore 更新并持久化。
+- 补丁写入限制在所选游戏目录内，DLL 替换采用原子发布并保留备份。缺少必需 DLL、目录不可读、配置写入或容器命令失败均返回失败，取消不会被记为成功，终态记录拒绝迟到回调中的标题、输出和进度更新。
+- 启动命令检查实际退出结果，启动按钮仅用于已完成的补丁记录。Wine 直接启动以进程成功创建为阶段完成条件，真实游戏就绪情况仍需验收。
+- 修复目录下载遇到同名文件时后续解压读取旧文件的问题，自动流转统一使用本次成功下载的实际产物路径。下载失败或停止后不启动下游步骤。
+
+第 5 阶段的 SwiftPM 模块拆分、独立测试、发布自检、打包、安装启动与退出验证已经完成。第 6 阶段现已让下载、解压、补丁自动接力复用同一 Job ID，并通过应用测试和本地 HTTP 发布版自检。真实 CrossOver/游戏验收仍未完成。
+
+### 第 6 阶段：自动接力保留同一 Job 身份（实现及本机验证完成）
+
+- 下载产物进入解压、解压产物进入补丁时，协调器更新原 Job 的当前阶段、进度和产物，不为下游阶段创建新 Job。
+- Job ID 在各 StageContext 中保持一致；界面按当前阶段类型将同一条记录显示在下载、解压或补丁列表中。
+- 下载、解压或补丁失败和取消仍结束同一 Job。多文件分享中的独立文件下载仍各有下载记录，主归档记录接续到解压和补丁。
+- 阶段进度映射到完整自动接力进度。手动启动单独解压或补丁时仍创建各自的 Job。
+- Application 测试检查单文件三阶段及多文件主归档的 StageContext 收到相同 Job ID。发布版本地 HTTP 自检通过单文件下载、失败重试、多文件下载、主归档解压补丁接力和失败任务阻断。
+- 修正目录接力在主归档保持运行状态时未收集其产物的问题。另修正发布版自检对短流程的竞态，避免下载和接力已完成后仍等待只会短暂出现的下载阶段展示。
+- 2026-11-12 使用 `./scripts/swiftpm.sh test --disable-xctest --scratch-path .build/stage6-validation --explicit-target-dependency-import-check error` 运行 19 项测试，全部通过。Release 构建和设置本地 HTTP 压缩包的 `--self-test` 也全部通过。
 
 ## 5. 后续步骤与提交规划
 
-整体约五个逻辑提交，安全改造的第一个提交已经完成。提交边界以功能完整、可验证和可回退为准，不按文件数量拆小提交。
+整体约六个逻辑提交，前两个提交已经完成，第 3 至第 6 阶段的代码和本机验证已完成。相关改动保留在工作区待提交。提交边界以功能完整、可验证和可回退为准，不按文件数量拆小提交。
 
 ### 第 1 个提交：安全与持久化底线（已完成）
 
@@ -111,7 +148,7 @@ queued -> running -> succeeded / failed / cancelled
 - 确认取消、完成和迟到进度不会产生互相矛盾的 Job 状态。
 - 验收：直接构建、发布版自检和测试源码语法检查通过。
 
-### 第 3 个提交：统一任务持久化与下载/解压迁移（下一步）
+### 第 3 个提交：统一任务持久化与下载/解压迁移（已实现，待提交）
 
 - 为 JobStore 增加版本化持久化和旧 `tasks.json` 迁移策略。
 - 迁移期确保旧任务数据只存在一个权威写入路径；新旧格式转换必须可恢复，未来 schema 文件不得被旧程序覆盖。
@@ -119,41 +156,55 @@ queued -> running -> succeeded / failed / cancelled
 - 保持现有 UI 可用，通过适配层读取任务状态。
 - 验收：旧数据迁移、重启恢复、取消、失败重试和自动流转均通过自检。
 
-### 第 4 个提交：补丁流程迁移与界面解耦
+2026-11-12 的验证通过了直接构建、签名和发布版自检。持久化自检覆盖旧格式迁移、迁移写入失败后重试、重建 Store 恢复、损坏或缺失主文件时的备份恢复及未来 schema 保护。本地 HTTP 自检覆盖正常 ViewModel 下载入口、下载到解压再到补丁的后台流转、404 失败后编辑重试、停止后的终态保护、同名文件保护和失败目录任务的流转阻断。限速 HTTP 下载进一步验证了运行中停止、暂存文件清理和下游阻断。
 
-- 将 `PatchAndBottleService` 中的 PE 检测、文件改写、CrossOver 容器扫描和游戏启动边界拆清；优先复用已存在的服务与工具。
-- 将补丁和启动流程接入任务/步骤接口，界面不再启动或协调底层服务。
-- 由统一任务记录为界面提供下载、解压、补丁列表所需的数据；迁移完成后移除 `downloadTasks`、`unpackTasks`、`patchTasks` 三套数组。
-- 移除 `PipelineCoordinator` 对 `StudioViewModel` 的反向引用。ViewModel 只负责用户意图、展示状态和调用用例。
-- 验收：从下载到解压再到补丁/启动的链路、手动操作、取消、日志和列表管理行为都保持正确。
+### 第 4 个提交：补丁流程迁移与界面解耦（已实现，待提交）
 
-### 第 5 个提交：模块边界与最终验证
+- 已拆清 PE 检测、文件改写、CrossOver 容器扫描、容器配置和游戏启动边界，保留现有游戏识别及补丁选择规则。
+- 已通过 Stage 接口执行补丁和启动，统一报告失败、取消和结果。
+- 已以统一 `jobs` 替换 ViewModel 独立维护的下载、解压、补丁三套数组，保留旧记录迁移和旧行组件的展示适配。
+- 已移除协调器对 ViewModel 的反向引用，界面通过用户意图调用协调器，并接收类型明确的任务与日志事件。
+- 验收通过直接构建和发布版自检。完整界面、真实 CrossOver 配置和实际游戏启动仍留待最终验收。
 
-- 在逻辑边界稳定后拆分 SwiftPM targets，按 Core、Application、Adapters/Platform、Presentation 等依赖方向组织。
-- 为核心和应用用例补充独立测试，检查 Core 不依赖 SwiftUI，Application 不依赖具体 UI 和工具实现。
-- 修复当前机器的 SwiftPM manifest 链接环境问题后运行完整 `swift test`；同时保留直接 `./build.sh`、发布版自检和打包验证。
-- 验收：干净构建、测试、自检及安装启动都通过；架构依赖方向可通过 target 依赖关系检查。
+2026-11-12 的补丁自检覆盖拖入文件分类、手动补丁入口、繁中语言及地区配置、日志顺序、归档和检查项持久化、编辑重试、删除恢复检查、配置写入失败、符号链接越界保护、扫描中取消及终态保护。启动步骤使用可控的替代命令验证成功、非零退出、取消和输入缺失。完整本地 HTTP 自检再次通过下载到解压再到补丁的流转、404 编辑重试、目录同名文件保护、失败任务阻断，以及限速下载运行中停止和暂存文件清理。
+
+### 第 5 个提交：模块边界与最终验证（已实现，待提交）
+
+- 已将代码拆分为 Core、Application、Adapters、Presentation 和可执行入口五个 SwiftPM targets。Adapters 同时承载平台实现。
+- 应用用例和 Core 测试可独立运行。SwiftPM 显式 target 依赖导入检查通过，Core 不导入 SwiftUI，Application 不依赖 Presentation 或具体 Adapters。
+- 完整测试运行 18 项通过，其中包含容器扫描未结束时退出仍能完成的生命周期回归测试。
+- 通过本机兼容脚本完成 release 构建、签名和打包。带本地 HTTP fixture 的发布版 `--self-test` 全部通过。
+- 已安装到 `~/Applications/Chrysa.app` 并打开原生界面。通过应用菜单快捷键退出后，签名仍通过严格校验，任务和设置文件的 SHA-256 未变化。
+- 为兼容本机工具链，新增 `scripts/swiftpm.sh`，用本地 shim 修复 SwiftPM manifest 链接环境；本机 XCTest 不可用，测试改用 Swift Testing，并以 `--disable-xctest` 执行。
+- 启动时切换图标不再改写已签名 bundle。选择图标会更新 Dock 图标，Finder 使用打包时的静态应用图标。
+- 工作区改动待提交。完整验收仍需真实 CrossOver 配置和实际游戏就绪及启动验证。
 
 ## 6. 验收清单
 
 完成重构时应满足：
 
-- 一项工作由一个 Job 表示，阶段变化不再创建互相割裂的任务身份。
-- 下载、解压、补丁步骤可以在不启动 SwiftUI 的情况下测试。
-- 停止任务后，迟到进度不能复活任务，也不能启动下游步骤。
-- 应用重启后，任务可恢复，或被明确标记为中断/失败；旧版本任务记录可以安全迁移。
-- 文件操作仍限制在明确的安全目录中，不会因路径或符号链接意外覆盖、删除用户目录。
-- UI 不依赖下载器、解压器或补丁内部实现。
-- Core 不依赖 SwiftUI；Application 不依赖具体 ViewModel。
-- 构建、自检和可运行的测试通过；已知测试环境限制单独记录，不能误报为测试通过。
+- [x] 单文件下载、解压、补丁自动接力复用同一 Job ID；阶段类型和进度随接力更新。
+- [x] 下载、解压、补丁的 Application stages 可在不启动 SwiftUI 的情况下测试。
+- [x] 停止任务后，迟到进度不能复活任务，也不能启动下游步骤。
+- [x] 应用重启后任务可以恢复，运行中和排队记录会明确标记为中断；旧版本任务记录可以安全迁移。
+- [x] 文件操作经过路径 containment 和符号链接保护。
+- [x] Presentation 不依赖下载器、解压器或补丁实现。
+- [x] Core 不依赖 SwiftUI，Application 不依赖具体 ViewModel。
+- [x] 本机 release 构建、严格签名检查、18 项测试、发布自检以及安装启动和退出验证通过。测试工具链限制已记录。
+- [ ] 真实 CrossOver 容器配置和真实游戏就绪及启动尚未验收。
 
 ## 7. 已知验证限制与风险
 
-- `./build.sh` 可直接构建并签名应用，发布版 `--self-test` 已通过，包括新增的 Job/Stage 核心自检。
-- `swift test` 当前在 SwiftPM manifest 链接阶段失败，报 `PackageDescription.Package` undefined symbol；尚未进入项目源码测试编译。这是本机 Command Line Tools / SwiftPM 环境问题，修复前不得把独立 XCTest 描述为已运行通过。
-- `PatchAndBottleService` 职责最多，是拆分和回归风险最高的区域；应按输入输出契约迁移，不能在同一个改动里顺带重写补丁行为。
-- 持久化格式、跨版本升级、停止与自动流转是数据和用户体验风险最高的部分，应优先保留旧文件备份和兼容测试。
-- 目标架构用于支撑未来持续演进，不保证未来功能无需改动；它的价值是让改动集中在相应模块和步骤内。
+- 2026-11-12 release 通过 `./build.sh` 构建并签名，使用 `scripts/swiftpm.sh` 绕过本机 SwiftPM ManifestAPI 动态链接问题。验证产物为 `.build/Chrysa.app`，安装版位于 `~/Applications/Chrysa.app`。
+- 本机 Command Line Tools 未提供 XCTest。测试源码使用 Swift Testing，完整命令 `./scripts/swiftpm.sh test --disable-xctest --scratch-path .build/stage5-validation --explicit-target-dependency-import-check error` 通过 18 项测试。Core 和 Application 独立测试也已通过。
+- 发布版 `--self-test` 设置本地 HTTP 下载和限速下载 fixture 后全部通过，覆盖实际下载、解压、补丁接力、404 编辑重试、同名文件保护、失败阻断和活动下载取消。临时 HTTP 服务及 fixture 已停止并清理。
+- 安装版启动并显示原生窗口。Cmd+Q 退出成功。退出后 `codesign --verify --deep --strict` 通过，`jobs.json` 与 `settings.json` 哈希和启动前一致。
+- 真实 CrossOver 扫描在该机器上曾停留于文件元数据读取。退出逻辑现已取消并脱离扫描任务，不等待它完成；被阻塞的系统调用本身是否及时返回仍未确认。
+- 图标运行时改写 `AppIcon` 会使签名 bundle 失效。当前选中图标会更新 Dock 图标，Finder 显示打包时的静态图标。
+- 运行时所需 icon、`gbe_fork` DLL 和 `sf-dl` 不在源码仓库内。`build.sh` 从 `CHRYSA_ASSET_APP`、目标安装包或默认 `~/Applications/Chrysa.app` 取得这些运行资源。
+- 自动接力中的主流程记录按当前阶段归入对应列表，因此会从下载列表移到解压列表，再移到补丁列表；Job ID 保持稳定。多文件分享会为独立下载文件保留各自的 Job，主归档接力继续复用其下载 Job ID。真实 CrossOver 配置和游戏启动仍待实机验收。
+- 第 6 阶段回归验证覆盖单文件与多文件接力，共 19 项 Swift Testing 测试通过。Release 本地 HTTP 自检覆盖单文件成功、失败后重试、多文件主归档接力和失败下载阻断。测试夹具与本地 HTTP 服务已清理。
+- 上述工作尚未提交。真实游戏验收仍未完成。
 
 ## 8. 明确暂不做的事
 

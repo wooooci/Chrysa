@@ -3,39 +3,47 @@ set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 APP="${CHRYSA_APP_PATH:-$HOME/Applications/Chrysa.app}"
-SDK_PATH="$(xcrun --show-sdk-path 2>/dev/null || echo "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk")"
+ASSET_APP="${CHRYSA_ASSET_APP:-$HOME/Applications/Chrysa.app}"
 
-# Self-healing local CLT resource-dir shim inside .build/ (eliminates /tmp dependency & survives macOS reboots)
-SHIM_ROOT="$DIR/.build/swift-resource-shim"
-CLT_ROOT="/Library/Developer/CommandLineTools"
-RESOURCE_ARGS=()
-if [[ -f "$CLT_ROOT/usr/include/swift/module.modulemap" && -f "$CLT_ROOT/usr/include/swift/bridging.modulemap" ]]; then
-  mkdir -p "$SHIM_ROOT/usr/lib" "$SHIM_ROOT/usr/include/swift"
-  ln -sfn "$CLT_ROOT/usr/lib/clang" "$SHIM_ROOT/usr/lib/clang"
-  ln -sfn "$CLT_ROOT/usr/lib/swift" "$SHIM_ROOT/usr/lib/swift"
-  ln -sfn "$CLT_ROOT/usr/include/swift/bridging" "$SHIM_ROOT/usr/include/swift/bridging"
-  ln -sfn "$CLT_ROOT/usr/include/swift/bridging.modulemap" "$SHIM_ROOT/usr/include/swift/bridging.modulemap"
-  RESOURCE_ARGS=(-resource-dir "$SHIM_ROOT/usr/lib/swift")
+cd "$DIR"
+./scripts/swiftpm.sh build -c release --product Chrysa
+BIN_DIR="$(./scripts/swiftpm.sh build -c release --show-bin-path)"
+
+# Stage the complete bundle before replacing the installed copy.
+mkdir -p "$(dirname "$APP")"
+STAGING="$(mktemp -d "$(dirname "$APP")/.chrysa-build.XXXXXX")"
+trap 'rm -rf "$STAGING"' EXIT
+BUNDLE="$STAGING/Chrysa.app"
+mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
+
+# Runtime assets are distributed with the app separately from the Swift sources.
+# Prefer the destination's existing assets when updating it.
+if [[ -z "${CHRYSA_ASSET_APP:-}" && -f "$APP/Contents/MacOS/sf-dl" ]]; then
+  ASSET_APP="$APP"
+fi
+if [[ -d "$ASSET_APP/Contents/Resources" ]]; then
+  /usr/bin/ditto "$ASSET_APP/Contents/Resources" "$BUNDLE/Contents/Resources"
+fi
+if [[ -f "$ASSET_APP/Contents/MacOS/sf-dl" ]]; then
+  /usr/bin/ditto "$ASSET_APP/Contents/MacOS/sf-dl" "$BUNDLE/Contents/MacOS/sf-dl"
 fi
 
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp "$DIR/packaging/Info.plist" "$BUNDLE/Contents/Info.plist"
+cp "$BIN_DIR/Chrysa" "$BUNDLE/Contents/MacOS/Chrysa"
+chmod +x "$BUNDLE/Contents/MacOS/Chrysa"
+xattr -cr "$BUNDLE"
+codesign --force --deep --sign - "$BUNDLE"
+codesign --verify --deep --strict "$BUNDLE"
 
-SOURCES=("$DIR"/Sources/**/*.swift)
-
-swiftc -parse-as-library -O \
-  -sdk "$SDK_PATH" \
-  "${RESOURCE_ARGS[@]}" \
-  -target arm64-apple-macosx14.0 \
-  "${SOURCES[@]}" \
-  -o "$APP/Contents/MacOS/Chrysa" \
-  -framework SwiftUI \
-  -framework AppKit \
-  -framework UniformTypeIdentifiers \
-  -framework JavaScriptCore \
-  -framework CryptoKit \
-  -framework WebKit
-
-chmod +x "$APP/Contents/MacOS/Chrysa"
-xattr -cr "$APP"
-codesign --force --deep --sign - "$APP"
-echo "✅ Built & signed $APP (${#SOURCES[@]} Swift modules)"
+# Keep the previous bundle available until the new bundle has been published.
+if [[ -e "$APP" ]]; then
+  mv "$APP" "$STAGING/Previous.app"
+fi
+if ! mv "$BUNDLE" "$APP"; then
+  if [[ -e "$STAGING/Previous.app" ]]; then
+    mv "$STAGING/Previous.app" "$APP"
+  fi
+  exit 1
+fi
+echo "Built and signed $APP"
+echo "Runtime asset source: $ASSET_APP"

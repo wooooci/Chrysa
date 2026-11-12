@@ -1,37 +1,23 @@
-import XCTest
+import Foundation
+import Testing
 @testable import Chrysa
+import ChrysaCore
+import ChrysaApplication
+import ChrysaAdapters
+import ChrysaPresentation
 
-final class ArchitectureSafetyTests: XCTestCase {
-    func testSettingsDecodeUsesDefaultsForMissingFields() throws {
-        let data = Data(#"{"autoRelay":false}"#.utf8)
-        let settings = try JSONDecoder().decode(AppSettings.self, from: data)
+struct ArchitectureSafetyTests {
 
-        XCTAssertFalse(settings.autoRelay)
-        XCTAssertEqual(settings.maxConcurrentConnections, AppSettings.default.maxConcurrentConnections)
-        XCTAssertEqual(settings.downloadDirectory, AppSettings.default.downloadDirectory)
-        XCTAssertEqual(settings.passwords, AppSettings.default.passwords)
-    }
-
-    func testTaskDecodeUsesDefaultsForMissingFields() throws {
-        let id = UUID()
-        let data = Data("{\"id\":\"\(id.uuidString)\"}".utf8)
-        let task = try JSONDecoder().decode(StudioTask.self, from: data)
-
-        XCTAssertEqual(task.id, id)
-        XCTAssertEqual(task.status, .failed)
-        XCTAssertEqual(task.rightText, "")
-        XCTAssertFalse(task.isArchived)
-        XCTAssertTrue(task.checklist.isEmpty)
-    }
-
+    @Test
     func testPathSafetyRejectsTraversalAndUnsafeNames() {
-        XCTAssertNil(PathSafety.safeFilename("../outside.7z"))
-        XCTAssertNil(PathSafety.safeFilename("nested/file.7z"))
-        XCTAssertNil(PathSafety.safeRelativeDirectory("../outside"))
-        XCTAssertNil(PathSafety.safeRelativeDirectory("/absolute/path"))
-        XCTAssertEqual(PathSafety.safeRelativeDirectory("folder/part-01"), "folder/part-01")
+        #expect(PathSafety.safeFilename("../outside.7z") == nil)
+        #expect(PathSafety.safeFilename("nested/file.7z") == nil)
+        #expect(PathSafety.safeRelativeDirectory("../outside") == nil)
+        #expect(PathSafety.safeRelativeDirectory("/absolute/path") == nil)
+        #expect(PathSafety.safeRelativeDirectory("folder/part-01") == "folder/part-01")
     }
 
+    @Test
     func testUnpackDirectoryNeverUsesEmptyCleanTitle() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("chrysa-safety-\(UUID().uuidString)", isDirectory: true)
@@ -39,19 +25,13 @@ final class ArchitectureSafetyTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
         let result = try PathSafety.uniqueChildDirectory(parent: root, proposedName: "v1.2.7z")
-        XCTAssertNotEqual(result.name, "")
-        XCTAssertTrue(result.url.path.hasPrefix(root.path + "/"))
+        #expect(result.name != "")
+        #expect(result.url.path.hasPrefix(root.path + "/"))
     }
 
-    func testLegacyStoppedTaskMapsToCancelledJob() {
-        let task = StudioTask(title: "stopped.7z", status: .failed, pill: "已停止")
-        let job = Job.fromLegacy(task, kind: .download)
-
-        XCTAssertEqual(job.status, .cancelled)
-    }
-
+    @Test
     func testJobStoreTracksProgressAndRejectsLateUpdatesAfterCompletion() async {
-        let store = JobStore()
+        let store = JobStore(inMemoryOnly: true)
         let job = Job(kind: .download, title: "game.7z", status: .running, progress: 0.25)
         await store.upsert(job)
         await store.update(id: job.id, progress: 0.7, message: "下载中")
@@ -59,41 +39,34 @@ final class ArchitectureSafetyTests: XCTestCase {
         await store.update(id: job.id, status: .running, progress: 0.4, message: "迟到进度")
 
         let saved = await store.job(for: job.id)
-        XCTAssertEqual(saved?.status, .succeeded)
-        XCTAssertEqual(saved?.progress, 1)
-        XCTAssertEqual(saved?.message, "下载中")
+        #expect(saved?.status == .succeeded)
+        #expect(saved?.progress == 1)
+        #expect(saved?.message == "下载中")
     }
 
+    @Test
     func testJobStoreRejectsLateUpdatesAfterCancellation() async {
-        let store = JobStore()
+        let store = JobStore(inMemoryOnly: true)
         let job = Job(kind: .unpack, title: "game.7z", status: .running, progress: 0.6)
         await store.upsert(job)
         await store.update(id: job.id, status: .cancelled, message: "已停止")
         await store.update(id: job.id, status: .running, progress: 0.9, message: "迟到进度")
 
         let saved = await store.job(for: job.id)
-        XCTAssertEqual(saved?.status, .cancelled)
-        XCTAssertEqual(saved?.progress, 0.6)
-        XCTAssertEqual(saved?.message, "已停止")
+        #expect(saved?.status == .cancelled)
+        #expect(saved?.progress == 0.6)
+        #expect(saved?.message == "已停止")
     }
 
-    func testStageRegistryRegistersAndExecutesStage() async throws {
-        var registry = StageRegistry()
-        let stage = EchoStage()
-        registry.register(stage)
-
-        XCTAssertEqual(registry.registeredIDs, [stage.id])
-        let result = try await registry.stage(for: stage.id)?.execute(
-            context: StageContext(jobID: UUID(), input: ArtifactRef(kind: .file, value: "/tmp/input"))
-        )
-        XCTAssertEqual(result?.artifact, ArtifactRef(kind: .file, value: "/tmp/input"))
+    @Test
+    func testJobPersistenceMigrationRecoveryAndSchemaProtection() async throws {
+        try await JobPersistenceChecks.run()
     }
-}
 
-private struct EchoStage: Stage {
-    let id = StageID("test.echo")
-
-    func execute(context: StageContext) async throws -> StageOutput {
-        StageOutput(artifact: context.input)
+    @MainActor
+    @Test
+    func testPatchWorkflowAndLaunchOutcomes() async throws {
+        try await PatchWorkflowChecks.run()
     }
+
 }

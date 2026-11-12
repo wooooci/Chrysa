@@ -1,0 +1,638 @@
+import ChrysaCore
+import Foundation
+
+package enum PipelineEvent: Sendable {
+    case jobUpdated(Job)
+    case jobRemoved(UUID)
+    case log(String, Bool)
+}
+
+/// Runs registered workflow stages and persists their state without depending on presentation types.
+@MainActor
+package final class PipelineCoordinator {
+    private let services: any WorkflowServices
+    package let jobStore: any JobRepository
+    package let events: AsyncStream<PipelineEvent>
+
+    private let eventContinuation: AsyncStream<PipelineEvent>.Continuation
+    private var cancelledTaskIDs: Set<UUID> = []
+    private var workers: [UUID: Task<Void, Never>] = [:]
+    private var bottleScanID: UUID?
+
+    package init(services: any WorkflowServices, jobStore: any JobRepository) {
+        self.services = services
+        self.jobStore = jobStore
+        let stream = AsyncStream<PipelineEvent>.makeStream()
+        self.events = stream.stream
+        self.eventContinuation = stream.continuation
+    }
+
+    package func loadJobs(migratingLegacyStore: any LegacyTaskLoading) async -> JobStoreLoadResult {
+        await jobStore.load(migratingLegacyStore: migratingLegacyStore)
+    }
+
+    package func addJob(_ job: Job) async {
+        let storedJob = await jobStore.upsert(job)
+        eventContinuation.yield(.jobUpdated(storedJob))
+    }
+
+    package func rescanCrossOverBottles(bottlesDirectory: String) async {
+        let scanID = UUID()
+        bottleScanID = scanID
+        let scanned = await services.scanBottles(directory: bottlesDirectory)
+        guard bottleScanID == scanID, !Task.isCancelled else { return }
+        let addedCount = await addDiscoveredBottles(scanned)
+        emitLog("crossover ▸ 容器目录扫描完成 (共识别 \(scanned.count) 款游戏，新增 \(addedCount) 款)", highlight: true)
+    }
+
+    @discardableResult
+    package func addDiscoveredBottles(_ discoveredJobs: [Job]) async -> Int {
+        let existingJobs = await jobStore.all()
+        var patchJobs = existingJobs.filter { $0.kind == .patch }
+        var nextPosition = (patchJobs.map(\.listPosition).max() ?? -1) + 1
+        var addedCount = 0
+
+        for discoveredJob in discoveredJobs where discoveredJob.kind == .patch {
+            let exists = patchJobs.contains {
+                $0.title.caseInsensitiveCompare(discoveredJob.title) == .orderedSame
+                    || ($0.source?.value != nil && $0.source?.value == discoveredJob.source?.value)
+            }
+            guard !exists else { continue }
+            var job = discoveredJob
+            job.listPosition = nextPosition
+            job.expanded = false
+            nextPosition += 1
+            await jobStore.upsert(job)
+            patchJobs.append(job)
+            eventContinuation.yield(.jobUpdated(job))
+            addedCount += 1
+        }
+
+        if !patchJobs.contains(where: \.expanded),
+           let firstJob = patchJobs.min(by: Self.jobOrder) {
+            await updateJob(firstJob.id, expanded: true)
+        }
+
+        return addedCount
+    }
+
+    @discardableResult
+    package func updateJob(
+        _ id: UUID,
+        kind: JobKind? = nil,
+        status: JobStatus? = nil,
+        progress: Double? = nil,
+        title: String? = nil,
+        source: ArtifactRef? = nil,
+        output: ArtifactRef? = nil,
+        message: String? = nil,
+        clearMessage: Bool = false,
+        rightText: String? = nil,
+        appID: String? = nil,
+        checklist: [CheckItem]? = nil,
+        isArchived: Bool? = nil,
+        expanded: Bool? = nil,
+        listPosition: Int? = nil
+    ) async -> Job? {
+        guard let job = await jobStore.update(
+            id: id,
+            kind: kind,
+            status: status,
+            progress: progress,
+            title: title,
+            source: source,
+            output: output,
+            message: message,
+            clearMessage: clearMessage,
+            rightText: rightText,
+            appID: appID,
+            checklist: checklist,
+            isArchived: isArchived,
+            expanded: expanded,
+            listPosition: listPosition
+        ) else { return nil }
+        eventContinuation.yield(.jobUpdated(job))
+        return job
+    }
+
+    package func removeJob(_ id: UUID) async {
+        workers[id]?.cancel()
+        cancelledTaskIDs.insert(id)
+        await services.cancel(taskID: id)
+        await jobStore.remove(id: id)
+        workers[id] = nil
+        eventContinuation.yield(.jobRemoved(id))
+    }
+
+    package func cancelTask(_ id: UUID) async {
+        cancelledTaskIDs.insert(id)
+        workers[id]?.cancel()
+        await services.cancel(taskID: id)
+        await updateJob(id, status: .cancelled, message: "已停止", rightText: "已停止")
+    }
+
+    package func clearJobs(_ ids: [UUID]) async {
+        for id in ids {
+            await removeJob(id)
+        }
+    }
+
+    package func flushJobStoreWrites() async {
+        _ = await jobStore.all()
+    }
+
+    package func resolveDroppedFile(_ url: URL) async -> (kind: JobKind, path: String) {
+        await services.resolveDroppedFile(url)
+    }
+
+    package func normalizeDownloadInput(_ input: String) -> String? {
+        services.normalizeDownloadInput(input)
+    }
+
+    package func deleteDownloadedFile(_ path: String, downloadDirectory: String) throws -> Bool {
+        try services.deleteDownloadedFile(path, downloadDirectory: downloadDirectory)
+    }
+
+    package func startDownload(urlString: String, settings: AppSettings) {
+        let cleanURL = services.normalizeDownloadInput(urlString)
+            ?? urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanURL.isEmpty else { return }
+
+        let guessedName = services.suggestedDownloadName(cleanURL)
+            ?? "Download_\(Int(Date().timeIntervalSince1970)).7z"
+        let isMirrorWait = cleanURL.lowercased().contains("mirroruploadx.com") || cleanURL.lowercased().contains("fileditch")
+        let taskID = UUID()
+        let job = Job(
+            id: taskID,
+            kind: .download,
+            title: guessedName,
+            status: .running,
+            progress: 0.02,
+            source: ArtifactRef(kind: .remoteURL, value: cleanURL),
+            message: isMirrorWait ? "优选分流 (约10s)" : "嗅探中",
+            rightText: "准备中"
+        )
+        cancelledTaskIDs.remove(taskID)
+        emitLog("sniff ▸ 开始解析链接: \(cleanURL)", highlight: true)
+
+        workers[taskID] = Task { [weak self] in
+            guard let self else { return }
+            defer { self.workers[taskID] = nil }
+            await self.addJob(job)
+            let resolvedList = await self.services.resolveDownloads(cleanURL, passwords: settings.passwords)
+            guard self.acceptsProgress(for: taskID) else { return }
+            guard let first = resolvedList.first else {
+                await self.updateJob(taskID, status: .failed, message: "解析失败", rightText: "无法获取直链")
+                self.emitLog("error ▸ 无法从该分享页解析出有效文件直链: \(cleanURL)", highlight: true)
+                return
+            }
+
+            if resolvedList.count == 1 {
+                await self.updateJob(taskID, title: first.suggestedFilename, message: "连接中")
+                self.emitLog("dl ▸ 启动高速下载: \(first.suggestedFilename ?? first.finalURL)", highlight: false)
+                await self.runDownloadTask(taskID: taskID, resolved: first, settings: settings)
+            } else {
+                await self.runFolderDownloadPipeline(firstTaskID: taskID, guessedName: guessedName, items: resolvedList, settings: settings)
+            }
+        }
+    }
+
+    package func runFolderDownloadPipeline(firstTaskID: UUID, guessedName: String, items: [ResolvedDownload], settings: AppSettings) async {
+        guard let first = items.first, acceptsProgress(for: firstTaskID) else { return }
+
+        let taskPairs = [(firstTaskID, first)] + items.dropFirst().map { (UUID(), $0) }
+        let folderTitle = first.subDirectory ?? "多文件目录"
+        await updateJob(firstTaskID, title: first.suggestedFilename ?? guessedName, message: "队列 1/\(taskPairs.count)")
+        for (offset, pair) in taskPairs.dropFirst().enumerated() {
+            let job = Job(
+                id: pair.0,
+                kind: .download,
+                title: pair.1.suggestedFilename ?? "分卷文件",
+                status: .queued,
+                source: ArtifactRef(kind: .remoteURL, value: pair.1.originalURL),
+                message: "队列 \(offset + 2)/\(taskPairs.count)",
+                rightText: pair.1.totalSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "待下载",
+                listPosition: offset + 1
+            )
+            cancelledTaskIDs.remove(pair.0)
+            await addJob(job)
+        }
+        emitLog("folder ▸ 检测到分享文件夹 [\(folderTitle)]，共 \(taskPairs.count) 个文件，开始顺序拉取...", highlight: true)
+
+        let names = taskPairs.compactMap { $0.1.suggestedFilename }
+        let primaryFile = names.first(where: services.isArchiveFile)
+        let primaryBase = primaryFile.map { (($0 as NSString).deletingPathExtension).lowercased() }
+        let requiredBinSlices: Set<String> = {
+            guard let primaryBase else { return [] }
+            return Set(names.filter {
+                let lower = $0.lowercased()
+                return lower.hasPrefix(primaryBase + "-") && lower.hasSuffix(".bin")
+            })
+        }()
+        let primaryTaskID = primaryFile.flatMap { filename in
+            taskPairs.first(where: { $0.1.suggestedFilename == filename })?.0
+        }
+        var completedPaths: [String: String] = [:]
+        var baseUnpackTriggered = false
+        var relayTask: Task<Void, Never>?
+
+        for (taskID, rawItem) in taskPairs {
+            guard acceptsProgress(for: taskID) else { continue }
+            let item = await services.refreshDownload(rawItem)
+            let holdsForRelay = settings.autoRelay && taskID == primaryTaskID
+            await runDownloadTask(
+                taskID: taskID,
+                resolved: item,
+                settings: settings,
+                suppressAutoRelay: true,
+                holdForFolderRelay: holdsForRelay,
+                progressRange: holdsForRelay ? (0.0...1.0 / 3.0) : nil
+            )
+            guard acceptsProgress(for: taskID) else { continue }
+            guard let filename = item.suggestedFilename,
+                  let job = await jobStore.job(for: taskID),
+                  job.status == .succeeded || (holdsForRelay && job.status == .running),
+                  let output = job.output?.value, services.fileExists(output),
+                  acceptsProgress(for: taskID) else { continue }
+            completedPaths[filename] = output
+
+            if !baseUnpackTriggered,
+               let primaryFile,
+               let primaryPath = completedPaths[primaryFile],
+               requiredBinSlices.isSubset(of: Set(completedPaths.keys)) {
+                baseUnpackTriggered = true
+                let hasRemainingDLCs = completedPaths.count < taskPairs.count
+                if settings.autoRelay {
+                    let detail = hasRemainingDLCs ? " (DLC 继续下载)" : ""
+                    emitLog("relay ▸ 文件与数据卷已就绪，后台静默流转至 [解压]: \(primaryFile)\(detail)", highlight: true)
+                    guard let primaryTaskID,
+                          await prepareUnpackStage(taskID: primaryTaskID, archivePath: primaryPath, progress: 1.0 / 3.0) else {
+                        continue
+                    }
+                    let relayID = primaryTaskID
+                    relayTask = Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        await self.runUnpackTask(
+                            taskID: relayID,
+                            archivePath: primaryPath,
+                            candidatePasswords: [""] + settings.passwords,
+                            settings: settings,
+                            progressRange: (1.0 / 3.0...2.0 / 3.0)
+                        )
+                    }
+                }
+            } else if baseUnpackTriggered,
+                      filename.lowercased().hasPrefix("setup_"), filename.lowercased().hasSuffix(".exe") {
+                let dlcPath = output
+                if let primaryFile, let primaryPath = completedPaths[primaryFile] {
+                    var rawBase = ((primaryPath as NSString).lastPathComponent as NSString).deletingPathExtension
+                    if rawBase.lowercased().hasPrefix("setup_") { rawBase = String(rawBase.dropFirst("setup_".count)) }
+                    let outputDirectory = ((primaryPath as NSString).deletingLastPathComponent as NSString)
+                        .appendingPathComponent(GameTitle.cleanGameTitle(from: rawBase))
+                    emitLog("innoextract ▸ DLC 下载完成，正在合并至主游戏目录: \(filename)", highlight: true)
+                    let merged = await services.mergeDLC(installer: dlcPath, directory: outputDirectory, taskID: taskID)
+                    if merged { emitLog("innoextract ▸ DLC 合并完成: \(filename)", highlight: true) }
+                }
+            }
+        }
+
+        if let relayTask {
+            await relayTask.value
+        } else if settings.autoRelay, let primaryTaskID,
+                  let primaryJob = await jobStore.job(for: primaryTaskID),
+                  primaryJob.kind == .download, primaryJob.status == .running,
+                  primaryJob.output != nil, acceptsProgress(for: primaryTaskID) {
+            await updateJob(primaryTaskID, status: .succeeded, progress: 1, clearMessage: true)
+        }
+    }
+
+    package func runDownloadTask(
+        taskID: UUID,
+        resolved: ResolvedDownload,
+        settings: AppSettings,
+        suppressAutoRelay: Bool = false,
+        holdForFolderRelay: Bool = false,
+        progressRange: ClosedRange<Double>? = nil
+    ) async {
+        guard let job = await jobStore.job(for: taskID), job.kind == .download,
+              job.status == .queued || job.status == .running,
+              acceptsProgress(for: taskID) else { return }
+        let currentTitle = job.title.isEmpty ? (resolved.suggestedFilename ?? "Download") : job.title
+        await updateJob(taskID, status: .running, title: currentTitle)
+        let stage = services.downloadStage(title: currentTitle, resolved: resolved, settings: settings)
+        let result = await execute(
+            registry: StageRegistry(stages: [stage]),
+            stageID: stage.id,
+            jobID: taskID,
+            input: ArtifactRef(kind: .remoteURL, value: resolved.finalURL),
+            progressRange: progressRange ?? (settings.autoRelay && !suppressAutoRelay ? (0.0...1.0 / 3.0) : nil)
+        )
+        guard acceptsProgress(for: taskID) else { return }
+
+        switch result {
+        case .success(let output):
+            let finalTitle = output.metadata["title"] ?? currentTitle
+            let rightText = output.metadata["rightText"]
+            let outputPath = output.artifact?.value
+            let shouldRelay = !suppressAutoRelay && settings.autoRelay
+                && outputPath.map(services.isArchiveFile) == true
+            if shouldRelay, let outputArtifact = output.artifact, let outputPath {
+                let filename = (outputPath as NSString).lastPathComponent
+                guard let transitioned = await updateJob(
+                    taskID,
+                    kind: .unpack,
+                    status: .running,
+                    progress: 1.0 / 3.0,
+                    title: filename,
+                    source: outputArtifact,
+                    output: outputArtifact,
+                    message: filename.lowercased().hasPrefix("setup_") ? "GOG 解包" : "试密中",
+                    rightText: services.fileSize(outputPath)
+                        .map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? rightText ?? ""
+                ), transitioned.status == .running, acceptsProgress(for: taskID) else { return }
+                emitLog("relay ▸ 后台自动流转至 [解压]: \(finalTitle)", highlight: true)
+                await runUnpackTask(
+                    taskID: taskID,
+                    archivePath: outputPath,
+                    candidatePasswords: [""] + settings.passwords,
+                    settings: settings,
+                    progressRange: (1.0 / 3.0...2.0 / 3.0)
+                )
+                return
+            }
+
+            if holdForFolderRelay {
+                await updateJob(
+                    taskID,
+                    status: .running,
+                    progress: progressRange?.upperBound ?? 1.0 / 3.0,
+                    title: finalTitle,
+                    output: output.artifact,
+                    clearMessage: true,
+                    rightText: rightText
+                )
+                return
+            }
+            let completed = await updateJob(
+                taskID,
+                status: .succeeded,
+                progress: 1,
+                title: finalTitle,
+                output: output.artifact,
+                clearMessage: true,
+                rightText: rightText
+            )
+            guard completed?.status == .succeeded, acceptsProgress(for: taskID) else { return }
+        case .cancelled:
+            await updateJob(taskID, status: .cancelled, message: "已停止", rightText: "已停止")
+        case .failure(let failure):
+            await updateJob(taskID, status: .failed, message: failure.message)
+        }
+    }
+
+    package func startUnpack(filePath: String, settings: AppSettings) {
+        let archivePath = services.normalizeArchivePath(filePath)
+        let filename = (archivePath as NSString).lastPathComponent
+        let fileSize = services.fileSize(archivePath)
+            .map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? ""
+        let taskID = UUID()
+        let job = Job(
+            id: taskID,
+            kind: .unpack,
+            title: filename,
+            status: .running,
+            progress: 0.08,
+            source: ArtifactRef(kind: .file, value: archivePath),
+            message: filename.lowercased().hasPrefix("setup_") ? "GOG 解包" : "试密中",
+            rightText: fileSize
+        )
+        cancelledTaskIDs.remove(taskID)
+        workers[taskID] = Task { [weak self] in
+            guard let self else { return }
+            await self.addJob(job)
+            self.emitLog("unpack ▸ 准备解压 \(filename)...", highlight: false)
+            await self.runUnpackTask(taskID: taskID, archivePath: archivePath, candidatePasswords: [""] + settings.passwords, settings: settings)
+            self.workers[taskID] = nil
+        }
+    }
+
+    private func prepareUnpackStage(taskID: UUID, archivePath: String, progress: Double) async -> Bool {
+        let filename = (archivePath as NSString).lastPathComponent
+        let fileSize = services.fileSize(archivePath)
+            .map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? ""
+        guard let updated = await updateJob(
+            taskID,
+            kind: .unpack,
+            status: .running,
+            progress: progress,
+            title: filename,
+            source: ArtifactRef(kind: .file, value: archivePath),
+            message: filename.lowercased().hasPrefix("setup_") ? "GOG 解包" : "试密中",
+            rightText: fileSize
+        ) else { return false }
+        return updated.status == .running && acceptsProgress(for: taskID)
+    }
+
+    package func runUnpackTask(
+        taskID: UUID,
+        archivePath: String,
+        candidatePasswords: [String],
+        settings: AppSettings,
+        progressRange: ClosedRange<Double>? = nil
+    ) async {
+        guard let job = await jobStore.job(for: taskID), job.kind == .unpack,
+              job.status == .queued || job.status == .running,
+              acceptsProgress(for: taskID) else { return }
+        await updateJob(taskID, status: .running)
+        let stage = services.unpackStage(passwords: candidatePasswords, deleteArchive: settings.deleteArchiveAfterUnpack)
+        let result = await execute(
+            registry: StageRegistry(stages: [stage]),
+            stageID: stage.id,
+            jobID: taskID,
+            input: ArtifactRef(kind: .file, value: archivePath),
+            progressRange: progressRange ?? (settings.autoRelay ? (0.0...0.5) : nil)
+        )
+        guard acceptsProgress(for: taskID) else { return }
+
+        switch result {
+        case .success(let output):
+            let outputPath = output.artifact?.value
+            if settings.autoRelay, let outputPath, let outputArtifact = output.artifact {
+                let title = GameTitle.cleanGameTitle(from: output.metadata["title"] ?? (outputPath as NSString).lastPathComponent)
+                let nextProgress = progressRange?.upperBound ?? 0.5
+                guard let transitioned = await updateJob(
+                    taskID,
+                    kind: .patch,
+                    status: .running,
+                    progress: nextProgress,
+                    title: title,
+                    source: outputArtifact,
+                    output: outputArtifact,
+                    message: "扫描中",
+                    rightText: "处理中",
+                    expanded: true
+                ), transitioned.status == .running, acceptsProgress(for: taskID) else { return }
+                emitLog("relay ▸ 后台自动流转至 [补丁]: \(title)", highlight: true)
+                await runPatchTask(
+                    taskID: taskID,
+                    folderPath: outputPath,
+                    cleanTitle: title,
+                    settings: settings,
+                    progressRange: (nextProgress...1.0)
+                )
+                return
+            }
+            let completed = await updateJob(
+                taskID,
+                status: .succeeded,
+                progress: 1,
+                output: output.artifact,
+                message: output.metadata["message"]
+            )
+            guard completed?.status == .succeeded, acceptsProgress(for: taskID) else { return }
+        case .cancelled:
+            await updateJob(taskID, status: .cancelled, message: "已停止", rightText: "已停止")
+        case .failure(let failure):
+            await updateJob(taskID, status: .failed, message: failure.message)
+        }
+    }
+
+    package func startPatch(folderPath: String, settings: AppSettings) {
+        let title = GameTitle.cleanGameTitle(from: (folderPath as NSString).lastPathComponent)
+        let taskID = UUID()
+        let job = Job(
+            id: taskID,
+            kind: .patch,
+            title: title,
+            status: .running,
+            progress: 0.35,
+            source: ArtifactRef(kind: .directory, value: folderPath),
+            message: "扫描中",
+            rightText: "处理中",
+            expanded: true
+        )
+        cancelledTaskIDs.remove(taskID)
+        workers[taskID] = Task { [weak self] in
+            guard let self else { return }
+            await self.addJob(job)
+            self.emitLog("pe-scan ▸ 开始扫描目录与 PE 导入表: \(title)", highlight: false)
+            await self.runPatchTask(taskID: taskID, folderPath: folderPath, cleanTitle: title, settings: settings)
+            self.workers[taskID] = nil
+        }
+    }
+
+    package func runPatchTask(
+        taskID: UUID,
+        folderPath: String,
+        cleanTitle: String,
+        settings: AppSettings,
+        progressRange: ClosedRange<Double>? = nil
+    ) async {
+        guard let job = await jobStore.job(for: taskID), job.kind == .patch,
+              job.status == .queued || job.status == .running,
+              acceptsProgress(for: taskID) else { return }
+        await updateJob(taskID, status: .running)
+        let stage = services.patchStage(title: cleanTitle, settings: settings)
+        let registry = StageRegistry(stages: [stage])
+        let result = await execute(
+            registry: registry,
+            stageID: stage.id,
+            jobID: taskID,
+            input: ArtifactRef(kind: .directory, value: folderPath),
+            progressRange: progressRange
+        )
+        guard acceptsProgress(for: taskID) else { return }
+        switch result {
+        case .success(let output):
+            await updateJob(
+                taskID,
+                status: .succeeded,
+                progress: 1,
+                title: output.metadata["title"],
+                output: output.artifact,
+                message: output.metadata["message"],
+                rightText: output.metadata["rightText"],
+                appID: output.metadata["appID"],
+                checklist: output.checklist
+            )
+        case .cancelled:
+            await updateJob(taskID, status: .cancelled, message: "已停止", rightText: "已停止")
+        case .failure(let failure):
+            await updateJob(taskID, status: .failed, message: failure.message)
+        }
+    }
+
+    package func launchGame(_ job: Job, settings: AppSettings) {
+        guard job.kind == .patch, job.status == .succeeded, workers[job.id] == nil else { return }
+        let taskID = job.id
+        cancelledTaskIDs.remove(taskID)
+        workers[taskID] = Task { [weak self] in
+            guard let self else { return }
+            defer { self.workers[taskID] = nil }
+            await self.services.clearCancellation(taskID: taskID)
+            guard let storedJob = await self.jobStore.job(for: taskID),
+                  storedJob.kind == .patch, storedJob.status == .succeeded,
+                  self.acceptsProgress(for: taskID) else { return }
+            let request = GameLaunchRequest(job: storedJob, bottlesDirectory: settings.bottlesDirectory)
+            let stage = self.services.launchStage(request: request)
+            let registry = StageRegistry(stages: [stage])
+            _ = await self.execute(
+                registry: registry,
+                stageID: stage.id,
+                jobID: taskID,
+                input: storedJob.output
+            )
+        }
+    }
+
+    private func execute(
+        registry: StageRegistry,
+        stageID: StageID,
+        jobID: UUID,
+        input: ArtifactRef?,
+        progressRange: ClosedRange<Double>? = nil
+    ) async -> StageResult {
+        let context = StageContext(
+            jobID: jobID,
+            input: input,
+            reportProgress: { [weak self] progress in
+                await self?.report(progress, for: jobID, progressRange: progressRange)
+            },
+            log: { [weak self] entry in
+                await self?.emitLog(entry.message, highlight: entry.highlight)
+            },
+            isCancelled: { [weak self] in
+                await self?.isCancelled(jobID) ?? true
+            }
+        )
+        return await registry.execute(stageID, context: context)
+    }
+
+    private func report(_ progress: StageProgress, for id: UUID, progressRange: ClosedRange<Double>?) async {
+        guard acceptsProgress(for: id) else { return }
+        let fraction = progress.fraction.map { stageFraction in
+            progressRange.map { range in
+                range.lowerBound + (range.upperBound - range.lowerBound) * stageFraction
+            } ?? stageFraction
+        }
+        await updateJob(id, status: .running, progress: fraction, message: progress.message, rightText: progress.detail)
+    }
+
+    private func isCancelled(_ id: UUID) -> Bool {
+        cancelledTaskIDs.contains(id) || Task.isCancelled
+    }
+
+    private func acceptsProgress(for id: UUID) -> Bool {
+        !cancelledTaskIDs.contains(id)
+    }
+
+    private func emitLog(_ message: String, highlight: Bool) {
+        eventContinuation.yield(.log(message, highlight))
+    }
+
+    private static func jobOrder(_ lhs: Job, _ rhs: Job) -> Bool {
+        if lhs.listPosition != rhs.listPosition { return lhs.listPosition < rhs.listPosition }
+        if lhs.createdAt == rhs.createdAt { return lhs.id.uuidString < rhs.id.uuidString }
+        return lhs.createdAt > rhs.createdAt
+    }
+}
