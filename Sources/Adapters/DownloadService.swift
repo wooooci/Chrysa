@@ -344,7 +344,8 @@ package actor DownloadService {
             ) { group in
                 for (cIdx, cStart, cEnd) in slice {
                     group.addTask {
-                        let tmpChunk = "/tmp/chrysa_chunk_\(taskID.uuidString)_\(cIdx).bin"
+                        let tmpChunk = FileManager.default.temporaryDirectory
+                            .appendingPathComponent("chrysa_chunk_\(taskID.uuidString)_\(cIdx).bin").path
                         defer { try? FileManager.default.removeItem(atPath: tmpChunk) }
                         let expectedBytes = Int(cEnd - cStart + 1)
                         var currentURL = urlSnapshot

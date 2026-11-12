@@ -17,6 +17,7 @@ package final class PipelineCoordinator {
     private let eventContinuation: AsyncStream<PipelineEvent>.Continuation
     private var cancelledTaskIDs: Set<UUID> = []
     private var workers: [UUID: Task<Void, Never>] = [:]
+    private var folderQueueOwners: Set<UUID> = []
     private var bottleScanID: UUID?
 
     package init(services: any WorkflowServices, jobStore: any JobRepository) {
@@ -84,6 +85,7 @@ package final class PipelineCoordinator {
         progress: Double? = nil,
         title: String? = nil,
         source: ArtifactRef? = nil,
+        input: ArtifactRef? = nil,
         output: ArtifactRef? = nil,
         message: String? = nil,
         clearMessage: Bool = false,
@@ -101,6 +103,7 @@ package final class PipelineCoordinator {
             progress: progress,
             title: title,
             source: source,
+            input: input,
             output: output,
             message: message,
             clearMessage: clearMessage,
@@ -126,7 +129,11 @@ package final class PipelineCoordinator {
 
     package func cancelTask(_ id: UUID) async {
         cancelledTaskIDs.insert(id)
-        workers[id]?.cancel()
+        // The folder owner Task is the queue scheduler. Cancel only this file's
+        // service work so remaining files in the same share can continue.
+        if !folderQueueOwners.contains(id) {
+            workers[id]?.cancel()
+        }
         await services.cancel(taskID: id)
         await updateJob(id, status: .cancelled, message: "已停止", rightText: "已停止")
     }
@@ -160,7 +167,7 @@ package final class PipelineCoordinator {
 
         let guessedName = services.suggestedDownloadName(cleanURL)
             ?? "Download_\(Int(Date().timeIntervalSince1970)).7z"
-        let isMirrorWait = cleanURL.lowercased().contains("mirroruploadx.com") || cleanURL.lowercased().contains("fileditch")
+        let initialMessage = services.initialDownloadMessage(for: cleanURL) ?? "嗅探中"
         let taskID = UUID()
         let job = Job(
             id: taskID,
@@ -169,7 +176,8 @@ package final class PipelineCoordinator {
             status: .running,
             progress: 0.02,
             source: ArtifactRef(kind: .remoteURL, value: cleanURL),
-            message: isMirrorWait ? "优选分流 (约10s)" : "嗅探中",
+            input: ArtifactRef(kind: .remoteURL, value: cleanURL),
+            message: initialMessage,
             rightText: "准备中"
         )
         cancelledTaskIDs.remove(taskID)
@@ -199,6 +207,8 @@ package final class PipelineCoordinator {
 
     package func runFolderDownloadPipeline(firstTaskID: UUID, guessedName: String, items: [ResolvedDownload], settings: AppSettings) async {
         guard let first = items.first, acceptsProgress(for: firstTaskID) else { return }
+        folderQueueOwners.insert(firstTaskID)
+        defer { folderQueueOwners.remove(firstTaskID) }
 
         let taskPairs = [(firstTaskID, first)] + items.dropFirst().map { (UUID(), $0) }
         let folderTitle = first.subDirectory ?? "多文件目录"
@@ -210,6 +220,7 @@ package final class PipelineCoordinator {
                 title: pair.1.suggestedFilename ?? "分卷文件",
                 status: .queued,
                 source: ArtifactRef(kind: .remoteURL, value: pair.1.originalURL),
+                input: ArtifactRef(kind: .remoteURL, value: pair.1.finalURL),
                 message: "队列 \(offset + 2)/\(taskPairs.count)",
                 rightText: pair.1.totalSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "待下载",
                 listPosition: offset + 1
@@ -318,7 +329,12 @@ package final class PipelineCoordinator {
               job.status == .queued || job.status == .running,
               acceptsProgress(for: taskID) else { return }
         let currentTitle = job.title.isEmpty ? (resolved.suggestedFilename ?? "Download") : job.title
-        await updateJob(taskID, status: .running, title: currentTitle)
+        await updateJob(
+            taskID,
+            status: .running,
+            title: currentTitle,
+            input: ArtifactRef(kind: .remoteURL, value: resolved.finalURL)
+        )
         let stage = services.downloadStage(title: currentTitle, resolved: resolved, settings: settings)
         let result = await execute(
             registry: StageRegistry(stages: [stage]),
@@ -344,7 +360,7 @@ package final class PipelineCoordinator {
                     status: .running,
                     progress: 1.0 / 3.0,
                     title: filename,
-                    source: outputArtifact,
+                    input: outputArtifact,
                     output: outputArtifact,
                     message: filename.lowercased().hasPrefix("setup_") ? "GOG 解包" : "试密中",
                     rightText: services.fileSize(outputPath)
@@ -403,6 +419,7 @@ package final class PipelineCoordinator {
             status: .running,
             progress: 0.08,
             source: ArtifactRef(kind: .file, value: archivePath),
+            input: ArtifactRef(kind: .file, value: archivePath),
             message: filename.lowercased().hasPrefix("setup_") ? "GOG 解包" : "试密中",
             rightText: fileSize
         )
@@ -426,7 +443,7 @@ package final class PipelineCoordinator {
             status: .running,
             progress: progress,
             title: filename,
-            source: ArtifactRef(kind: .file, value: archivePath),
+            input: ArtifactRef(kind: .file, value: archivePath),
             message: filename.lowercased().hasPrefix("setup_") ? "GOG 解包" : "试密中",
             rightText: fileSize
         ) else { return false }
@@ -466,7 +483,7 @@ package final class PipelineCoordinator {
                     status: .running,
                     progress: nextProgress,
                     title: title,
-                    source: outputArtifact,
+                    input: outputArtifact,
                     output: outputArtifact,
                     message: "扫描中",
                     rightText: "处理中",
@@ -507,6 +524,7 @@ package final class PipelineCoordinator {
             status: .running,
             progress: 0.35,
             source: ArtifactRef(kind: .directory, value: folderPath),
+            input: ArtifactRef(kind: .directory, value: folderPath),
             message: "扫描中",
             rightText: "处理中",
             expanded: true

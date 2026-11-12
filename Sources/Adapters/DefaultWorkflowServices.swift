@@ -44,6 +44,10 @@ package struct DefaultWorkflowServices: WorkflowServices {
         HostResolverRegistry.normalizeDownloadInput(input)
     }
 
+    package func initialDownloadMessage(for input: String) -> String? {
+        HostResolverRegistry.initialDownloadMessage(for: input)
+    }
+
     package func suggestedDownloadName(_ input: String) -> String? {
         let last = URL(string: input)?.lastPathComponent ?? ""
         return HostResolverRegistry.decodeBase64FilenameIfPossible(last) ?? (last.isEmpty ? nil : last)

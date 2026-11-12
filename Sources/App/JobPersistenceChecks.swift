@@ -20,11 +20,14 @@ enum JobPersistenceChecks {
         )
         let legacyPatch = StudioTask(
             title: "Saved Game", status: .done, pill: "已就绪", rightText: "▶ 启动",
-            localPath: "/tmp/game", exePath: "/tmp/game/game.exe", appID: "1234",
+            localPath: directory.appendingPathComponent("game").path,
+            exePath: directory.appendingPathComponent("game/game.exe").path, appID: "1234",
             isArchived: true, expanded: true,
             checklist: [CheckItem(title: "补丁完成", isChecked: true)]
         )
-        let olderDownload = StudioTask(title: "Older.7z", status: .done, localPath: "/tmp/older.7z")
+        let olderDownload = StudioTask(
+            title: "Older.7z", status: .done, localPath: directory.appendingPathComponent("older.7z").path
+        )
         let snapshot = PersistedTaskSnapshot(downloadTasks: [legacyDownload, olderDownload], unpackTasks: [], patchTasks: [legacyPatch])
         // Pre-envelope installations must migrate through the same entry point as the app.
         let legacyBytes = try JSONEncoder().encode(snapshot)
@@ -41,12 +44,56 @@ enum JobPersistenceChecks {
         try require(patch?.legacyTask() == legacyPatch, "Migration lost display or launch fields")
         try require(try Data(contentsOf: tasksURL) == legacyBytes, "Migration changed the legacy source")
 
+        // Reproduce a valid pre-migration jobs.json (including its backup) beside the
+        // real legacy archive. A readable partial archive must not suppress migration.
+        let mixedTasksURL = directory.appendingPathComponent("mixed-tasks.json")
+        let mixedJobsURL = directory.appendingPathComponent("mixed-jobs.json")
+        let legacyRimWorldDownload = StudioTask(
+            title: "RimWorld.zip", status: .done, sourceURL: "https://example.test/rimworld.zip",
+            localPath: "/downloads/RimWorld.zip"
+        )
+        let legacyRimWorldUnpack = StudioTask(
+            title: "RimWorld.zip", status: .done, localPath: "/downloads/RimWorld"
+        )
+        let legacyPatchJobs = (1...10).map { index in
+            StudioTask(title: "Legacy Game \(index)", status: .done, localPath: "/games/Legacy Game \(index)")
+        }
+        let twelveLegacyTasks = PersistedTaskSnapshot(
+            downloadTasks: [legacyRimWorldDownload],
+            unpackTasks: [legacyRimWorldUnpack],
+            patchTasks: legacyPatchJobs
+        )
+        try JSONEncoder().encode(twelveLegacyTasks).write(to: mixedTasksURL, options: .atomic)
+        let dummyJobs = [
+            Job(kind: .download, title: "JobStoreCheck.7z", status: .succeeded),
+            Job(kind: .unpack, title: "CancelledCheck.7z", status: .cancelled, message: "已停止")
+        ]
+        let encodedDummyJobs = try JSONSerialization.jsonObject(with: JSONEncoder().encode(dummyJobs))
+        let oldEnvelope = try JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "jobs": encodedDummyJobs])
+        try oldEnvelope.write(to: mixedJobsURL, options: .atomic)
+        try oldEnvelope.write(to: mixedJobsURL.appendingPathExtension("bak"), options: .atomic)
+
+        let mixedLegacyStore = TaskStore(customFileURL: mixedTasksURL)
+        let mixedStore = JobStore(customFileURL: mixedJobsURL)
+        guard case .migrated(let mixedJobs) = await mixedStore.load(migratingLegacyStore: mixedLegacyStore) else {
+            throw CheckFailure("Valid partial jobs archive blocked the legacy migration")
+        }
+        try require(mixedJobs.count == 14, "Migration did not merge both existing jobs and all 12 legacy records")
+        let legacyIDs = [legacyRimWorldDownload.id, legacyRimWorldUnpack.id] + legacyPatchJobs.map(\.id)
+        try require(legacyIDs.allSatisfy { id in mixedJobs.contains(where: { $0.id == id }) }, "Migration omitted one or more legacy records")
+        await mixedStore.remove(id: legacyIDs[0])
+        let restartedMixedStore = JobStore(customFileURL: mixedJobsURL)
+        let restartedMixed = await restartedMixedStore.load(migratingLegacyStore: mixedLegacyStore)
+        try require(restartedMixed.jobs.count == 13, "A completed migration resurrected a subsequently deleted legacy job")
+        try require(await restartedMixedStore.job(for: legacyIDs[0]) == nil, "Deleted legacy job was restored from tasks.json")
+
         let live = Job(
             kind: .unpack, title: "Archive.7z", status: .running, progress: 0.6,
-            source: ArtifactRef(kind: .file, value: "/tmp/archive.7z")
+            source: ArtifactRef(kind: .file, value: directory.appendingPathComponent("archive.7z").path),
+            input: ArtifactRef(kind: .file, value: directory.appendingPathComponent("archive.7z").path)
         )
         await store.upsert(live)
-        let output = ArtifactRef(kind: .directory, value: "/tmp/unpacked")
+        let output = ArtifactRef(kind: .directory, value: directory.appendingPathComponent("unpacked").path)
         await store.update(id: live.id, status: .succeeded, progress: 1, output: output, message: "已解锁")
         await store.update(id: live.id, status: .running, progress: 0.2, message: "迟到进度")
         await store.upsert(live)
@@ -67,7 +114,7 @@ enum JobPersistenceChecks {
         try require(restoredUnpack?.status == .succeeded && restoredUnpack?.isArchived == true, "Restart lost terminal or display state")
 
         var editedUnpack = restoredUnpack!.legacyTask()
-        editedUnpack.localPath = "/tmp/relocated-output"
+        editedUnpack.localPath = directory.appendingPathComponent("relocated-output").path
         await restarted.synchronizePresentation(from: PersistedTaskSnapshot(
             downloadTasks: [interrupted!.legacyTask()], unpackTasks: [editedUnpack], patchTasks: [legacyPatch]
         ))

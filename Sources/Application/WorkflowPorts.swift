@@ -18,6 +18,7 @@ package protocol JobRepository: Sendable {
         progress: Double?,
         title: String?,
         source: ArtifactRef?,
+        input: ArtifactRef?,
         output: ArtifactRef?,
         message: String?,
         clearMessage: Bool,
@@ -39,6 +40,7 @@ package protocol WorkflowServices: Sendable {
     func launchStage(request: GameLaunchRequest) -> any Stage
 
     func normalizeDownloadInput(_ input: String) -> String?
+    func initialDownloadMessage(for input: String) -> String?
     func suggestedDownloadName(_ input: String) -> String?
     func resolveDownloads(_ input: String, passwords: [String]) async -> [ResolvedDownload]
     func refreshDownload(_ item: ResolvedDownload) async -> ResolvedDownload

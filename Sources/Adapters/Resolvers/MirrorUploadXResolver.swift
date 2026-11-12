@@ -7,6 +7,10 @@ package struct MirrorUploadXResolver: HostResolver {
         host.contains("mirroruploadx.com")
     }
 
+    package func initialDownloadMessage(for url: URL) -> String? {
+        "优选分流 (约10s)"
+    }
+
     package func resolve(input: String, url: URL, passwords: [String]) async -> [ResolvedDownload] {
         await Self.resolveMirrorUploadX(urlString: input, passwords: passwords)
     }

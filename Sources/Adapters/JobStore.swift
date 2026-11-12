@@ -3,16 +3,38 @@ import ChrysaApplication
 import Foundation
 
 private struct JobStoreEnvelope: Codable {
+    private enum CodingKeys: String, CodingKey { case schemaVersion, jobs, legacyTaskMigrationCompleted }
+
     package let schemaVersion: Int
     package let jobs: [Job]
+    package let legacyTaskMigrationCompleted: Bool
+
+    package init(schemaVersion: Int, jobs: [Job], legacyTaskMigrationCompleted: Bool) {
+        self.schemaVersion = schemaVersion
+        self.jobs = jobs
+        self.legacyTaskMigrationCompleted = legacyTaskMigrationCompleted
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        jobs = try container.decode([Job].self, forKey: .jobs)
+        legacyTaskMigrationCompleted = try container.decodeIfPresent(Bool.self, forKey: .legacyTaskMigrationCompleted) ?? false
+    }
+}
+
+private struct DecodedJobArchive {
+    let jobs: [Job]
+    let legacyTaskMigrationCompleted: Bool
 }
 
 /// The authoritative task repository after the Job/Stage migration.
 package actor JobStore: JobRepository {
-    private static let schemaVersion = 1
+    private static let schemaVersion = 2
     private let inMemoryOnly: Bool
     private let fileURL: URL
     private var preserveUnsupportedFile = false
+    private var legacyTaskMigrationCompleted = false
     private var jobs: [UUID: Job]
 
     package init(inMemoryOnly: Bool = false, customFileURL: URL? = nil, seed: [Job] = []) {
@@ -35,10 +57,11 @@ package actor JobStore: JobRepository {
             return .unsupported
         }
 
-        if let data, let decoded = Self.decodeJobs(data) {
+        if let data, let decoded = Self.decodeArchive(data) {
             preserveUnsupportedFile = false
-            jobs = Self.normalizeInterruptedJobs(decoded)
-            if jobs.values.sorted(by: Self.jobOrder) != decoded.sorted(by: Self.jobOrder) {
+            legacyTaskMigrationCompleted = decoded.legacyTaskMigrationCompleted
+            jobs = Self.normalizeInterruptedJobs(decoded.jobs)
+            if jobs.values.sorted(by: Self.jobOrder) != decoded.jobs.sorted(by: Self.jobOrder) {
                 persist()
             }
             return .loaded(all())
@@ -50,8 +73,9 @@ package actor JobStore: JobRepository {
             preserveUnsupportedFile = true
             return .unsupported
         }
-        if let backup, let restored = Self.decodeJobs(backup) {
-            jobs = Self.normalizeInterruptedJobs(restored)
+        if let backup, let restored = Self.decodeArchive(backup) {
+            legacyTaskMigrationCompleted = restored.legacyTaskMigrationCompleted
+            jobs = Self.normalizeInterruptedJobs(restored.jobs)
             persist()
             print("[persistence] restored jobs from backup: \(fileURL.path).bak")
             return .recovered(all())
@@ -64,20 +88,35 @@ package actor JobStore: JobRepository {
 
     package func load(migratingLegacyStore legacyStore: any LegacyTaskLoading) async -> JobStoreLoadResult {
         let result = load()
-        guard result.canMigrateLegacyData else { return result }
+        guard !inMemoryOnly, !preserveUnsupportedFile, !legacyTaskMigrationCompleted else { return result }
 
         switch await legacyStore.loadResult() {
         case .loaded(let snapshot), .recovered(let snapshot):
-            jobs = Self.indexed(Self.jobs(from: snapshot))
+            // Merge by stable ID. This also repairs older valid jobs.json files that were
+            // created before the legacy tasks.json migration completed.
+            var merged = Self.indexed(Self.jobs(from: snapshot))
+            for current in jobs.values {
+                merged[current.id] = current
+            }
+            jobs = merged
+            legacyTaskMigrationCompleted = true
             return persist() ? .migrated(all()) : .migrationPending(all())
-        case .unsupported:
-            // Keep migration pending until a version that can read the legacy file runs.
-            preserveUnsupportedFile = true
-            return .unsupported
         case .missing:
+            legacyTaskMigrationCompleted = true
+            guard persist() else { return .migrationPending(all()) }
+            if case .missing = result { return .loaded(all()) }
             return result
+        case .unsupported:
+            // Do not create a shadow archive when the only source is from a newer app.
+            if jobs.isEmpty, case .missing = result {
+                preserveUnsupportedFile = true
+                return .unsupported
+            }
+            // Keep readable jobs visible; retain the migration marker for a future retry.
+            return .migrationPending(all())
         case .corrupt:
-            return .corrupt
+            if jobs.isEmpty, case .missing = result { return .corrupt }
+            return .migrationPending(all())
         }
     }
 
@@ -102,6 +141,7 @@ package actor JobStore: JobRepository {
             guard current.kind == presented.kind else { continue }
             current.title = presented.title
             current.source = presented.source ?? current.source
+            current.input = presented.input ?? current.input
             current.output = presented.output ?? current.output
             if current.status == presented.status { current.message = presented.message }
             current.rightText = presented.rightText
@@ -132,6 +172,7 @@ package actor JobStore: JobRepository {
         progress: Double? = nil,
         title: String? = nil,
         source: ArtifactRef? = nil,
+        input: ArtifactRef? = nil,
         output: ArtifactRef? = nil,
         message: String? = nil,
         clearMessage: Bool = false,
@@ -150,6 +191,7 @@ package actor JobStore: JobRepository {
         if let progress { job.progress = progress }
         if let title { job.title = title }
         if let source { job.source = source }
+        if let input { job.input = input }
         if let output { job.output = output }
         if clearMessage {
             job.message = nil
@@ -192,9 +234,13 @@ package actor JobStore: JobRepository {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(JobStoreEnvelope(schemaVersion: Self.schemaVersion, jobs: all()))
+            let data = try encoder.encode(JobStoreEnvelope(
+                schemaVersion: Self.schemaVersion,
+                jobs: all(),
+                legacyTaskMigrationCompleted: legacyTaskMigrationCompleted
+            ))
             let backupURL = fileURL.appendingPathExtension("bak")
-            if let existingData = try? Data(contentsOf: fileURL), Self.decodeJobs(existingData) != nil {
+            if let existingData = try? Data(contentsOf: fileURL), Self.decodeArchive(existingData) != nil {
                 try existingData.write(to: backupURL, options: [.atomic])
             }
             try data.write(to: fileURL, options: [.atomic])
@@ -234,14 +280,17 @@ package actor JobStore: JobRepository {
         return version > schemaVersion
     }
 
-    private static func decodeJobs(_ data: Data) -> [Job]? {
+    private static func decodeArchive(_ data: Data) -> DecodedJobArchive? {
         let decoder = JSONDecoder()
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               object["schemaVersion"] != nil,
               let envelope = try? decoder.decode(JobStoreEnvelope.self, from: data),
               envelope.schemaVersion > 0,
               envelope.schemaVersion <= schemaVersion else { return nil }
-        return envelope.jobs
+        return DecodedJobArchive(
+            jobs: envelope.jobs,
+            legacyTaskMigrationCompleted: envelope.legacyTaskMigrationCompleted
+        )
     }
 
     private static func readBackup(for url: URL) -> Data? {

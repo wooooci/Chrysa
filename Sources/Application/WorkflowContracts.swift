@@ -43,7 +43,7 @@ package struct GameLaunchRequest: Sendable {
         self.jobID = job.id
         self.title = job.title
         self.executablePath = job.exePath
-        self.gameDirectory = job.localPath
+        self.gameDirectory = job.input?.kind == .directory ? job.input?.value : job.localPath
         self.bottlesDirectory = bottlesDirectory
     }
 }
@@ -68,13 +68,6 @@ package enum JobStoreLoadResult: Sendable {
         switch self {
         case .loaded(let jobs), .recovered(let jobs), .migrated(let jobs), .migrationPending(let jobs): return jobs
         case .missing, .corrupt, .unsupported: return []
-        }
-    }
-
-    package var canMigrateLegacyData: Bool {
-        switch self {
-        case .missing, .corrupt: return true
-        case .loaded, .recovered, .migrated, .migrationPending, .unsupported: return false
         }
     }
 }

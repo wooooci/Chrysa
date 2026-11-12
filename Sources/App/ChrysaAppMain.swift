@@ -130,7 +130,9 @@ struct ChrysaAppMain {
         }
 
         if CommandLine.arguments.contains("--render-snapshots") {
-            let outDir = "/Users/woooci/.gemini/antigravity/brain/1469f655-160e-4a84-9da9-fa0217bac001"
+            let outDir = ProcessInfo.processInfo.environment["CHRYSA_SNAPSHOT_DIR"]
+                ?? FileManager.default.temporaryDirectory.appendingPathComponent("ChrysaSnapshots", isDirectory: true).path
+            try? FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true)
             let presets: [(StudioTab, SettingsCategory, String)] = [
                 (.download, .appearance, "dl"),
                 (.unpack, .appearance, "un"),
@@ -187,7 +189,8 @@ struct ChrysaAppMain {
         precondition(gofileProxy == true && vfProxy == false)
 
         // 2. AppSettingsStore & TaskStore Round-Trip + Interrupted Task Normalization
-        let tmpDir = URL(fileURLWithPath: "/tmp/chrysa_selftest_\(UUID().uuidString)")
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chrysa-selftest-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tmpDir) }
 
@@ -233,7 +236,7 @@ struct ChrysaAppMain {
         var stageRegistry = StageRegistry()
         let passthroughStage = SelfTestPassthroughStage()
         stageRegistry.register(passthroughStage)
-        let stageInput = ArtifactRef(kind: .file, value: "/tmp/stage-input")
+        let stageInput = ArtifactRef(kind: .file, value: tmpDir.appendingPathComponent("stage-input").path)
         guard let registeredStage = stageRegistry.stage(for: passthroughStage.id) else {
             preconditionFailure("Stage registry failed to retain a registered stage")
         }
@@ -254,10 +257,15 @@ struct ChrysaAppMain {
             preconditionFailure("Job persistence check failed: \(error.localizedDescription)")
         }
 
-        // 3. HostResolverRegistry Plugin Rack
-        let pdResolved = await HostResolverRegistry.resolveSingleLink("https://pixeldrain.com/u/zeC9sxvA")
-        let mailItems = await HostResolverRegistry.resolveLinks("https://cloud.mail.ru/public/BqBr/K7pB3Myfy")
-        print("3. HostResolverRegistry -> Pixeldrain='\(pdResolved.suggestedFilename ?? "")', Mail.ru count=\(mailItems.count)")
+        // 3. HostResolverRegistry pure parsing only; self-test must remain offline.
+        let encodedFilename = Data("https://cdn.example.test/RainWorld.7z".utf8)
+            .base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+        let offlineResolved = await HostResolverRegistry.resolveLinks("https://example.test/\(encodedFilename)")
+        precondition(offlineResolved.first?.suggestedFilename == "RainWorld.7z")
+        precondition(HostResolverRegistry.normalizeDownloadInput("pixeldrain.com/u/example") == "https://pixeldrain.com/u/example")
+        print("3. HostResolverRegistry -> offline filename decoding and URL normalization OK")
 
         // 4. UnpackService Multipart Normalization + Corrupt Archive Rejection
         FileManager.default.createFile(atPath: tmpDir.appendingPathComponent("TestGame.part01.rar").path, contents: Data())
@@ -285,32 +293,32 @@ struct ChrysaAppMain {
         precondition(badRejected)
         print("4. UnpackService -> multipart normalized OK, corruptArchiveRejected=\(badRejected)")
 
-        // 5. PEBinaryInspector RVA Import Table Parser + Dynamic CrossOver Bottle Scanner + PatchService Language Binding
-        let realOSS = "/Users/woooci/Library/Application Support/CrossOver/Bottles/Order of the Sinking Star/drive_c/Order of the Sinking Star/sinking_star.exe"
-        if FileManager.default.fileExists(atPath: realOSS) {
-            let pe = PEBinaryInspector.inspect(exePath: realOSS)
-            print("5A. PEBinaryInspector (RVA Import Table) -> is64Bit=\(pe.is64Bit), importsSteamAPI=\(pe.importsSteamAPI), importsD3D12=\(pe.importsD3D12)")
-            precondition(pe.is64Bit && pe.importsSteamAPI)
-        }
-
+        // 5. Scan only an isolated fixture; never inspect the user's CrossOver data.
+        let fixtureBottles = tmpDir.appendingPathComponent("FixtureBottles", isDirectory: true)
+        let fixtureApps = tmpDir.appendingPathComponent("FixtureCrossOverApps", isDirectory: true)
+        let fixtureGame = fixtureBottles.appendingPathComponent("Fixture Bottle/drive_c/Fixture Game", isDirectory: true)
+        try! FileManager.default.createDirectory(at: fixtureGame, withIntermediateDirectories: true)
+        try! FileManager.default.createDirectory(at: fixtureApps, withIntermediateDirectories: true)
+        try! Data("fixture".utf8).write(to: fixtureGame.appendingPathComponent("Fixture.exe"))
         let discoveredBottles = CrossOverBottleScanner.scanInstalledBottles(
-            bottlesDirectory: AppSettings.default.bottlesDirectory
+            bottlesDirectory: fixtureBottles.path,
+            crossOverAppsDirectory: fixtureApps.path
         )
-        let bottleTitles = discoveredBottles.map(\.title).joined(separator: ", ")
-        print("5B. Dynamic Bottle Scanner -> discovered \(discoveredBottles.count) games: [\(bottleTitles)]")
+        precondition(discoveredBottles.count == 1 && discoveredBottles[0].title == "Fixture Bottle")
+        print("5A. CrossOver Bottle Scanner -> isolated local fixture discovered")
 
         let collapsedBottle = Job(
             kind: .patch,
             title: "Existing Bottle",
             status: .succeeded,
-            source: ArtifactRef(kind: .directory, value: "/tmp/existing-bottle"),
+            source: ArtifactRef(kind: .directory, value: tmpDir.appendingPathComponent("existing-bottle").path),
             expanded: false
         )
         let newBottle = Job(
             kind: .patch,
             title: "New Bottle",
             status: .succeeded,
-            source: ArtifactRef(kind: .directory, value: "/tmp/new-bottle")
+            source: ArtifactRef(kind: .directory, value: tmpDir.appendingPathComponent("new-bottle").path)
         )
         let scanCoordinator = PipelineCoordinator(
             services: DefaultWorkflowServices(),
@@ -391,15 +399,16 @@ struct ChrysaAppMain {
         precondition(Date().timeIntervalSince(processStart) < 5, "Task cancellation did not terminate the process")
         print("7. ProcessSupervisor -> Swift Task cancellation terminates a running process")
 
-        if let localURL = ProcessInfo.processInfo.environment["CHRYSA_SELFTEST_DOWNLOAD_URL"] {
+        let allowNetworkFixtures = ProcessInfo.processInfo.environment["CHRYSA_SELFTEST_ALLOW_NETWORK"] == "1"
+        if allowNetworkFixtures, let localURL = ProcessInfo.processInfo.environment["CHRYSA_SELFTEST_DOWNLOAD_URL"] {
             await runLocalPipelineSelfTest(url: localURL, directory: tmpDir)
         } else {
-            print("8. Local download pipeline -> skipped (CHRYSA_SELFTEST_DOWNLOAD_URL not set)")
+            print("8. Local download pipeline -> skipped (explicit CHRYSA_SELFTEST_ALLOW_NETWORK=1 required)")
         }
-        if let slowURL = ProcessInfo.processInfo.environment["CHRYSA_SELFTEST_SLOW_DOWNLOAD_URL"] {
+        if allowNetworkFixtures, let slowURL = ProcessInfo.processInfo.environment["CHRYSA_SELFTEST_SLOW_DOWNLOAD_URL"] {
             await runActiveDownloadCancellationSelfTest(url: slowURL, directory: tmpDir)
         } else {
-            print("10. Active download cancellation -> skipped (CHRYSA_SELFTEST_SLOW_DOWNLOAD_URL not set)")
+            print("10. Active download cancellation -> skipped (explicit CHRYSA_SELFTEST_ALLOW_NETWORK=1 required)")
         }
 
         await ProcessSupervisor.shared.terminateAll()

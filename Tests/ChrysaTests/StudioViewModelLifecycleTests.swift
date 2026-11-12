@@ -92,6 +92,7 @@ private struct GatedBottleScanServices: WorkflowServices {
     }
 
     func normalizeDownloadInput(_ input: String) -> String? { base.normalizeDownloadInput(input) }
+    func initialDownloadMessage(for input: String) -> String? { base.initialDownloadMessage(for: input) }
     func suggestedDownloadName(_ input: String) -> String? { base.suggestedDownloadName(input) }
     func resolveDownloads(_ input: String, passwords: [String]) async -> [ResolvedDownload] {
         await base.resolveDownloads(input, passwords: passwords)
