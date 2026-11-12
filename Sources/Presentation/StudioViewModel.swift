@@ -19,7 +19,11 @@ package final class StudioViewModel: ObservableObject {
 
     @Published package private(set) var jobs: [Job] = []
     @Published package var logs: [LogEntry] = []
-
+    @Published package var isLogDrawerPresented: Bool = false
+    @Published package var logModuleFilter: LogModule? = nil
+    @Published package var logErrorsOnly: Bool = false
+    @Published package var logSearchQuery: String = ""
+    @Published package var hasUnreadErrorLogs: Bool = false
     package let settingsStore: AppSettingsStore
     package let taskStore: any LegacyTaskLoading
     package let coordinator: PipelineCoordinator
@@ -78,11 +82,8 @@ package final class StudioViewModel: ObservableObject {
 
         if seedDemoData {
             seedShowcaseState()
-        } else if ephemeral {
-            appendLog("daemon ▸ 自检内存沙箱已就绪", highlight: false)
-        } else {
+        } else if !ephemeral {
             canWriteJobs = false
-            appendLog("daemon ▸ 引擎就绪 (aria2c + 7zz + gbe_fork + CrossOver 动态扫描)", highlight: false)
             resolvedSettings.warmPreviewCache()
             _ = resolvedSettings.applyAppIcon(
                 id: resolvedSettings.settings.selectedIconID,
@@ -104,11 +105,10 @@ package final class StudioViewModel: ObservableObject {
         case .migrated(let jobs):
             restoredJobs = jobs
             canWriteJobs = true
-            appendLog("persistence ▸ 已从旧任务记录迁移 \(jobs.count) 项", highlight: false)
         case .migrationPending(let jobs):
             restoredJobs = jobs
             canWriteJobs = true
-            appendLog("persistence ▸ 已载入 \(jobs.count) 项记录，旧任务迁移尚未完成，将在条件恢复后重试", highlight: true)
+            appendLog(LogEntry(module: .patch, level: .warning, message: "persistence ▸ 旧任务迁移尚未完成，将在条件恢复后重试"))
         case .missing, .corrupt:
             restoredJobs = []
             canWriteJobs = true
@@ -118,10 +118,14 @@ package final class StudioViewModel: ObservableObject {
             restoredJobs = legacy.downloadTasks.map { Job.fromLegacy($0, kind: .download) }
                 + legacy.unpackTasks.map { Job.fromLegacy($0, kind: .unpack) }
                 + legacy.patchTasks.map { Job.fromLegacy($0, kind: .patch) }
-            appendLog("persistence ▸ 任务档案由较新版本创建，当前仅显示可读的旧记录", highlight: true)
+            appendLog(LogEntry(module: .patch, level: .warning, message: "persistence ▸ 任务档案由较新版本创建，当前仅显示只读旧记录"))
         }
 
         jobs = restoredJobs
+        let persistedLogs = restoredJobs.flatMap(\.logs)
+        if !persistedLogs.isEmpty {
+            logs = Array((persistedLogs + logs).suffix(300))
+        }
         rescanCrossOverBottles()
     }
 
@@ -164,8 +168,8 @@ package final class StudioViewModel: ObservableObject {
             jobs.sort(by: Self.jobOrder)
         case .jobRemoved(let id):
             jobs.removeAll { $0.id == id }
-        case .log(let message, let highlight):
-            appendLog(message, highlight: highlight)
+        case .log(let entry):
+            appendLog(entry)
         }
     }
 
@@ -204,22 +208,18 @@ package final class StudioViewModel: ObservableObject {
 
     package func toggleAutoRelay() {
         settingsStore.settings.autoRelay.toggle()
-        appendLog("config ▸ 自动流转: \(settingsStore.settings.autoRelay ? "开启 (后台静默接力)" : "关闭")", highlight: false)
     }
 
     package func toggleDeleteArchiveAfterUnpack() {
         settingsStore.settings.deleteArchiveAfterUnpack.toggle()
-        appendLog("config ▸ 解压后自动清理压缩包: \(settingsStore.settings.deleteArchiveAfterUnpack ? "开启" : "关闭")", highlight: false)
     }
 
     package func setConcurrentConnections(_ count: Int) {
         settingsStore.settings.maxConcurrentConnections = count
-        appendLog("config ▸ 默认下载并发连接数已设为: \(count)", highlight: false)
     }
 
     package func setDefaultLanguage(_ lang: SteamLanguageOption) {
         settingsStore.settings.defaultLanguage = lang
-        appendLog("config ▸ Goldberg 默认语言已设为: \(lang.rawValue) (\(lang.shortLabel))", highlight: false)
     }
 
     package func chooseDownloadDirectory() {
@@ -231,15 +231,12 @@ package final class StudioViewModel: ObservableObject {
         panel.message = "选择默认下载保存目录"
         if panel.runModal() == .OK, let url = panel.url {
             settingsStore.settings.downloadDirectory = url.path
-            appendLog("config ▸ 下载目录已更新为: \(settingsStore.settings.displayDownloadDirectory)", highlight: true)
         }
     }
 
     package func resetDownloadDirectory() {
         settingsStore.settings.downloadDirectory = AppSettings.default.downloadDirectory
-        appendLog("config ▸ 下载目录已恢复默认: ~/Downloads", highlight: false)
     }
-
     package func openDownloadDirectoryInFinder() {
         let dl = (settingsStore.settings.downloadDirectory as NSString).expandingTildeInPath
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: dl)
@@ -253,7 +250,6 @@ package final class StudioViewModel: ObservableObject {
         panel.message = "选择 CrossOver 容器根目录 (Bottles)"
         if panel.runModal() == .OK, let url = panel.url {
             settingsStore.settings.bottlesDirectory = url.path
-            appendLog("config ▸ 容器目录已更新为: \(settingsStore.settings.displayBottlesDirectory)", highlight: true)
             rescanCrossOverBottles()
         }
     }
@@ -273,7 +269,6 @@ package final class StudioViewModel: ObservableObject {
         guard !trimmed.isEmpty else { return }
         if !settingsStore.settings.passwords.contains(trimmed) {
             settingsStore.settings.passwords.insert(trimmed, at: 0)
-            appendLog("dict ▸ 已向密码本新增 1 条掩码密码 (共 \(settingsStore.settings.passwords.count) 组)", highlight: true)
         }
         newPasswordInput = ""
     }
@@ -396,14 +391,11 @@ package final class StudioViewModel: ObservableObject {
     // MARK: - Task Management (Stop / Archive / Delete / Retry / Edit / Batch)
     package func stopTask(_ task: StudioTask) {
         Task { await coordinator.cancelTask(task.id) }
-        appendLog("task ▸ 已终止任务: \(task.title)", highlight: false)
     }
 
     package func archiveTask(_ task: StudioTask) {
         guard let job = jobs.first(where: { $0.id == task.id }) else { return }
         Task { await coordinator.updateJob(job.id, isArchived: !job.isArchived) }
-        let type = Self.taskTypeName(job.kind)
-        appendLog("archive ▸ \(job.isArchived ? "已恢复" : "已归档")\(type)项目: \(task.title)", highlight: false)
     }
 
     package func deleteTask(_ task: StudioTask, deleteLocalFile: Bool = false) {
@@ -412,16 +404,15 @@ package final class StudioViewModel: ObservableObject {
             await coordinator.removeJob(task.id)
             if deleteLocalFile, let local = task.localPath {
                 do {
-                    if try coordinator.deleteDownloadedFile(local, downloadDirectory: settingsStore.settings.downloadDirectory) {
-                        appendLog("delete ▸ 已删除记录及本地文件: \(task.title)", highlight: true)
-                    } else {
-                        appendLog("warning ▸ 为避免误删，容器/目录或下载目录外路径未删除；仅移除记录", highlight: true)
-                    }
+                    _ = try coordinator.deleteDownloadedFile(local, downloadDirectory: settingsStore.settings.downloadDirectory)
                 } catch {
-                    appendLog("error ▸ 本地文件删除失败，已保留文件: \(error.localizedDescription)", highlight: true)
+                    appendLog(LogEntry(
+                        taskID: task.id,
+                        module: .download,
+                        level: .error,
+                        message: "error ▸ 本地文件删除失败，已保留文件: \(error.localizedDescription)"
+                    ))
                 }
-            } else {
-                appendLog("delete ▸ 已移除项目记录: \(task.title)", highlight: false)
             }
         }
     }
@@ -470,7 +461,6 @@ package final class StudioViewModel: ObservableObject {
             }
         }
         editingTask = nil
-        appendLog("edit ▸ 已更新\(Self.taskTypeName(job.kind))项目: \(job.title)", highlight: false)
         Task {
             await coordinator.updateJob(job.id, title: job.title, source: job.source, input: job.input, output: job.output)
             if andRetry {
@@ -484,13 +474,11 @@ package final class StudioViewModel: ObservableObject {
         for job in activeJobs where job.status == .succeeded && !job.isArchived {
             Task { await coordinator.updateJob(job.id, isArchived: true) }
         }
-        appendLog("archive ▸ 已归档当前列表所有已完成项目", highlight: false)
     }
 
     package func deleteAllFailedInActiveTab() {
         let failedIDs = activeJobs.filter { $0.status == .failed || $0.status == .cancelled }.map(\.id)
         Task { await coordinator.clearJobs(failedIDs) }
-        appendLog("clean ▸ 已清理当前列表所有失败项目", highlight: false)
     }
 
     package func retryAllFailedInActiveTab() {
@@ -505,9 +493,7 @@ package final class StudioViewModel: ObservableObject {
     package func clearAllInActiveTab() {
         let ids = activeJobs.map(\.id)
         Task { await coordinator.clearJobs(ids) }
-        appendLog("clean ▸ 已清空当前列表", highlight: false)
     }
-
     package func toggleExpanded(_ task: StudioTask) {
         guard let job = jobs.first(where: { $0.id == task.id }) else { return }
         Task { await coordinator.updateJob(job.id, expanded: !job.expanded) }
@@ -561,28 +547,84 @@ package final class StudioViewModel: ObservableObject {
         if let clip = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
            !clip.isEmpty {
             urlInput = clip
-            appendLog("clipboard ▸ 已从剪贴板粘贴链接", highlight: false)
         }
     }
 
-    // MARK: - Logging & Showcase Seed
-    private static let logTimeFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss"
-        return f
-    }()
+    // MARK: - Structured Logging & Drawer Queries
+    package func appendLog(_ entry: LogEntry) {
+        logs.append(entry)
+        if logs.count > 300 {
+            logs.removeFirst(logs.count - 300)
+        }
+        if entry.level == .error && !isLogDrawerPresented {
+            hasUnreadErrorLogs = true
+        }
+        print("[\(entry.time)] [\(entry.module.rawValue):\(entry.level.rawValue)] \(entry.message)")
+    }
 
     package func appendLog(_ text: String, highlight: Bool = false) {
-        let tStr = Self.logTimeFormatter.string(from: Date())
-        let entry = LogEntry(time: tStr, message: text, highlight: highlight)
-        logs.append(entry)
-        if logs.count > 200 {
-            logs.removeFirst(logs.count - 200)
-        }
-        print("[\(tStr)] \(text)")
+        let lower = text.lowercased()
+        let level: LogLevel = (lower.hasPrefix("error") || lower.contains("失败") || lower.contains("异常"))
+            ? .error
+            : (lower.hasPrefix("warning") ? .warning : .info)
+        appendLog(LogEntry(module: .patch, level: level, message: text))
     }
+
+    package func logs(for taskID: UUID) -> [LogEntry] {
+        if let jobLogs = jobs.first(where: { $0.id == taskID })?.logs, !jobLogs.isEmpty {
+            return jobLogs
+        }
+        return logs.filter { $0.taskID == taskID }
+    }
+
+    package func rawErrorOutput(for taskID: UUID) -> String? {
+        let chunks = logs(for: taskID).compactMap(\.rawOutput).filter { !$0.isEmpty }
+        guard !chunks.isEmpty else { return nil }
+        return chunks.joined(separator: "\n\n")
+    }
+
+    package func copyTaskLogs(taskID: UUID, includeRawOnly: Bool = false) {
+        let taskLogs = logs(for: taskID)
+        let rawText = rawErrorOutput(for: taskID)
+        let output: String
+        if includeRawOnly, let rawText {
+            output = rawText
+        } else {
+            var lines = taskLogs.map { "[\($0.time)] \($0.message)" }
+            if let rawText, !rawText.isEmpty {
+                lines.append("\n--- Raw Output ---\n\(rawText)")
+            }
+            output = lines.joined(separator: "\n")
+        }
+        guard !output.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(output, forType: .string)
+    }
+
+    package var filteredGlobalLogs: [LogEntry] {
+        let query = logSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        return logs.filter { entry in
+            if let mod = logModuleFilter, entry.module != mod { return false }
+            if logErrorsOnly && entry.level != .error { return false }
+            if !query.isEmpty {
+                let matchMsg = entry.message.localizedCaseInsensitiveContains(query)
+                let matchRaw = entry.rawOutput?.localizedCaseInsensitiveContains(query) == true
+                if !matchMsg && !matchRaw { return false }
+            }
+            return true
+        }
+    }
+
+    package func toggleLogDrawer() {
+        isLogDrawerPresented.toggle()
+        if isLogDrawerPresented {
+            hasUnreadErrorLogs = false
+        }
+    }
+
     package func clearLogs() {
         logs.removeAll()
+        hasUnreadErrorLogs = false
     }
 
     package func seedShowcaseState() {
@@ -627,8 +669,5 @@ package final class StudioViewModel: ObservableObject {
         Task {
             for job in jobs { await coordinator.addJob(job) }
         }
-        appendLog("aria2c ▸ 嗅探直链 Esoteric_Ebb_Build_1402.7z (16 线程并发)", highlight: false)
-        appendLog("7zz ▸ 密码本第 #01 项静默命中，自动修复 chmod/xattr 权限", highlight: true)
-        appendLog("gbe_fork ▸ 已注入 Goldberg x64 补丁并写入 language=schinese", highlight: false)
     }
 }

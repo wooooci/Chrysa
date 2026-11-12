@@ -60,14 +60,17 @@ package struct ThingsStudioMainView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-
-                if vm.activeTab != .settings {
-                    Spacer().frame(height: 10)
-                    LogBoxSectionView(vm: vm)
-                }
             }
             .padding(.horizontal, 34)
             .padding(.bottom, 14)
+
+            if vm.isLogDrawerPresented && !isSnapshotMode {
+                Rectangle()
+                    .fill(Color.t3Divider)
+                    .frame(height: 1)
+                GlobalLogDrawerView(vm: vm)
+                    .frame(height: 200)
+            }
 
             Rectangle()
                 .fill(Color.t3Divider)
@@ -100,6 +103,20 @@ package struct ThingsStudioMainView: View {
 
             Button(action: { vm.openBottlesDirectoryInFinder() }) {
                 Image(systemName: "magnifyingglass")
+            }
+            .buttonStyle(.plain)
+
+            Button(action: { vm.toggleLogDrawer() }) {
+                Image(systemName: "terminal")
+                    .foregroundColor(vm.isLogDrawerPresented ? vm.themePalette.accent : .t3TextSub)
+                    .overlay(alignment: .topTrailing) {
+                        if vm.hasUnreadErrorLogs {
+                            Circle()
+                                .fill(Color.red.opacity(0.88))
+                                .frame(width: 5, height: 5)
+                                .offset(x: 3.5, y: -2)
+                        }
+                    }
             }
             .buttonStyle(.plain)
 

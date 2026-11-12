@@ -40,9 +40,11 @@ package struct DownloadStage: Stage {
             },
             onLog: { message, highlight in
                 await context.log(StageLog(message, highlight: highlight))
+            },
+            onDiagnostic: { stageLog in
+                await context.log(stageLog)
             }
         )
-
         guard !(await context.cancellationRequested()) else { return .cancelled }
         switch outcome {
         case .completed(let localPath, let finalTitle, let rightText):
@@ -93,9 +95,11 @@ package struct UnpackStage: Stage {
             },
             onLog: { message, highlight in
                 await context.log(StageLog(message, highlight: highlight))
+            },
+            onDiagnostic: { stageLog in
+                await context.log(stageLog)
             }
         )
-
         guard !(await context.cancellationRequested()) else { return .cancelled }
         switch outcome {
         case .completed(let outputPath, let baseName, let pill):
@@ -165,7 +169,8 @@ package struct PatchStage: Stage {
             await logQueue.drain()
             if await context.cancellationRequested() { return .cancelled }
             let message = "补丁处理失败，\(error.localizedDescription)"
-            await context.log(StageLog("error ▸ \(message)", highlight: true))
+            let rawDiag = (error as? PatchError)?.rawDiagnostic
+            await context.log(StageLog("error ▸ \(message)", level: .error, rawOutput: rawDiag))
             return .failure(StageFailure(stage: id, message: message))
         }
     }
@@ -193,6 +198,9 @@ package struct LaunchGameStage: Stage {
             isCancelled: context.isCancelled,
             onLog: { message, highlight in
                 logQueue.submit(StageLog(message, highlight: highlight))
+            },
+            onDiagnostic: { stageLog in
+                logQueue.submit(stageLog)
             }
         )
         await logQueue.drain()

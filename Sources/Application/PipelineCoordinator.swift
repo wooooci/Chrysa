@@ -4,7 +4,7 @@ import Foundation
 package enum PipelineEvent: Sendable {
     case jobUpdated(Job)
     case jobRemoved(UUID)
-    case log(String, Bool)
+    case log(LogEntry)
 }
 
 /// Runs registered workflow stages and persists their state without depending on presentation types.
@@ -43,7 +43,9 @@ package final class PipelineCoordinator {
         let scanned = await services.scanBottles(directory: bottlesDirectory)
         guard bottleScanID == scanID, !Task.isCancelled else { return }
         let addedCount = await addDiscoveredBottles(scanned)
-        emitLog("crossover ▸ 容器目录扫描完成 (共识别 \(scanned.count) 款游戏，新增 \(addedCount) 款)", highlight: true)
+        if addedCount > 0 {
+            await recordLog(taskID: nil, module: .patch, level: .info, message: "容器目录扫描新增 \(addedCount) 款游戏")
+        }
     }
 
     @discardableResult
@@ -180,23 +182,23 @@ package final class PipelineCoordinator {
             rightText: "准备中"
         )
         cancelledTaskIDs.remove(taskID)
-        emitLog("sniff ▸ 开始解析链接: \(cleanURL)", highlight: true)
 
         workers[taskID] = Task { [weak self] in
             guard let self else { return }
             defer { self.workers[taskID] = nil }
             await self.addJob(job)
+            await self.recordLog(taskID: taskID, module: .download, level: .info, message: "sniff ▸ 开始解析链接: \(cleanURL)")
             let resolvedList = await self.services.resolveDownloads(cleanURL, passwords: settings.passwords)
             guard self.acceptsProgress(for: taskID) else { return }
             guard let first = resolvedList.first else {
                 await self.updateJob(taskID, status: .failed, message: "解析失败", rightText: "无法获取直链")
-                self.emitLog("error ▸ 无法从该分享页解析出有效文件直链: \(cleanURL)", highlight: true)
+                await self.recordLog(taskID: taskID, module: .download, level: .error, message: "无法从分享页解析出有效文件直链: \(cleanURL)")
                 return
             }
 
             if resolvedList.count == 1 {
                 await self.updateJob(taskID, title: first.suggestedFilename, message: "连接中")
-                self.emitLog("dl ▸ 启动高速下载: \(first.suggestedFilename ?? first.finalURL)", highlight: false)
+                await self.recordLog(taskID: taskID, module: .download, level: .info, message: "dl ▸ 启动高速下载: \(first.suggestedFilename ?? first.finalURL)")
                 await self.runDownloadTask(taskID: taskID, resolved: first, settings: settings)
             } else {
                 await self.runFolderDownloadPipeline(firstTaskID: taskID, guessedName: guessedName, items: resolvedList, settings: settings)
@@ -227,8 +229,7 @@ package final class PipelineCoordinator {
             cancelledTaskIDs.remove(pair.0)
             await addJob(job)
         }
-        emitLog("folder ▸ 检测到分享文件夹 [\(folderTitle)]，共 \(taskPairs.count) 个文件，开始顺序拉取...", highlight: true)
-
+        await recordLog(taskID: firstTaskID, module: .download, level: .info, message: "folder ▸ 检测到分享文件夹 [\(folderTitle)]，共 \(taskPairs.count) 个文件")
         let names = taskPairs.compactMap { $0.1.suggestedFilename }
         let primaryFile = Self.selectPrimaryArchive(from: names, isArchiveFile: services.isArchiveFile)
         let requiredBinSlices = Self.requiredCompanionVolumes(for: primaryFile, in: names)
@@ -268,7 +269,7 @@ package final class PipelineCoordinator {
                 let hasRemainingDLCs = completedPaths.count < taskPairs.count
                 if settings.autoRelay {
                     let detail = hasRemainingDLCs ? " (DLC 继续下载)" : ""
-                    emitLog("relay ▸ 文件与数据卷已就绪，后台静默流转至 [解压]: \(primaryFile)\(detail)", highlight: true)
+                    await recordLog(taskID: primaryTaskID ?? firstTaskID, module: .unpack, level: .info, message: "relay ▸ 主文件与分卷已就绪，自动流转至解压: \(primaryFile)\(detail)")
                     guard let primaryTaskID,
                           await prepareUnpackStage(taskID: primaryTaskID, archivePath: primaryPath, progress: 1.0 / 3.0) else {
                         continue
@@ -313,9 +314,11 @@ package final class PipelineCoordinator {
                     .appendingPathComponent(GameTitle.cleanGameTitle(from: rawBase))
             }()
             for dlc in pendingDLCInstallers where acceptsProgress(for: dlc.taskID) {
-                emitLog("innoextract ▸ DLC 下载完成，正在合并至主游戏目录: \(dlc.filename)", highlight: true)
+                await recordLog(taskID: primaryTaskID ?? dlc.taskID, module: .unpack, level: .info, message: "innoextract ▸ 正在合并 DLC: \(dlc.filename)")
                 let merged = await services.mergeDLC(installer: dlc.path, directory: unpackedDir, taskID: dlc.taskID)
-                if merged { emitLog("innoextract ▸ DLC 合并完成: \(dlc.filename)", highlight: true) }
+                if merged {
+                    await recordLog(taskID: primaryTaskID ?? dlc.taskID, module: .unpack, level: .info, message: "innoextract ▸ DLC 合并完成: \(dlc.filename)")
+                }
             }
         }
     }
@@ -391,6 +394,7 @@ package final class PipelineCoordinator {
             registry: StageRegistry(stages: [stage]),
             stageID: stage.id,
             jobID: taskID,
+            module: .download,
             input: ArtifactRef(kind: .remoteURL, value: resolved.finalURL),
             progressRange: progressRange ?? (settings.autoRelay && !suppressAutoRelay ? (0.0...1.0 / 3.0) : nil)
         )
@@ -417,7 +421,7 @@ package final class PipelineCoordinator {
                     rightText: services.fileSize(outputPath)
                         .map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? rightText ?? ""
                 ), transitioned.status == .running, acceptsProgress(for: taskID) else { return }
-                emitLog("relay ▸ 后台自动流转至 [解压]: \(finalTitle)", highlight: true)
+                await recordLog(taskID: taskID, module: .unpack, level: .info, message: "relay ▸ 自动流转至解压: \(finalTitle)")
                 await runUnpackTask(
                     taskID: taskID,
                     archivePath: outputPath,
@@ -478,7 +482,7 @@ package final class PipelineCoordinator {
         workers[taskID] = Task { [weak self] in
             guard let self else { return }
             await self.addJob(job)
-            self.emitLog("unpack ▸ 准备解压 \(filename)...", highlight: false)
+            await self.recordLog(taskID: taskID, module: .unpack, level: .info, message: "unpack ▸ 准备解压 \(filename)")
             await self.runUnpackTask(taskID: taskID, archivePath: archivePath, candidatePasswords: [""] + settings.passwords, settings: settings)
             self.workers[taskID] = nil
         }
@@ -517,6 +521,7 @@ package final class PipelineCoordinator {
             registry: StageRegistry(stages: [stage]),
             stageID: stage.id,
             jobID: taskID,
+            module: .unpack,
             input: ArtifactRef(kind: .file, value: archivePath),
             progressRange: progressRange ?? (settings.autoRelay ? (0.0...0.5) : nil)
         )
@@ -540,7 +545,7 @@ package final class PipelineCoordinator {
                     rightText: "处理中",
                     expanded: true
                 ), transitioned.status == .running, acceptsProgress(for: taskID) else { return }
-                emitLog("relay ▸ 后台自动流转至 [补丁]: \(title)", highlight: true)
+                await recordLog(taskID: taskID, module: .patch, level: .info, message: "relay ▸ 自动流转至补丁: \(title)")
                 await runPatchTask(
                     taskID: taskID,
                     folderPath: outputPath,
@@ -584,7 +589,7 @@ package final class PipelineCoordinator {
         workers[taskID] = Task { [weak self] in
             guard let self else { return }
             await self.addJob(job)
-            self.emitLog("pe-scan ▸ 开始扫描目录与 PE 导入表: \(title)", highlight: false)
+            await self.recordLog(taskID: taskID, module: .patch, level: .info, message: "pe-scan ▸ 开始扫描目录与 PE 导入表: \(title)")
             await self.runPatchTask(taskID: taskID, folderPath: folderPath, cleanTitle: title, settings: settings)
             self.workers[taskID] = nil
         }
@@ -602,11 +607,11 @@ package final class PipelineCoordinator {
               acceptsProgress(for: taskID) else { return }
         await updateJob(taskID, status: .running)
         let stage = services.patchStage(title: cleanTitle, settings: settings)
-        let registry = StageRegistry(stages: [stage])
         let result = await execute(
-            registry: registry,
+            registry: StageRegistry(stages: [stage]),
             stageID: stage.id,
             jobID: taskID,
+            module: .patch,
             input: ArtifactRef(kind: .directory, value: folderPath),
             progressRange: progressRange
         )
@@ -644,11 +649,11 @@ package final class PipelineCoordinator {
                   self.acceptsProgress(for: taskID) else { return }
             let request = GameLaunchRequest(job: storedJob, bottlesDirectory: settings.bottlesDirectory)
             let stage = self.services.launchStage(request: request)
-            let registry = StageRegistry(stages: [stage])
             _ = await self.execute(
-                registry: registry,
+                registry: StageRegistry(stages: [stage]),
                 stageID: stage.id,
                 jobID: taskID,
+                module: .launch,
                 input: storedJob.output
             )
         }
@@ -658,6 +663,7 @@ package final class PipelineCoordinator {
         registry: StageRegistry,
         stageID: StageID,
         jobID: UUID,
+        module: LogModule,
         input: ArtifactRef?,
         progressRange: ClosedRange<Double>? = nil
     ) async -> StageResult {
@@ -667,8 +673,14 @@ package final class PipelineCoordinator {
             reportProgress: { [weak self] progress in
                 await self?.report(progress, for: jobID, progressRange: progressRange)
             },
-            log: { [weak self] entry in
-                await self?.emitLog(entry.message, highlight: entry.highlight)
+            log: { [weak self] stageLog in
+                await self?.recordLog(
+                    taskID: jobID,
+                    module: module,
+                    level: stageLog.level,
+                    message: stageLog.message,
+                    rawOutput: stageLog.rawOutput
+                )
             },
             isCancelled: { [weak self] in
                 await self?.isCancelled(jobID) ?? true
@@ -695,10 +707,25 @@ package final class PipelineCoordinator {
         !cancelledTaskIDs.contains(id)
     }
 
-    private func emitLog(_ message: String, highlight: Bool) {
-        eventContinuation.yield(.log(message, highlight))
+    private func recordLog(
+        taskID: UUID?,
+        module: LogModule,
+        level: LogLevel,
+        message: String,
+        rawOutput: String? = nil
+    ) async {
+        let entry = LogEntry(
+            taskID: taskID,
+            module: module,
+            level: level,
+            message: message,
+            rawOutput: rawOutput
+        )
+        if let taskID, let updatedJob = await jobStore.appendLog(entry, to: taskID) {
+            eventContinuation.yield(.jobUpdated(updatedJob))
+        }
+        eventContinuation.yield(.log(entry))
     }
-
     private static func jobOrder(_ lhs: Job, _ rhs: Job) -> Bool {
         if lhs.listPosition != rhs.listPosition { return lhs.listPosition < rhs.listPosition }
         if lhs.createdAt == rhs.createdAt { return lhs.id.uuidString < rhs.id.uuidString }

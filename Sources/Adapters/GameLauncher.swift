@@ -17,10 +17,17 @@ package actor GameLauncher {
         self.openExecutable = openExecutable
     }
 
+    private struct LaunchProcessError: LocalizedError {
+        let message: String
+        let rawOutput: String?
+        var errorDescription: String? { message }
+    }
+
     package func launchGame(
         _ request: GameLaunchRequest,
         isCancelled: @escaping @Sendable () async -> Bool = { Task.isCancelled },
-        onLog: @escaping @Sendable (String, Bool) -> Void
+        onLog: @escaping @Sendable (String, Bool) -> Void,
+        onDiagnostic: @escaping @Sendable (StageLog) -> Void = { _ in }
     ) async -> GameLaunchOutcome {
         let fm = FileManager.default
         let cxAppsDir = ("~/Applications/CrossOver" as NSString).expandingTildeInPath
@@ -48,15 +55,7 @@ package actor GameLauncher {
                 guard !Task.isCancelled, !(await isCancelled()) else { return .cancelled }
                 if let cxWine = ToolchainLocator.locateCrossOverBin("wine"), bottleName != "Default" {
                     onLog("wine ▸ 正在通过容器 [\(bottleName)] 直接静默启动: \((exe as NSString).lastPathComponent)", true)
-                    // The game outlives this short launch stage. Completion means process creation succeeded.
-                    let process = Process()
-                    process.executableURL = URL(fileURLWithPath: cxWine)
-                    process.currentDirectoryURL = URL(fileURLWithPath: (exe as NSString).deletingLastPathComponent)
-                    process.arguments = ["--bottle", bottleName, "--check", "--wait-children", exe]
-                    process.standardOutput = FileHandle.nullDevice
-                    process.standardError = FileHandle.nullDevice
-                    try Task.checkCancellation()
-                    try process.run()
+                    try await spawnDetachedWine(executable: cxWine, bottleName: bottleName, gameEXE: exe)
                 } else {
                     onLog("crossover ▸ 正在通过 CrossOver 打开: \((exe as NSString).lastPathComponent)", true)
                     try await open(["-a", "/Applications/CrossOver.app", exe], taskID: request.jobID)
@@ -73,14 +72,75 @@ package actor GameLauncher {
                 return .openedDirectory
             }
             let message = "未找到可执行路径: \(request.title)"
-            onLog("crossover ▸ \(message)", true)
+            onDiagnostic(StageLog("error ▸ \(message)", level: .error))
             return .failed(message)
         } catch {
             if error is CancellationError || Task.isCancelled { return .cancelled }
             if await isCancelled() { return .cancelled }
             let message = "游戏启动失败，\(error.localizedDescription)"
-            onLog("error ▸ \(message)", true)
+            let rawDiag = (error as? LaunchProcessError)?.rawOutput ?? (error as? PatchError)?.rawDiagnostic
+            onDiagnostic(StageLog("error ▸ \(message)", level: .error, rawOutput: rawDiag))
             return .failed(message)
+        }
+    }
+
+    private func spawnDetachedWine(executable: String, bottleName: String, gameEXE: String) async throws {
+        final class RollingPipeSink: @unchecked Sendable {
+            private let lock = NSLock()
+            private var tail = Data()
+            private var keepCapturing = true
+            func append(_ chunk: Data) {
+                lock.lock()
+                if keepCapturing {
+                    tail.append(chunk)
+                    if tail.count > 16_384 {
+                        tail.removeFirst(tail.count - 16_384)
+                    }
+                }
+                lock.unlock()
+            }
+            func detach() -> String {
+                lock.lock()
+                defer { lock.unlock() }
+                keepCapturing = false
+                return String(data: tail, encoding: .utf8) ?? String(decoding: tail, as: UTF8.self)
+            }
+        }
+
+        let pipe = Pipe()
+        let sink = RollingPipeSink()
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                handle.readabilityHandler = nil
+            } else {
+                sink.append(chunk)
+            }
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.currentDirectoryURL = URL(fileURLWithPath: (gameEXE as NSString).deletingLastPathComponent)
+        process.arguments = ["--bottle", bottleName, "--check", "--wait-children", gameEXE]
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try Task.checkCancellation()
+        do {
+            try process.run()
+        } catch {
+            pipe.fileHandleForReading.readabilityHandler = nil
+            throw error
+        }
+
+        // Briefly observe early startup so immediate loader/bottle crashes surface real Wine diagnostics.
+        try? await Task.sleep(nanoseconds: 120_000_000)
+        let earlyOutput = sink.detach()
+        if !process.isRunning && process.terminationStatus != 0 {
+            pipe.fileHandleForReading.readabilityHandler = nil
+            throw LaunchProcessError(
+                message: "Wine 进程启动异常退出 (退出码 \(process.terminationStatus))",
+                rawOutput: LogEntry.sanitizeRawOutput(earlyOutput)
+            )
         }
     }
 
@@ -88,7 +148,10 @@ package actor GameLauncher {
         let result = try await supervisor.run(executable: openExecutable, arguments: arguments, taskID: taskID)
         try Task.checkCancellation()
         guard result.exitCode == 0 else {
-            throw CocoaError(.executableLoad, userInfo: [NSLocalizedDescriptionKey: "系统打开命令退出码 \(result.exitCode)"])
+            throw LaunchProcessError(
+                message: "系统打开命令退出码 \(result.exitCode)",
+                rawOutput: LogEntry.sanitizeRawOutput(result.diagnosticOutput)
+            )
         }
     }
 }

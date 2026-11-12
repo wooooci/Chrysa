@@ -377,7 +377,7 @@ package actor PatchService {
 package enum PatchError: LocalizedError {
     case missingDLL(is64Bit: Bool)
     case outsideGameDirectory(String)
-    case bottleCommandFailed(String, Int32)
+    case bottleCommandFailed(String, Int32, String = "")
 
     package var errorDescription: String? {
         switch self {
@@ -385,8 +385,17 @@ package enum PatchError: LocalizedError {
             return "缺少 Goldberg \(is64Bit ? "x64" : "x86") DLL"
         case .outsideGameDirectory(let path):
             return "补丁目标超出所选游戏目录 \(path)"
-        case .bottleCommandFailed(let command, let exitCode):
+        case .bottleCommandFailed(let command, let exitCode, _):
             return "CrossOver \(command) 执行失败，退出码 \(exitCode)"
+        }
+    }
+
+    package var rawDiagnostic: String? {
+        switch self {
+        case .bottleCommandFailed(_, _, let raw):
+            return LogEntry.sanitizeRawOutput(raw)
+        case .missingDLL, .outsideGameDirectory:
+            return nil
         }
     }
 }

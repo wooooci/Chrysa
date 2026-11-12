@@ -212,6 +212,16 @@ package actor JobStore: JobRepository {
         return job
     }
 
+    @discardableResult
+    package func appendLog(_ entry: LogEntry, to id: UUID) -> Job? {
+        guard var job = jobs[id] else { return nil }
+        job.appendBoundedLog(entry)
+        job.updatedAt = Date()
+        jobs[id] = job
+        persist()
+        return job
+    }
+
     package func remove(id: UUID) {
         guard jobs.removeValue(forKey: id) != nil else { return }
         persist()

@@ -118,7 +118,8 @@ package actor UnpackService {
         deleteArchiveAfterUnpack: Bool = false,
         isCancelled: @escaping @Sendable () async -> Bool = { Task.isCancelled },
         onProgress: @escaping @Sendable (Double, String?) async -> Void,
-        onLog: @escaping @Sendable (String, Bool) async -> Void
+        onLog: @escaping @Sendable (String, Bool) async -> Void,
+        onDiagnostic: @escaping @Sendable (StageLog) async -> Void = { _ in }
     ) async -> UnpackOutcome {
         if await supervisor.isCancelled(taskID, checking: isCancelled) { return .cancelled }
         let archiveURL = URL(fileURLWithPath: archivePath).standardizedFileURL
@@ -183,6 +184,7 @@ package actor UnpackService {
             }
 
             var allOK = true
+            var lastInnoDiag = ""
             for (idx, instPath) in installersToExtract.enumerated() {
                 if await supervisor.isCancelled(taskID, checking: isCancelled) { return .cancelled }
                 let instName = (instPath as NSString).lastPathComponent
@@ -200,6 +202,7 @@ package actor UnpackService {
                 )
                 if res?.exitCode != 0 {
                     allOK = false
+                    lastInnoDiag = res?.diagnosticOutput ?? ""
                     break
                 }
             }
@@ -208,10 +211,13 @@ package actor UnpackService {
 
             let extractedItems = (try? FileManager.default.contentsOfDirectory(atPath: outDir))?.filter { !$0.hasPrefix(".") } ?? []
             guard allOK && !extractedItems.isEmpty else {
-                await onLog("error ▸ GOG 安装包解包未完成 (可能缺少配套的 -1.bin 数据卷)！", true)
+                await onDiagnostic(StageLog(
+                    "error ▸ GOG 安装包解包未完成 (可能缺少配套的 -1.bin 数据卷)",
+                    level: .error,
+                    rawOutput: LogEntry.sanitizeRawOutput(lastInnoDiag)
+                ))
                 return .failed(pill: "缺少 .bin 分卷")
             }
-
             for processor in postProcessors {
                 try? await processor.process(outDir: outDir, parentURL: parentURL)
             }
@@ -327,6 +333,10 @@ package actor UnpackService {
             if await supervisor.isCancelled(taskID, checking: isCancelled) { return .cancelled }
 
             var extractOK = (mainRes.exitCode == 0)
+            var diagnosticSnippets: [String] = []
+            if !extractOK, !mainRes.diagnosticOutput.isEmpty {
+                diagnosticSnippets.append("[\(engineLabel) exit=\(mainRes.exitCode)]\n\(mainRes.diagnosticOutput)")
+            }
 
             // Fallback Engine 1: unar
             if !extractOK, let unarBin = ToolchainLocator.locateUnar() {
@@ -338,6 +348,9 @@ package actor UnpackService {
                 unarArgs.append(archivePath)
                 if let unarRes = try? await supervisor.run(executable: unarBin, arguments: unarArgs, taskID: taskID) {
                     extractOK = (unarRes.exitCode == 0)
+                    if !extractOK, !unarRes.diagnosticOutput.isEmpty {
+                        diagnosticSnippets.append("[unar exit=\(unarRes.exitCode)]\n\(unarRes.diagnosticOutput)")
+                    }
                 }
             }
 
@@ -350,9 +363,11 @@ package actor UnpackService {
                     taskID: taskID
                 ) {
                     extractOK = (rarRes.exitCode == 0)
+                    if !extractOK, !rarRes.diagnosticOutput.isEmpty {
+                        diagnosticSnippets.append("[unrar exit=\(rarRes.exitCode)]\n\(rarRes.diagnosticOutput)")
+                    }
                 }
             }
-
             if await supervisor.isCancelled(taskID, checking: isCancelled) { return .cancelled }
 
             var totalExtractedBytes: Int64 = 0
@@ -370,7 +385,15 @@ package actor UnpackService {
             let hasExtractedFiles = totalExtractedBytes > 0
 
             guard extractOK && hasExtractedFiles else {
-                await onLog("error ▸ 解压未成功 (7zz/unrar/unar 退出异常或密码不匹配)，已中止流转！", true)
+                let rawDiag = LogEntry.sanitizeRawOutput(
+                    diagnosticSnippets.joined(separator: "\n\n"),
+                    redact: probePasswords
+                )
+                await onDiagnostic(StageLog(
+                    "error ▸ 解压未成功 (7zz/unrar/unar 退出异常或密码不匹配)，已中止流转",
+                    level: .error,
+                    rawOutput: rawDiag
+                ))
                 return .failed(pill: "密码错误/失败")
             }
 

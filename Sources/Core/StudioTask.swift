@@ -136,16 +136,105 @@ package struct PersistedTaskSnapshot: Codable, Sendable {
     }
 }
 
-package struct LogEntry: Identifiable, Equatable, Sendable {
+package enum LogModule: String, CaseIterable, Codable, Equatable, Sendable, Identifiable {
+    case download
+    case unpack
+    case patch
+    case launch
+
+    package var id: String { rawValue }
+
+    package var label: String {
+        switch self {
+        case .download: return "下载"
+        case .unpack:   return "解压"
+        case .patch:    return "补丁"
+        case .launch:   return "启动"
+        }
+    }
+}
+
+package enum LogLevel: String, CaseIterable, Codable, Equatable, Sendable {
+    case info
+    case warning
+    case error
+}
+
+package struct LogEntry: Identifiable, Codable, Equatable, Sendable {
+    package static let maxRawLines = 150
+    package static let maxRawCharacters = 8_000
+
     package let id: UUID
+    package let taskID: UUID?
+    package let module: LogModule
+    package let level: LogLevel
     package let time: String
     package let message: String
-    package let highlight: Bool
+    package var rawOutput: String?
 
-    package init(id: UUID = UUID(), time: String, message: String, highlight: Bool) {
+    package var highlight: Bool { level != .info }
+
+    package init(
+        id: UUID = UUID(),
+        taskID: UUID? = nil,
+        module: LogModule = .download,
+        level: LogLevel = .info,
+        time: String = Self.currentTimeString(),
+        message: String,
+        rawOutput: String? = nil
+    ) {
         self.id = id
+        self.taskID = taskID
+        self.module = module
+        self.level = level
         self.time = time
         self.message = message
-        self.highlight = highlight
+        self.rawOutput = rawOutput.flatMap { Self.sanitizeRawOutput($0) }
+    }
+
+    package static func currentTimeString(date: Date = Date()) -> String {
+        var seconds = time_t(date.timeIntervalSince1970)
+        var tmVal = tm()
+        localtime_r(&seconds, &tmVal)
+        return String(format: "%02d:%02d:%02d", tmVal.tm_hour, tmVal.tm_min, tmVal.tm_sec)
+    }
+
+    package static func sanitizeRawOutput(_ raw: String, redact secrets: [String] = []) -> String? {
+        guard !raw.isEmpty else { return nil }
+        var working = raw
+        for secret in secrets where !secret.isEmpty {
+            working = working.replacingOccurrences(of: secret, with: "***")
+        }
+
+        let rawLines = working
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .components(separatedBy: "\n")
+
+        var filtered: [String] = []
+        filtered.reserveCapacity(min(rawLines.count, maxRawLines))
+        for line in rawLines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            // Filter out repetitive aria2 / 7zz percentage progress-bar ticks
+            if trimmed.hasPrefix("[#") && trimmed.contains("%)") && trimmed.contains("DL:") {
+                continue
+            }
+            if trimmed.range(of: #"^[0-9]{1,3}%\s*[-A-Za-z0-9_./]*$"#, options: .regularExpression) != nil {
+                continue
+            }
+            if filtered.last == trimmed {
+                continue
+            }
+            filtered.append(trimmed)
+        }
+
+        guard !filtered.isEmpty else { return nil }
+        let tailLines = filtered.suffix(maxRawLines)
+        var joined = tailLines.joined(separator: "\n")
+        if joined.count > maxRawCharacters {
+            joined = String(joined.suffix(maxRawCharacters))
+        }
+        return joined.isEmpty ? nil : joined
     }
 }

@@ -204,4 +204,92 @@ struct ArchitectureSafetyTests {
         #expect(added == 0)
     }
 
+    @MainActor
+    @Test
+    func testStructuredTaskScopedLoggingRawErrorCaptureAndNoUINoise() async throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chrysa-log-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let store = AppSettingsStore(inMemoryOnly: true)
+        let jobStore = JobStore(customFileURL: tmpDir.appendingPathComponent("jobs.json"))
+        let coordinator = PipelineCoordinator(services: DefaultWorkflowServices(), jobStore: jobStore)
+        let vm = StudioViewModel(
+            inMemoryOnly: true,
+            settingsStore: store,
+            taskStore: TaskStore(inMemoryOnly: true),
+            coordinator: coordinator
+        )
+
+        // 1. Pure UI/preference actions must produce zero log noise
+        #expect(vm.logs.isEmpty)
+        vm.selectAppIcon(id: "w6_burgundy")
+        vm.toggleFollowAppIconTheme()
+        vm.toggleAutoRelay()
+        vm.toggleDeleteArchiveAfterUnpack()
+        vm.setConcurrentConnections(8)
+        vm.setDefaultLanguage(.tchinese)
+        vm.newPasswordInput = "test_secret_pwd"
+        vm.addPassword()
+        vm.resetDownloadDirectory()
+        #expect(vm.logs.isEmpty)
+        #expect(!vm.hasUnreadErrorLogs)
+
+        // 2. Subprocess failure (corrupt archive on 7zz) binds to taskID, records .unpack/.error, captures raw output, and redacts passwords
+        let corruptPath = tmpDir.appendingPathComponent("broken_archive.7z").path
+        try Data([0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00, 0x00]).write(to: URL(fileURLWithPath: corruptPath))
+        let unpackTaskID = UUID()
+        let unpackJob = Job(
+            id: unpackTaskID,
+            kind: .unpack,
+            title: "broken_archive.7z",
+            status: .running,
+            source: ArtifactRef(kind: .file, value: corruptPath),
+            input: ArtifactRef(kind: .file, value: corruptPath)
+        )
+        await coordinator.addJob(unpackJob)
+        await coordinator.runUnpackTask(
+            taskID: unpackTaskID,
+            archivePath: corruptPath,
+            candidatePasswords: ["", "super_secret_pwd_123"],
+            settings: store.settings
+        )
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let taskScopedLogs = vm.logs(for: unpackTaskID)
+        #expect(!taskScopedLogs.isEmpty)
+        #expect(taskScopedLogs.allSatisfy { $0.taskID == unpackTaskID && $0.module == .unpack })
+        #expect(taskScopedLogs.contains { $0.level == .error })
+        if ToolchainLocator.locateSevenZip() != nil {
+            let rawErr = vm.rawErrorOutput(for: unpackTaskID)
+            #expect(rawErr != nil && !(rawErr?.isEmpty ?? true))
+            #expect(rawErr?.contains("super_secret_pwd_123") == false)
+        }
+        #expect(vm.hasUnreadErrorLogs)
+
+        // 3. Opening global drawer clears unread error indicator and supports module/error/search filtering
+        vm.toggleLogDrawer()
+        #expect(vm.isLogDrawerPresented)
+        #expect(!vm.hasUnreadErrorLogs)
+
+        vm.logModuleFilter = .download
+        #expect(vm.filteredGlobalLogs.isEmpty)
+        vm.logModuleFilter = .unpack
+        #expect(!vm.filteredGlobalLogs.isEmpty)
+        vm.logErrorsOnly = true
+        #expect(vm.filteredGlobalLogs.allSatisfy { $0.level == .error })
+        vm.logSearchQuery = "non_existent_keyword_xyz"
+        #expect(vm.filteredGlobalLogs.isEmpty)
+        vm.logSearchQuery = ""
+
+        // 4. Per-job log cap prevents persistence bloat
+        var cappedJob = Job(kind: .download, title: "cap.7z")
+        for idx in 0..<160 {
+            cappedJob.appendBoundedLog(LogEntry(taskID: cappedJob.id, module: .download, level: .info, message: "step \(idx)"))
+        }
+        #expect(cappedJob.logs.count == Job.maxPersistedLogs)
+        #expect(cappedJob.logs.first?.message == "step 60")
+    }
+
 }

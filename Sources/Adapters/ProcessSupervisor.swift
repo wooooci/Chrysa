@@ -5,11 +5,23 @@ import Foundation
 package struct ProcessRunResult: Sendable {
     package let exitCode: Int32
     package let outputData: Data
+    package let diagnosticData: Data
+
+    package init(exitCode: Int32, outputData: Data, diagnosticData: Data = Data()) {
+        self.exitCode = exitCode
+        self.outputData = outputData
+        self.diagnosticData = diagnosticData
+    }
+
     package var outputString: String {
-        String(data: outputData, encoding: .utf8) ?? ""
+        String(data: outputData, encoding: .utf8) ?? String(decoding: outputData, as: UTF8.self)
+    }
+
+    package var diagnosticOutput: String {
+        let source = diagnosticData.isEmpty ? outputData : diagnosticData
+        return String(data: source, encoding: .utf8) ?? String(decoding: source, as: UTF8.self)
     }
 }
-
 package actor ProcessSupervisor {
     package static let shared = ProcessSupervisor()
 
@@ -88,84 +100,90 @@ package actor ProcessSupervisor {
             proc.currentDirectoryURL = URL(fileURLWithPath: cwd)
         }
 
-        let outPipe: Pipe? = (captureOutput || onStreamChunk != nil) ? Pipe() : nil
-        if let pipe = outPipe {
-            proc.standardOutput = pipe
-            proc.standardError = mergeStderr ? pipe : FileHandle.nullDevice
+        let outPipe = Pipe()
+        if captureOutput || onStreamChunk != nil {
+            proc.standardOutput = outPipe
+            proc.standardError = outPipe
         } else {
-            proc.standardOutput = FileHandle.nullDevice
-            proc.standardError = FileHandle.nullDevice
+            proc.standardOutput = outPipe
+            proc.standardError = outPipe
         }
 
         final class LockedBuffer: @unchecked Sendable {
+            private static let diagnosticTailLimit = 24_576
             private let lock = NSLock()
-            private var data = Data()
+            private let captureFull: Bool
+            private var fullData = Data()
+            private var tailData = Data()
+
+            init(captureFull: Bool) {
+                self.captureFull = captureFull
+            }
+
             func append(_ chunk: Data) {
                 lock.lock()
-                data.append(chunk)
+                if captureFull {
+                    fullData.append(chunk)
+                }
+                tailData.append(chunk)
+                if tailData.count > Self.diagnosticTailLimit {
+                    tailData.removeFirst(tailData.count - Self.diagnosticTailLimit)
+                }
                 lock.unlock()
             }
-            func snapshot() -> Data {
+
+            func snapshot() -> (full: Data, tail: Data) {
                 lock.lock()
                 defer { lock.unlock() }
-                return data
+                return (fullData, tailData)
             }
         }
 
-        let buffer = LockedBuffer()
-        if let pipe = outPipe {
-            let fh = pipe.fileHandleForReading
-            fh.readabilityHandler = { handle in
-                let chunk = handle.availableData
-                guard !chunk.isEmpty else { return }
-                if captureOutput {
-                    buffer.append(chunk)
-                }
-                if let cb = onStreamChunk, let str = String(data: chunk, encoding: .utf8) {
-                    cb(str)
-                }
+        let buffer = LockedBuffer(captureFull: captureOutput)
+        let fh = outPipe.fileHandleForReading
+        fh.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else { return }
+            buffer.append(chunk)
+            if let cb = onStreamChunk, let str = String(data: chunk, encoding: .utf8) {
+                cb(str)
             }
         }
 
         register(proc, for: taskID)
         defer {
-            outPipe?.fileHandleForReading.readabilityHandler = nil
+            outPipe.fileHandleForReading.readabilityHandler = nil
             unregister(proc, for: taskID)
         }
 
         let exitCode: Int32 = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 proc.terminationHandler = { finishedProc in
-                    if let pipe = outPipe {
-                        let fh = pipe.fileHandleForReading
-                        fh.readabilityHandler = nil
-                        let tail = fh.readDataToEndOfFile()
-                        if !tail.isEmpty {
-                            if captureOutput {
-                                buffer.append(tail)
-                            }
-                            if let cb = onStreamChunk, let str = String(data: tail, encoding: .utf8) {
-                                cb(str)
-                            }
+                    let fh = outPipe.fileHandleForReading
+                    fh.readabilityHandler = nil
+                    let tail = fh.readDataToEndOfFile()
+                    if !tail.isEmpty {
+                        buffer.append(tail)
+                        if let cb = onStreamChunk, let str = String(data: tail, encoding: .utf8) {
+                            cb(str)
                         }
                     }
                     continuation.resume(returning: finishedProc.terminationStatus)
                 }
-
                 do {
                     try Task.checkCancellation()
                     try proc.run()
                 } catch {
                     proc.terminationHandler = nil
-                    outPipe?.fileHandleForReading.readabilityHandler = nil
+                    outPipe.fileHandleForReading.readabilityHandler = nil
                     continuation.resume(throwing: error)
                 }
             }
         } onCancel: {
-            // Serialize with process startup so cancellation between the last check and run() is delivered.
             Task { await self.terminate(proc) }
         }
 
-        return ProcessRunResult(exitCode: exitCode, outputData: buffer.snapshot())
+        let snap = buffer.snapshot()
+        return ProcessRunResult(exitCode: exitCode, outputData: snap.full, diagnosticData: snap.tail)
     }
 }

@@ -56,11 +56,28 @@ package struct StageProgress: Sendable, Equatable {
 
 package struct StageLog: Sendable, Equatable {
     package let message: String
-    package let highlight: Bool
+    package let level: LogLevel
+    package let rawOutput: String?
 
-    package init(_ message: String, highlight: Bool = false) {
+    package var highlight: Bool { level != .info }
+
+    package init(_ message: String, level: LogLevel = .info, rawOutput: String? = nil) {
         self.message = message
-        self.highlight = highlight
+        self.level = level
+        self.rawOutput = rawOutput
+    }
+
+    package init(_ message: String, highlight: Bool) {
+        let lower = message.lowercased()
+        let inferred: LogLevel
+        if lower.hasPrefix("error") || lower.contains("失败") || lower.contains("异常") {
+            inferred = .error
+        } else if lower.hasPrefix("warning") || lower.hasPrefix("unar ▸") {
+            inferred = .warning
+        } else {
+            inferred = .info
+        }
+        self.init(message, level: inferred, rawOutput: nil)
     }
 }
 

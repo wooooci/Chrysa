@@ -31,7 +31,8 @@ package actor DownloadService {
         settings: AppSettings,
         isCancelled: @escaping @Sendable () async -> Bool = { Task.isCancelled },
         onProgress: @escaping @Sendable (DownloadProgressUpdate) async -> Void,
-        onLog: @escaping @Sendable (String, Bool) async -> Void
+        onLog: @escaping @Sendable (String, Bool) async -> Void,
+        onDiagnostic: @escaping @Sendable (StageLog) async -> Void = { _ in }
     ) async -> DownloadOutcome {
         if await supervisor.isCancelled(taskID, checking: isCancelled) { return .cancelled }
         if resolved.useChunkedRange, let totalSize = resolved.totalSize, totalSize > 0 {
@@ -42,7 +43,8 @@ package actor DownloadService {
                 settings: settings,
                 isCancelled: isCancelled,
                 onProgress: onProgress,
-                onLog: onLog
+                onLog: onLog,
+                onDiagnostic: onDiagnostic
             )
         }
 
@@ -213,7 +215,11 @@ package actor DownloadService {
                     return .failed(pill: "发布失败")
                 }
             } else {
-                await onLog("dl ▸ 进程退出码 \(result.exitCode)", false)
+                await onDiagnostic(StageLog(
+                    "error ▸ 下载内核异常退出 (代码 \(result.exitCode))",
+                    level: .error,
+                    rawOutput: LogEntry.sanitizeRawOutput(result.diagnosticOutput)
+                ))
                 return .failed(pill: "失败")
             }
         } catch {
@@ -271,7 +277,8 @@ package actor DownloadService {
         settings: AppSettings,
         isCancelled: @escaping @Sendable () async -> Bool,
         onProgress: @escaping @Sendable (DownloadProgressUpdate) async -> Void,
-        onLog: @escaping @Sendable (String, Bool) async -> Void
+        onLog: @escaping @Sendable (String, Bool) async -> Void,
+        onDiagnostic: @escaping @Sendable (StageLog) async -> Void = { _ in }
     ) async -> DownloadOutcome {
         let downloadsRoot: URL
         let downloadsDirectory: URL
@@ -354,8 +361,8 @@ package actor DownloadService {
             let slice = Array(ranges[batchStart..<batchEnd])
             let urlSnapshot = activeCDNURL
 
-            let chunkResults: [(Int, Int64, Int64, Data?, String?)] = await withTaskGroup(
-                of: (Int, Int64, Int64, Data?, String?).self
+            let chunkResults: [(Int, Int64, Int64, Data?, String?, String?)] = await withTaskGroup(
+                of: (Int, Int64, Int64, Data?, String?, String?).self
             ) { group in
                 for (cIdx, cStart, cEnd) in slice {
                     group.addTask {
@@ -364,17 +371,18 @@ package actor DownloadService {
                         defer { try? FileManager.default.removeItem(atPath: tmpChunk) }
                         let expectedBytes = Int(cEnd - cStart + 1)
                         var currentURL = urlSnapshot
+                        var lastDiag: String? = nil
 
                         for attempt in 0...5 {
                             if await supervisorRef.isCancelled(taskID, checking: isCancelled) {
-                                return (cIdx, cStart, cEnd, nil, nil)
+                                return (cIdx, cStart, cEnd, nil, nil, nil)
                             }
                             if attempt > 0 {
                                 try? FileManager.default.removeItem(atPath: tmpChunk)
                                 let delayNs = UInt64(Double(attempt) * 1.2 * 1_000_000_000)
                                 try? await Task.sleep(nanoseconds: delayNs)
                                 if await supervisorRef.isCancelled(taskID, checking: isCancelled) {
-                                    return (cIdx, cStart, cEnd, nil, nil)
+                                    return (cIdx, cStart, cEnd, nil, nil, nil)
                                 }
                                 if attempt >= 2 {
                                     let refreshed = await HostResolverRegistry.resolveSingleLink(resolved.originalURL, passwords: settings.unpack.passwords)
@@ -390,7 +398,7 @@ package actor DownloadService {
                                     "--http2",
                                     "--fail",
                                     "-A", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-                                    "-s",
+                                    "-sS",
                                     "-r", "\(cStart)-\(cEnd)",
                                     "-o", tmpChunk,
                                     currentURL
@@ -400,14 +408,17 @@ package actor DownloadService {
                             if res?.exitCode == 0,
                                let d = try? Data(contentsOf: URL(fileURLWithPath: tmpChunk)),
                                d.count == expectedBytes {
-                                return (cIdx, cStart, cEnd, d, currentURL)
+                                return (cIdx, cStart, cEnd, d, currentURL, nil)
+                            }
+                            if let diag = res?.diagnosticOutput, !diag.isEmpty {
+                                lastDiag = diag
                             }
                         }
-                        return (cIdx, cStart, cEnd, nil, nil)
+                        return (cIdx, cStart, cEnd, nil, nil, lastDiag)
                     }
                 }
 
-                var collected: [(Int, Int64, Int64, Data?, String?)] = []
+                var collected: [(Int, Int64, Int64, Data?, String?, String?)] = []
                 for await item in group {
                     collected.append(item)
                 }
@@ -422,7 +433,7 @@ package actor DownloadService {
                 return .failed(pill: "写入失败")
             }
 
-            for (cIdx, cStart, cEnd, dataOpt, updatedURL) in chunkResults {
+            for (cIdx, cStart, cEnd, dataOpt, updatedURL, errDiag) in chunkResults {
                 if let u = updatedURL, u != activeCDNURL {
                     activeCDNURL = u
                 }
@@ -438,7 +449,11 @@ package actor DownloadService {
                     }
                 } else {
                     try? writer.close()
-                    await onLog("error ▸ 切片 #\(cIdx) (\(cStart)-\(cEnd)) 5 次重试后仍未通过字节数校验，已中止以防损坏压缩包！", true)
+                    await onDiagnostic(StageLog(
+                        "error ▸ 切片 #\(cIdx) (\(cStart)-\(cEnd)) 5 次重试后校验失败，已中止",
+                        level: .error,
+                        rawOutput: errDiag.flatMap { LogEntry.sanitizeRawOutput($0) }
+                    ))
                     return .failed(pill: "切片校验失败")
                 }
             }

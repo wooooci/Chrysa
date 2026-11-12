@@ -33,11 +33,12 @@ package struct ArtifactRef: Codable, Equatable, Sendable {
 
 /// A single source of truth for one download, unpack, or patch operation.
 package struct Job: Identifiable, Codable, Equatable, Sendable {
+    package static let maxPersistedLogs = 100
+
     private enum CodingKeys: String, CodingKey {
         case id, kind, title, status, progress, source, input, output, message, pill
-        case rightText, appID, isArchived, expanded, checklist, listPosition, createdAt, updatedAt
+        case rightText, appID, isArchived, expanded, checklist, logs, listPosition, createdAt, updatedAt
     }
-
     package let id: UUID
     package var kind: JobKind
     package var title: String
@@ -61,10 +62,10 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
     package var isArchived: Bool
     package var expanded: Bool
     package var checklist: [CheckItem]
+    package var logs: [LogEntry]
     package var listPosition: Int
     package let createdAt: Date
     package var updatedAt: Date
-
     package init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
@@ -84,6 +85,7 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
             isArchived: try container.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false,
             expanded: try container.decodeIfPresent(Bool.self, forKey: .expanded) ?? false,
             checklist: try container.decodeIfPresent([CheckItem].self, forKey: .checklist) ?? [],
+            logs: try container.decodeIfPresent([LogEntry].self, forKey: .logs) ?? [],
             listPosition: try container.decodeIfPresent(Int.self, forKey: .listPosition) ?? 0,
             createdAt: createdAt,
             updatedAt: try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
@@ -106,11 +108,13 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
         try container.encode(isArchived, forKey: .isArchived)
         try container.encode(expanded, forKey: .expanded)
         try container.encode(checklist, forKey: .checklist)
+        if !logs.isEmpty {
+            try container.encode(Array(logs.suffix(Self.maxPersistedLogs)), forKey: .logs)
+        }
         try container.encode(listPosition, forKey: .listPosition)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(updatedAt, forKey: .updatedAt)
     }
-
     package init(
         id: UUID = UUID(),
         kind: JobKind,
@@ -127,6 +131,7 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
         isArchived: Bool = false,
         expanded: Bool = false,
         checklist: [CheckItem] = [],
+        logs: [LogEntry] = [],
         listPosition: Int = 0,
         createdAt: Date = Date(),
         updatedAt: Date? = nil
@@ -145,9 +150,17 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
         self.isArchived = isArchived
         self.expanded = expanded
         self.checklist = checklist
+        self.logs = logs.count > Self.maxPersistedLogs ? Array(logs.suffix(Self.maxPersistedLogs)) : logs
         self.listPosition = listPosition
         self.createdAt = createdAt
         self.updatedAt = updatedAt ?? createdAt
+    }
+
+    package mutating func appendBoundedLog(_ entry: LogEntry) {
+        logs.append(entry)
+        if logs.count > Self.maxPersistedLogs {
+            logs.removeFirst(logs.count - Self.maxPersistedLogs)
+        }
     }
 
     package static func fromLegacy(_ task: StudioTask, kind: JobKind) -> Job {
@@ -403,6 +416,7 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
         if merged.output == nil { merged.output = secondary.output }
         if merged.appID == nil || merged.appID?.isEmpty == true { merged.appID = secondary.appID }
         if merged.checklist.isEmpty { merged.checklist = secondary.checklist }
+        if merged.logs.isEmpty { merged.logs = secondary.logs }
         merged.isArchived = lhs.isArchived || rhs.isArchived
         merged.expanded = lhs.expanded || rhs.expanded
         merged.listPosition = min(lhs.listPosition, rhs.listPosition)

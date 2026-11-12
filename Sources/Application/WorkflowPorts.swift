@@ -29,6 +29,7 @@ package protocol JobRepository: Sendable {
         expanded: Bool?,
         listPosition: Int?
     ) async -> Job?
+    @discardableResult func appendLog(_ entry: LogEntry, to id: UUID) async -> Job?
     func remove(id: UUID) async
 }
 

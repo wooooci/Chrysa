@@ -69,7 +69,7 @@ package actor CrossOverBottleConfigurator {
                 )
                 try await checkCancellation()
                 guard creation.exitCode == 0 else {
-                    throw PatchError.bottleCommandFailed("cxbottle", creation.exitCode)
+                    throw PatchError.bottleCommandFailed("cxbottle", creation.exitCode, creation.diagnosticOutput)
                 }
                 let createdPath = (bottlesRoot as NSString).appendingPathComponent(normalizedTitle)
                 if fm.fileExists(atPath: createdPath) {

@@ -297,6 +297,12 @@ private actor MemoryRepository: JobRepository {
     }
     func job(for id: UUID) -> Job? { jobs[id] }
     func all() -> [Job] { Array(jobs.values) }
+    func appendLog(_ entry: LogEntry, to id: UUID) -> Job? {
+        guard var job = jobs[id] else { return nil }
+        job.appendBoundedLog(entry)
+        jobs[id] = job
+        return job
+    }
     func remove(id: UUID) { jobs[id] = nil }
     func update(
         id: UUID, kind: JobKind?, status: JobStatus?, progress: Double?, title: String?, source: ArtifactRef?, input: ArtifactRef?, output: ArtifactRef?,
