@@ -124,6 +124,11 @@ package enum CrossOverBottleScanner {
         var unityDataDirs: [String] = []
         while let rel = enumerator.nextObject() as? String {
             guard !isCancelled() else { return nil }
+            let relLower = rel.lowercased()
+            if relLower == "drive_c/windows" || relLower.hasPrefix("drive_c/windows/") || relLower.hasPrefix("windows/") {
+                enumerator.skipDescendants()
+                continue
+            }
             let lower = (rel as NSString).lastPathComponent.lowercased()
             let full = (directory as NSString).appendingPathComponent(rel)
             if lower.hasSuffix("_data") {

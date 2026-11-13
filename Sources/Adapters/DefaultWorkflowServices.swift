@@ -134,8 +134,29 @@ package struct DefaultWorkflowServices: WorkflowServices {
         let bottlesRoot = (bottlesDirectory as NSString).expandingTildeInPath
         let genericFolderNames: Set<String> = [
             "downloads", "desktop", "documents", "applications", "drive_c",
-            "win64", "win32", "x64", "x86", "bin", "binaries", "program files", "program files (x86)"
+            "win64", "win32", "x64", "x86", "bin", "binaries",
+            "program files", "program files (x86)", "game", "release", "shipping", "retail", "windowsnoeditor"
         ]
+        let stopRootPaths: Set<String> = [
+            "/",
+            NSHomeDirectory(),
+            (NSHomeDirectory() as NSString).appendingPathComponent("Downloads"),
+            (NSHomeDirectory() as NSString).appendingPathComponent("Desktop"),
+            (NSHomeDirectory() as NSString).appendingPathComponent("Documents"),
+            (NSHomeDirectory() as NSString).appendingPathComponent("Applications"),
+            "/Applications",
+            bottlesRoot
+        ]
+
+        func stripExecutableVariantSuffixes(_ raw: String) -> String {
+            var value = raw
+            for suffix in ["-Win64-Shipping", "-Win32-Shipping", "-Mac-Shipping", "_Win64", "_x64"] {
+                if value.lowercased().hasSuffix(suffix.lowercased()) {
+                    value = String(value.dropLast(suffix.count))
+                }
+            }
+            return value
+        }
 
         func detectBottleName(exeOrDirPath: String, title: String) -> String? {
             let canonicalTarget = LaunchGame.canonicalPath(exeOrDirPath) ?? exeOrDirPath
@@ -160,17 +181,33 @@ package struct DefaultWorkflowServices: WorkflowServices {
         if !isDirectory.boolValue {
             guard standardized.pathExtension.lowercased() == "exe" else { return nil }
             let parentDir = standardized.deletingLastPathComponent()
-            let parentName = parentDir.lastPathComponent
-            let rawTitleSource = genericFolderNames.contains(parentName.lowercased())
-                ? standardized.deletingPathExtension().lastPathComponent
-                : parentName
-            let cleaned = GameTitle.cleanGameTitle(from: rawTitleSource)
-            let title = cleaned.isEmpty ? rawTitleSource : cleaned
+            var rawTitleSource: String? = nil
+            var cleanAppID: String? = nil
+            var cursor = parentDir
+            for _ in 0..<4 {
+                let cursorPath = cursor.path
+                if stopRootPaths.contains(cursorPath) { break }
+                if cleanAppID == nil {
+                    let candidateAppIDPath = cursor.appendingPathComponent("steam_appid.txt").path
+                    if let txt = (try? String(contentsOfFile: candidateAppIDPath, encoding: .utf8))?
+                        .trimmingCharacters(in: .whitespacesAndNewlines),
+                       !txt.isEmpty {
+                        cleanAppID = txt
+                    }
+                }
+                let name = cursor.lastPathComponent
+                if rawTitleSource == nil, !name.isEmpty, !genericFolderNames.contains(name.lowercased()) {
+                    rawTitleSource = name
+                }
+                let next = cursor.deletingLastPathComponent()
+                if next.path == cursorPath { break }
+                cursor = next
+            }
 
-            let appIDPath = parentDir.appendingPathComponent("steam_appid.txt").path
-            let appID = (try? String(contentsOfFile: appIDPath, encoding: .utf8))?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let cleanAppID = (appID?.isEmpty == false) ? appID : nil
+            let fallbackEXEName = stripExecutableVariantSuffixes(standardized.deletingPathExtension().lastPathComponent)
+            let finalRawTitle = rawTitleSource ?? fallbackEXEName
+            let cleaned = GameTitle.cleanGameTitle(from: finalRawTitle)
+            let title = cleaned.isEmpty ? finalRawTitle : cleaned
             let bottle = detectBottleName(exeOrDirPath: standardized.path, title: title)
 
             return LaunchGame(
@@ -183,12 +220,12 @@ package struct DefaultWorkflowServices: WorkflowServices {
             )
         }
 
-        // 2. CrossOver helper .app bundle import
+        // 2. .app bundle import (CrossOver helper .app or macOS / standalone wrapper .app)
         if standardized.pathExtension.lowercased() == "app" {
             let infoPlistPath = standardized.appendingPathComponent("Contents/Info.plist").path
-            if let dict = NSDictionary(contentsOfFile: infoPlistPath) as? [String: Any],
-               let bottleName = dict["CXHelperAppBottleName"] as? String {
-                let title = (dict["CFBundleName"] as? String) ?? standardized.deletingPathExtension().lastPathComponent
+            let plistDict = NSDictionary(contentsOfFile: infoPlistPath) as? [String: Any]
+            if let bottleName = plistDict?["CXHelperAppBottleName"] as? String {
+                let title = (plistDict?["CFBundleName"] as? String) ?? standardized.deletingPathExtension().lastPathComponent
                 let bottlePath = (bottlesRoot as NSString).appendingPathComponent(bottleName)
                 let scanned = CrossOverBottleScanner.scanInstalledBottles(bottlesDirectory: bottlesRoot)
                     .first(where: { $0.bottleName == bottleName })
@@ -201,8 +238,38 @@ package struct DefaultWorkflowServices: WorkflowServices {
                     source: .manualImport
                 )
             }
-        }
 
+            let rawBundleTitle = (plistDict?["CFBundleDisplayName"] as? String)
+                ?? (plistDict?["CFBundleName"] as? String)
+                ?? standardized.deletingPathExtension().lastPathComponent
+            let cleanedTitle = GameTitle.cleanGameTitle(from: rawBundleTitle)
+            let title = cleanedTitle.isEmpty ? rawBundleTitle : cleanedTitle
+
+            var foundAppID: String? = nil
+            if let enumerator = fm.enumerator(atPath: standardized.path) {
+                while let rel = enumerator.nextObject() as? String {
+                    if (rel as NSString).lastPathComponent.lowercased() == "steam_appid.txt" {
+                        let full = (standardized.path as NSString).appendingPathComponent(rel)
+                        if let txt = (try? String(contentsOfFile: full, encoding: .utf8))?
+                            .trimmingCharacters(in: .whitespacesAndNewlines),
+                           !txt.isEmpty {
+                            foundAppID = txt
+                            break
+                        }
+                    }
+                }
+            }
+            let mainEXE = CrossOverBottleScanner.findMainExecutable(in: standardized.path)
+            let bottle = detectBottleName(exeOrDirPath: mainEXE ?? standardized.path, title: title)
+            return LaunchGame(
+                title: title,
+                exePath: mainEXE,
+                gameDirectory: standardized.path,
+                bottleName: bottle,
+                appID: foundAppID,
+                source: .manualImport
+            )
+        }
         // 3. Game directory import
         var candidateEXEs: [String] = []
         var unityDataDirs: [String] = []
@@ -317,6 +384,21 @@ package struct DefaultWorkflowServices: WorkflowServices {
         await iconResolver.resolveIconPNG(for: game)
     }
 
+    package func saveCustomLaunchGameIcon(from sourceURL: URL, for gameID: UUID) async -> String? {
+        await iconResolver.saveCustomIcon(from: sourceURL, for: gameID)
+    }
+
+    package func removeCustomLaunchGameIcon(at path: String?) async {
+        await iconResolver.removeCustomIcon(at: path)
+    }
+
+    package func invalidateLaunchGameIconCache(for game: LaunchGame) async {
+        await iconResolver.invalidateCache(for: game)
+    }
+
+    package func lookupSteamAppID(for title: String) async -> String? {
+        await SteamAppIDLookup.fetch(for: title)
+    }
     package func mergeDLC(installer: String, directory: String, taskID: UUID) async -> Bool {
         await unpack.mergeGOGDLCInstaller(dlcExePath: installer, intoDir: directory, taskID: taskID)
     }

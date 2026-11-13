@@ -138,6 +138,16 @@ package actor LaunchGameStore: LaunchGameRepository {
     }
 
     @discardableResult
+    package func update(_ game: LaunchGame) async -> LaunchGame? {
+        guard games[game.id] != nil else { return nil }
+        var updated = game
+        updated.updatedAt = Date()
+        games[game.id] = updated
+        persist()
+        return updated
+    }
+
+    @discardableResult
     package func markPlayed(id: UUID, at date: Date) -> LaunchGame? {
         guard var entry = games[id] else { return nil }
         entry.lastPlayedAt = date

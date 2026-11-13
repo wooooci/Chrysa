@@ -137,4 +137,32 @@ struct CoreModelTests {
         let decoded = try JSONDecoder().decode(LaunchGame.self, from: encoded)
         #expect(decoded == mergedParabox)
     }
+
+    @Test
+    func testLaunchGameIconPreferenceRoundTripAndMergePreservation() throws {
+        let custom = LaunchGame(
+            title: "Hollow Knight",
+            exePath: "/Games/Hollow Knight/hollow_knight.exe",
+            gameDirectory: "/Games/Hollow Knight",
+            appID: "367520",
+            source: .manualImport,
+            customIconPath: "/tmp/custom-hk.png",
+            iconPreference: .steam
+        )
+        let encoded = try JSONEncoder().encode(custom)
+        let decoded = try JSONDecoder().decode(LaunchGame.self, from: encoded)
+        #expect(decoded.iconPreference == .steam)
+        #expect(decoded.customIconPath == "/tmp/custom-hk.png")
+
+        let rescanIncoming = LaunchGame(
+            title: "Hollow Knight",
+            bottleName: "Hollow Knight",
+            source: .crossoverScan
+        )
+        let merged = decoded.merged(with: rescanIncoming, preferIncomingMetadata: false)
+        #expect(merged.iconPreference == .steam)
+        #expect(merged.customIconPath == "/tmp/custom-hk.png")
+        #expect(merged.bottleName == "Hollow Knight")
+    }
+
 }

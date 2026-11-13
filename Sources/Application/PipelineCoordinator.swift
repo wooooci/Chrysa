@@ -731,10 +731,15 @@ package final class PipelineCoordinator {
     }
 
     package func removeLaunchGame(_ id: UUID) async {
+        let existing = await gameLibrary.game(for: id)
         workers[id]?.cancel()
         cancelledTaskIDs.insert(id)
         await services.cancel(taskID: id)
         await gameLibrary.remove(id: id, suppressRescan: true)
+        if let existing {
+            await services.invalidateLaunchGameIconCache(for: existing)
+            await services.removeCustomLaunchGameIcon(at: existing.customIconPath)
+        }
         workers[id] = nil
         eventContinuation.yield(.launchGameRemoved(id))
     }
@@ -742,6 +747,40 @@ package final class PipelineCoordinator {
         await services.resolveLaunchGameIcon(game)
     }
 
+    @discardableResult
+    package func updateLaunchGame(_ updated: LaunchGame, previousCustomIconPath: String? = nil) async -> LaunchGame? {
+        let existing = await gameLibrary.game(for: updated.id)
+        if let existing {
+            await services.invalidateLaunchGameIconCache(for: existing)
+        }
+        await services.invalidateLaunchGameIconCache(for: updated)
+        let saved = await gameLibrary.update(updated)
+        if let previousCustomIconPath,
+           !previousCustomIconPath.isEmpty,
+           previousCustomIconPath != updated.customIconPath {
+            await services.removeCustomLaunchGameIcon(at: previousCustomIconPath)
+        }
+        if let saved {
+            eventContinuation.yield(.launchGameUpdated(saved))
+        }
+        return saved
+    }
+
+    package func saveCustomLaunchGameIcon(from sourceURL: URL, for gameID: UUID) async -> String? {
+        await services.saveCustomLaunchGameIcon(from: sourceURL, for: gameID)
+    }
+
+    package func removeCustomLaunchGameIcon(at path: String?) async {
+        await services.removeCustomLaunchGameIcon(at: path)
+    }
+
+    package func invalidateLaunchGameIconCache(for game: LaunchGame) async {
+        await services.invalidateLaunchGameIconCache(for: game)
+    }
+
+    package func lookupSteamAppID(for title: String) async -> String? {
+        await services.lookupSteamAppID(for: title)
+    }
 
     package func launchGame(_ game: LaunchGame, settings: AppSettings) {
         guard workers[game.id] == nil else { return }

@@ -283,6 +283,10 @@ private struct StubWorkflowServices: WorkflowServices {
     func scanBottles(directory: String) async -> [LaunchGame] { [] }
     func inspectGameForImport(at url: URL, bottlesDirectory: String) async -> LaunchGame? { nil }
     func resolveLaunchGameIcon(_ game: LaunchGame) async -> Data? { nil }
+    func saveCustomLaunchGameIcon(from sourceURL: URL, for gameID: UUID) async -> String? { nil }
+    func removeCustomLaunchGameIcon(at path: String?) async {}
+    func invalidateLaunchGameIconCache(for game: LaunchGame) async {}
+    func lookupSteamAppID(for title: String) async -> String? { nil }
     func mergeDLC(installer: String, directory: String, taskID: UUID) async -> Bool { true }
     func cancel(taskID: UUID) async {}
     func clearCancellation(taskID: UUID) async {}

@@ -41,6 +41,11 @@ package struct ThingsStudioMainView: View {
                 .environment(\.appTheme, vm.themePalette)
                 .tint(vm.themePalette.accent)
         }
+        .sheet(item: $vm.editingLaunchGame) { game in
+            EditLaunchGameSheetView(vm: vm, game: game)
+                .environment(\.appTheme, vm.themePalette)
+                .tint(vm.themePalette.accent)
+        }
         .alert(item: $vm.launchErrorAlert) { notice in
             Alert(
                 title: Text("无法启动「\(notice.title)」"),

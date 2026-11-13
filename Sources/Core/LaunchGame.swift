@@ -20,10 +20,28 @@ package enum LaunchSortOrder: String, CaseIterable, Codable, Equatable, Sendable
     }
 }
 
+package enum LaunchGameIconPreference: String, CaseIterable, Codable, Equatable, Sendable, Identifiable {
+    case automatic
+    case steam
+    case executable
+    case custom
+
+    package var id: String { rawValue }
+
+    package var label: String {
+        switch self {
+        case .automatic: return "自动"
+        case .steam: return "Steam 方形"
+        case .executable: return "程序自带"
+        case .custom: return "自定义"
+        }
+    }
+}
+
 /// A persistent, ready-to-launch game entry stored independently from transient patch jobs.
 package struct LaunchGame: Identifiable, Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
-        case id, title, exePath, gameDirectory, bottleName, appID, source, addedAt, updatedAt, lastPlayedAt
+        case id, title, exePath, gameDirectory, bottleName, appID, source, customIconPath, iconPreference, addedAt, updatedAt, lastPlayedAt
     }
 
     package let id: UUID
@@ -33,6 +51,8 @@ package struct LaunchGame: Identifiable, Codable, Equatable, Sendable {
     package var bottleName: String?
     package var appID: String?
     package var source: LaunchGameSource
+    package var customIconPath: String?
+    package var iconPreference: LaunchGameIconPreference
     package let addedAt: Date
     package var updatedAt: Date
     package var lastPlayedAt: Date?
@@ -45,6 +65,8 @@ package struct LaunchGame: Identifiable, Codable, Equatable, Sendable {
         bottleName: String? = nil,
         appID: String? = nil,
         source: LaunchGameSource = .manualImport,
+        customIconPath: String? = nil,
+        iconPreference: LaunchGameIconPreference = .automatic,
         addedAt: Date = Date(),
         updatedAt: Date? = nil,
         lastPlayedAt: Date? = nil
@@ -56,6 +78,8 @@ package struct LaunchGame: Identifiable, Codable, Equatable, Sendable {
         self.bottleName = bottleName
         self.appID = appID
         self.source = source
+        self.customIconPath = customIconPath
+        self.iconPreference = iconPreference
         self.addedAt = addedAt
         self.updatedAt = updatedAt ?? addedAt
         self.lastPlayedAt = lastPlayedAt
@@ -72,6 +96,8 @@ package struct LaunchGame: Identifiable, Codable, Equatable, Sendable {
             bottleName: try container.decodeIfPresent(String.self, forKey: .bottleName),
             appID: try container.decodeIfPresent(String.self, forKey: .appID),
             source: (try? container.decodeIfPresent(LaunchGameSource.self, forKey: .source)) ?? .manualImport,
+            customIconPath: try container.decodeIfPresent(String.self, forKey: .customIconPath),
+            iconPreference: (try? container.decodeIfPresent(LaunchGameIconPreference.self, forKey: .iconPreference)) ?? .automatic,
             addedAt: addedAt,
             updatedAt: try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? addedAt,
             lastPlayedAt: try container.decodeIfPresent(Date.self, forKey: .lastPlayedAt)
@@ -87,6 +113,10 @@ package struct LaunchGame: Identifiable, Codable, Equatable, Sendable {
         try container.encodeIfPresent(bottleName, forKey: .bottleName)
         try container.encodeIfPresent(appID, forKey: .appID)
         try container.encode(source, forKey: .source)
+        try container.encodeIfPresent(customIconPath, forKey: .customIconPath)
+        if iconPreference != .automatic {
+            try container.encode(iconPreference, forKey: .iconPreference)
+        }
         try container.encode(addedAt, forKey: .addedAt)
         try container.encode(updatedAt, forKey: .updatedAt)
         try container.encodeIfPresent(lastPlayedAt, forKey: .lastPlayedAt)
@@ -245,6 +275,18 @@ package struct LaunchGame: Identifiable, Codable, Equatable, Sendable {
                 return a1 ?? a2
             }
         }()
+        let resolvedCustomIconPath: String? = {
+            let c1 = customIconPath?.isEmpty == true ? nil : customIconPath
+            let c2 = incoming.customIconPath?.isEmpty == true ? nil : incoming.customIconPath
+            return preferIncomingMetadata ? (c2 ?? c1) : (c1 ?? c2)
+        }()
+        let resolvedIconPreference: LaunchGameIconPreference = {
+            if preferIncomingMetadata {
+                return incoming.iconPreference != .automatic ? incoming.iconPreference : iconPreference
+            } else {
+                return iconPreference != .automatic ? iconPreference : incoming.iconPreference
+            }
+        }()
 
         return LaunchGame(
             id: id,
@@ -254,6 +296,8 @@ package struct LaunchGame: Identifiable, Codable, Equatable, Sendable {
             bottleName: resolvedBottle,
             appID: resolvedAppID,
             source: mergedSource,
+            customIconPath: resolvedCustomIconPath,
+            iconPreference: resolvedIconPreference,
             addedAt: mergedAddedAt,
             updatedAt: max(updatedAt, incoming.updatedAt),
             lastPlayedAt: mergedLastPlayed

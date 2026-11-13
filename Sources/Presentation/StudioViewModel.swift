@@ -14,6 +14,7 @@ package final class StudioViewModel: ObservableObject {
     @Published package var showArchived: Bool = false
 
     @Published package var editingTask: StudioTask? = nil
+    @Published package var editingLaunchGame: LaunchGame? = nil
     @Published package var editTitleInput: String = ""
     @Published package var editPathOrURLInput: String = ""
 
@@ -201,7 +202,7 @@ package final class StudioViewModel: ObservableObject {
             if let index = launchGames.firstIndex(where: { $0.id == game.id }) {
                 let old = launchGames[index]
                 launchGames[index] = game
-                if old.exePath != game.exePath || old.appID != game.appID || old.title != game.title {
+                if Self.launchGameIconSignature(for: old) != Self.launchGameIconSignature(for: game) {
                     attemptedIconSignatureByID.removeValue(forKey: game.id)
                     launchGameIcons.removeValue(forKey: game.id)
                 }
@@ -364,8 +365,12 @@ package final class StudioViewModel: ObservableObject {
         launchGameIcons[game.id]
     }
 
+    package static func launchGameIconSignature(for game: LaunchGame) -> String {
+        "\(game.exePath ?? "")|\(game.gameDirectory ?? "")|\(game.appID ?? "")|\(game.title)|\(game.iconPreference.rawValue)|\(game.customIconPath ?? "")|\(game.bottleName ?? "")"
+    }
+
     package func loadLaunchGameIconIfNeeded(for game: LaunchGame) async {
-        let signature = "\(game.exePath ?? "")|\(game.appID ?? "")|\(game.title)"
+        let signature = Self.launchGameIconSignature(for: game)
         if launchGameIcons[game.id] != nil || attemptedIconSignatureByID[game.id] == signature {
             return
         }
@@ -378,6 +383,92 @@ package final class StudioViewModel: ObservableObject {
         launchGameIcons[game.id] = image
     }
 
+    package func beginEditingLaunchGame(_ game: LaunchGame) {
+        editingLaunchGame = game
+    }
+
+    package func refreshLaunchGameIcon(_ game: LaunchGame) {
+        launchGameIcons.removeValue(forKey: game.id)
+        attemptedIconSignatureByID.removeValue(forKey: game.id)
+        Task { [weak self] in
+            guard let self else { return }
+            await coordinator.invalidateLaunchGameIconCache(for: game)
+            await loadLaunchGameIconIfNeeded(for: game)
+        }
+    }
+
+    package func saveEditedLaunchGame(_ updated: LaunchGame, previousCustomIconPath: String?) {
+        editingLaunchGame = nil
+        launchGameIcons.removeValue(forKey: updated.id)
+        attemptedIconSignatureByID.removeValue(forKey: updated.id)
+        Task { [weak self] in
+            guard let self else { return }
+            if let saved = await coordinator.updateLaunchGame(updated, previousCustomIconPath: previousCustomIconPath) {
+                await loadLaunchGameIconIfNeeded(for: saved)
+            }
+        }
+    }
+
+    package func saveCustomIcon(from url: URL, for gameID: UUID) async -> String? {
+        await coordinator.saveCustomLaunchGameIcon(from: url, for: gameID)
+    }
+
+    package func pickCustomIconFile(for gameID: UUID) async -> String? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        var allowedTypes: [UTType] = [.image, .icns, .applicationBundle]
+        if let exeType = UTType(filenameExtension: "exe") {
+            allowedTypes.append(exeType)
+        }
+        if let icoType = UTType(filenameExtension: "ico") {
+            allowedTypes.append(icoType)
+        }
+        panel.allowedContentTypes = allowedTypes
+        panel.message = "选择自定义图标图片（PNG / JPG / ICNS）、.app 或 .exe"
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return nil
+        }
+        return await coordinator.saveCustomLaunchGameIcon(from: url, for: gameID)
+    }
+
+    package func chooseLaunchExecutable(initialPath: String?) -> String? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        var allowedTypes: [UTType] = [.applicationBundle]
+        if let exeType = UTType(filenameExtension: "exe") {
+            allowedTypes.append(exeType)
+        }
+        panel.allowedContentTypes = allowedTypes
+        if let initialPath, !initialPath.isEmpty {
+            let url = URL(fileURLWithPath: initialPath)
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) {
+                panel.directoryURL = isDir.boolValue ? url : url.deletingLastPathComponent()
+            }
+        }
+        panel.message = "选择游戏主程序 .exe 或 .app"
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return nil
+        }
+        return url.path
+    }
+
+    package func lookupSteamAppID(for title: String) async -> String? {
+        await coordinator.lookupSteamAppID(for: title)
+    }
+
+    package func previewLaunchGameIcon(for game: LaunchGame) async -> NSImage? {
+        guard let pngData = await coordinator.resolveLaunchGameIcon(game),
+              let image = NSImage(data: pngData) else {
+            return nil
+        }
+        return image
+    }
+
     package func importLaunchGame(at url: URL) {
         Task {
             _ = await coordinator.importLaunchGame(at: url, settings: settingsStore.settings)
@@ -388,7 +479,7 @@ package final class StudioViewModel: ObservableObject {
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
-        panel.message = "选择要导入「启动」库的游戏目录或主程序 .exe"
+        panel.message = "选择要导入「启动」库的游戏目录、.app 或主程序 .exe"
         if panel.runModal() == .OK {
             let urls = panel.urls
             Task {

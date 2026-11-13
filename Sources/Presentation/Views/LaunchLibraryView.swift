@@ -77,7 +77,7 @@ struct LaunchLibraryView: View {
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(.t3TextSub)
             if !isSearching {
-                Text("补丁完成后自动入库，或拖入本地游戏目录 / .exe")
+                Text("补丁完成后自动入库，或拖入本地游戏目录 / .app / .exe")
                     .font(.system(size: 11.5))
                     .foregroundColor(.t3TextMuted)
             }
@@ -173,7 +173,7 @@ private struct LaunchGameRowView: View {
         .contextMenu {
             gameMenuItems
         }
-        .task(id: "\(game.id.uuidString)|\(game.exePath ?? "")|\(game.appID ?? "")") {
+        .task(id: StudioViewModel.launchGameIconSignature(for: game)) {
             guard !isSnapshotMode else { return }
             await vm.loadLaunchGameIconIfNeeded(for: game)
         }
@@ -183,6 +183,16 @@ private struct LaunchGameRowView: View {
     private var gameMenuItems: some View {
         Button(action: { vm.launchGame(game) }) {
             Label("启动游戏", systemImage: "play")
+        }
+
+        Divider()
+
+        Button(action: { vm.beginEditingLaunchGame(game) }) {
+            Label("编辑游戏与图标...", systemImage: "photo")
+        }
+
+        Button(action: { vm.refreshLaunchGameIcon(game) }) {
+            Label("重新获取图标", systemImage: "arrow.clockwise")
         }
 
         Divider()

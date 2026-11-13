@@ -535,4 +535,114 @@ struct ArchitectureSafetyTests {
         }
         return pe
     }
+
+    @Test
+    func testLocalAppAndNestedExeImportAndCustomIconLifecycle() async throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chrysa-local-icon-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let services = DefaultWorkflowServices()
+
+        // 1. Standalone macOS .app import strips ".app" and reads bundle icon
+        let macApp = tmpDir.appendingPathComponent("Balatro.app", isDirectory: true)
+        let appContents = macApp.appendingPathComponent("Contents", isDirectory: true)
+        let appResources = appContents.appendingPathComponent("Resources", isDirectory: true)
+        try FileManager.default.createDirectory(at: appResources, withIntermediateDirectories: true)
+        let plist: [String: Any] = [
+            "CFBundleName": "Balatro",
+            "CFBundleIconFile": "AppIcon.png"
+        ]
+        let plistData = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        try plistData.write(to: appContents.appendingPathComponent("Info.plist"))
+
+        let squarePNG = try Self.makeSolidPNG(width: 64, height: 64, r: 0x33, g: 0x66, b: 0xCC)
+        try squarePNG.write(to: appResources.appendingPathComponent("AppIcon.png"))
+
+        let importedApp = try #require(await services.inspectGameForImport(at: macApp, bottlesDirectory: tmpDir.path))
+        #expect(importedApp.title == "Balatro")
+        #expect(importedApp.gameDirectory == macApp.path)
+
+        let cacheDir = tmpDir.appendingPathComponent("icon-cache", isDirectory: true)
+        let customIconsDir = tmpDir.appendingPathComponent("custom-icons", isDirectory: true)
+        let resolver = GameIconResolver(
+            cacheDirectory: cacheDir,
+            customIconsDirectory: customIconsDir,
+            crossOverAppsDirectory: tmpDir.appendingPathComponent("absent-cx-apps").path,
+            allowNetworkFallback: false
+        )
+        let appIconPNG = try #require(await resolver.resolveIconPNG(for: importedApp))
+        let appIconImg = try #require(NSImage(data: appIconPNG))
+        #expect(appIconImg.size.width == 64)
+        #expect(appIconImg.size.height == 64)
+
+        // 2. Nested Unreal-style EXE import recovers game folder title & ancestor steam_appid.txt
+        let ueGameRoot = tmpDir.appendingPathComponent("MyAwesomeGame", isDirectory: true)
+        let ueBinDir = ueGameRoot.appendingPathComponent("Binaries/Win64", isDirectory: true)
+        try FileManager.default.createDirectory(at: ueBinDir, withIntermediateDirectories: true)
+        try "123456\n".write(to: ueGameRoot.appendingPathComponent("steam_appid.txt"), atomically: true, encoding: .utf8)
+        let ueEXE = ueBinDir.appendingPathComponent("MyAwesomeGame-Win64-Shipping.exe")
+        let peData = Self.makePEWithIconResource(iconPayload: squarePNG, width: 64, height: 64, bitCount: 32)
+        try peData.write(to: ueEXE)
+
+        let importedUE = try #require(await services.inspectGameForImport(at: ueEXE, bottlesDirectory: tmpDir.path))
+        #expect(importedUE.title == "MyAwesomeGame")
+        #expect(importedUE.appID == "123456")
+
+        // 3. Custom rectangular image is normalized to square and overrides EXE icon when .custom is selected
+        let rectImageURL = tmpDir.appendingPathComponent("wide-cover.png")
+        let rectPNG = try Self.makeSolidPNG(width: 96, height: 48, r: 0xEE, g: 0x44, b: 0x22)
+        try rectPNG.write(to: rectImageURL)
+
+        let savedCustomPath = try #require(await resolver.saveCustomIcon(from: rectImageURL, for: importedUE.id))
+        #expect(FileManager.default.fileExists(atPath: savedCustomPath))
+        let customImg = try #require(NSImage(contentsOfFile: savedCustomPath))
+        #expect(customImg.size.width == customImg.size.height)
+
+        var customizedUE = importedUE
+        customizedUE.customIconPath = savedCustomPath
+        customizedUE.iconPreference = .custom
+        let customResolved = try #require(await resolver.resolveIconPNG(for: customizedUE))
+
+        var exePreferredUE = customizedUE
+        exePreferredUE.iconPreference = .executable
+        let exeResolved = try #require(await resolver.resolveIconPNG(for: exePreferredUE))
+        #expect(customResolved != exeResolved)
+
+        // Cleanup removes managed custom icon without touching original file
+        await resolver.removeCustomIcon(at: savedCustomPath)
+        #expect(!FileManager.default.fileExists(atPath: savedCustomPath))
+        #expect(FileManager.default.fileExists(atPath: rectImageURL.path))
+
+        // 4. Bottle scanner helper ignores drive_c/windows system EXEs
+        let bottleDir = tmpDir.appendingPathComponent("TestBottle", isDirectory: true)
+        let winDir = bottleDir.appendingPathComponent("drive_c/windows", isDirectory: true)
+        try FileManager.default.createDirectory(at: winDir, withIntermediateDirectories: true)
+        try Data(repeating: 0x4D, count: 1024).write(to: winDir.appendingPathComponent("explorer.exe"))
+        #expect(CrossOverBottleScanner.findMainExecutable(in: bottleDir.path) == nil)
+    }
+
+    private static func makeSolidPNG(width: Int, height: Int, r: UInt8, g: UInt8, b: UInt8) throws -> Data {
+        var rgba = Data(count: width * height * 4)
+        for idx in stride(from: 0, to: rgba.count, by: 4) {
+            rgba[idx] = r
+            rgba[idx + 1] = g
+            rgba[idx + 2] = b
+            rgba[idx + 3] = 0xFF
+        }
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let provider = try #require(CGDataProvider(data: rgba as CFData))
+        let cgImg = try #require(CGImage(
+            width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+            space: colorSpace, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
+        ))
+        let buf = NSMutableData()
+        let dest = try #require(CGImageDestinationCreateWithData(buf, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(dest, cgImg, nil)
+        #expect(CGImageDestinationFinalize(dest))
+        return buf as Data
+    }
+
 }

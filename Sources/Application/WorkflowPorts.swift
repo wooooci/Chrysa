@@ -38,6 +38,7 @@ package protocol LaunchGameRepository: Sendable {
     func all() async -> [LaunchGame]
     func game(for id: UUID) async -> LaunchGame?
     @discardableResult func upsert(_ game: LaunchGame, preferIncomingMetadata: Bool) async -> LaunchGame
+    @discardableResult func update(_ game: LaunchGame) async -> LaunchGame?
     @discardableResult func markPlayed(id: UUID, at date: Date) async -> LaunchGame?
     func remove(id: UUID, suppressRescan: Bool) async
     func isSuppressed(_ game: LaunchGame) async -> Bool
@@ -74,6 +75,15 @@ package actor InMemoryLaunchGameRepository: LaunchGameRepository {
         }
         games.append(game)
         return game
+    }
+
+    @discardableResult
+    package func update(_ game: LaunchGame) async -> LaunchGame? {
+        guard let idx = games.firstIndex(where: { $0.id == game.id }) else { return nil }
+        var updated = game
+        updated.updatedAt = Date()
+        games[idx] = updated
+        return updated
     }
 
     @discardableResult
@@ -134,6 +144,10 @@ package protocol WorkflowServices: Sendable {
     func scanBottles(directory: String) async -> [LaunchGame]
     func inspectGameForImport(at url: URL, bottlesDirectory: String) async -> LaunchGame?
     func resolveLaunchGameIcon(_ game: LaunchGame) async -> Data?
+    func saveCustomLaunchGameIcon(from sourceURL: URL, for gameID: UUID) async -> String?
+    func removeCustomLaunchGameIcon(at path: String?) async
+    func invalidateLaunchGameIconCache(for game: LaunchGame) async
+    func lookupSteamAppID(for title: String) async -> String?
     func mergeDLC(installer: String, directory: String, taskID: UUID) async -> Bool
     func cancel(taskID: UUID) async
     func clearCancellation(taskID: UUID) async

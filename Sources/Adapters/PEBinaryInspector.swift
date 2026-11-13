@@ -294,73 +294,74 @@ package enum PEBinaryInspector {
                 return nil
             }
 
-            guard let firstGroupEntry = directoryEntries(at: groupTypeDir).first,
-                  let groupLangDir = subdirOffset(firstGroupEntry.offsetVal),
-                  let groupData = firstResourcePayload(in: groupLangDir),
-                  groupData.count >= 6 else {
-                return nil
-            }
-
-            let idType = UInt16(groupData[2]) | (UInt16(groupData[3]) << 8)
-            let idCount = Int(UInt16(groupData[4]) | (UInt16(groupData[5]) << 8))
-            guard idType == 1, idCount > 0 else { return nil }
-
-            struct GroupEntry {
-                let header12: Data
-                let width: Int
-                let bitCount: Int
-                let iconID: UInt16
-            }
-
-            var candidates: [GroupEntry] = []
-            for idx in 0..<min(idCount, 64) {
-                let off = 6 + idx * 14
-                guard off + 14 <= groupData.count else { break }
-                let wByte = Int(groupData[off])
-                let width = wByte == 0 ? 256 : wByte
-                let bitCount = Int(UInt16(groupData[off + 6]) | (UInt16(groupData[off + 7]) << 8))
-                let iconID = UInt16(groupData[off + 12]) | (UInt16(groupData[off + 13]) << 8)
-                candidates.append(GroupEntry(
-                    header12: Data(groupData[off ..< (off + 8)]),
-                    width: width,
-                    bitCount: bitCount,
-                    iconID: iconID
-                ))
-            }
-            guard !candidates.isEmpty else { return nil }
-
-            // Prefer 32..128px frames (high bitCount), then 256px, then smaller frames
-            let sortedCandidates = candidates.sorted { a, b in
-                let aSweet = (a.width >= 32 && a.width <= 128)
-                let bSweet = (b.width >= 32 && b.width <= 128)
-                if aSweet != bSweet { return aSweet }
-                if a.bitCount != b.bitCount { return a.bitCount > b.bitCount }
-                return a.width > b.width
-            }
-
             let iconEntries = directoryEntries(at: iconTypeDir)
-            for cand in sortedCandidates {
-                guard let iconEntry = iconEntries.first(where: { ($0.id & 0x7FFF_FFFF) == UInt32(cand.iconID) }),
-                      let iconLangDir = subdirOffset(iconEntry.offsetVal),
-                      let iconBytes = firstResourcePayload(in: iconLangDir),
-                      iconBytes.count >= 8 else { continue }
-
-                // Direct PNG payload inside PE resource
-                let pngMagic: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
-                if Array(iconBytes.prefix(8)) == pngMagic {
-                    return iconBytes
+            for groupEntry in directoryEntries(at: groupTypeDir) {
+                guard let groupLangDir = subdirOffset(groupEntry.offsetVal),
+                      let groupData = firstResourcePayload(in: groupLangDir),
+                      groupData.count >= 6 else {
+                    continue
                 }
 
-                // Wrap raw BMP DIB inside a 1-entry .ico container
-                var ico = Data(capacity: 22 + iconBytes.count)
-                ico.append(contentsOf: [0x00, 0x00, 0x01, 0x00, 0x01, 0x00]) // ICONDIR
-                ico.append(cand.header12) // bWidth, bHeight, bColorCount, bReserved, wPlanes, wBitCount (8 bytes)
-                var lenLE = UInt32(iconBytes.count).littleEndian
-                ico.append(Data(bytes: &lenLE, count: 4))
-                var offsetLE = UInt32(22).littleEndian
-                ico.append(Data(bytes: &offsetLE, count: 4))
-                ico.append(iconBytes)
-                return ico
+                let idType = UInt16(groupData[2]) | (UInt16(groupData[3]) << 8)
+                let idCount = Int(UInt16(groupData[4]) | (UInt16(groupData[5]) << 8))
+                guard idType == 1, idCount > 0 else { continue }
+
+                struct GroupEntry {
+                    let header12: Data
+                    let width: Int
+                    let bitCount: Int
+                    let iconID: UInt16
+                }
+
+                var candidates: [GroupEntry] = []
+                for idx in 0..<min(idCount, 64) {
+                    let off = 6 + idx * 14
+                    guard off + 14 <= groupData.count else { break }
+                    let wByte = Int(groupData[off])
+                    let width = wByte == 0 ? 256 : wByte
+                    let bitCount = Int(UInt16(groupData[off + 6]) | (UInt16(groupData[off + 7]) << 8))
+                    let iconID = UInt16(groupData[off + 12]) | (UInt16(groupData[off + 13]) << 8)
+                    candidates.append(GroupEntry(
+                        header12: Data(groupData[off ..< (off + 8)]),
+                        width: width,
+                        bitCount: bitCount,
+                        iconID: iconID
+                    ))
+                }
+                guard !candidates.isEmpty else { continue }
+
+                // Prefer 32..128px frames (high bitCount), then 256px, then smaller frames
+                let sortedCandidates = candidates.sorted { a, b in
+                    let aSweet = (a.width >= 32 && a.width <= 128)
+                    let bSweet = (b.width >= 32 && b.width <= 128)
+                    if aSweet != bSweet { return aSweet }
+                    if a.bitCount != b.bitCount { return a.bitCount > b.bitCount }
+                    return a.width > b.width
+                }
+
+                for cand in sortedCandidates {
+                    guard let iconEntry = iconEntries.first(where: { ($0.id & 0x7FFF_FFFF) == UInt32(cand.iconID) }),
+                          let iconLangDir = subdirOffset(iconEntry.offsetVal),
+                          let iconBytes = firstResourcePayload(in: iconLangDir),
+                          iconBytes.count >= 8 else { continue }
+
+                    // Direct PNG payload inside PE resource
+                    let pngMagic: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+                    if Array(iconBytes.prefix(8)) == pngMagic {
+                        return iconBytes
+                    }
+
+                    // Wrap raw BMP DIB inside a 1-entry .ico container
+                    var ico = Data(capacity: 22 + iconBytes.count)
+                    ico.append(contentsOf: [0x00, 0x00, 0x01, 0x00, 0x01, 0x00]) // ICONDIR
+                    ico.append(cand.header12) // bWidth, bHeight, bColorCount, bReserved, wPlanes, wBitCount (8 bytes)
+                    var lenLE = UInt32(iconBytes.count).littleEndian
+                    ico.append(Data(bytes: &lenLE, count: 4))
+                    var offsetLE = UInt32(22).littleEndian
+                    ico.append(Data(bytes: &offsetLE, count: 4))
+                    ico.append(iconBytes)
+                    return ico
+                }
             }
             return nil
         }

@@ -68,6 +68,10 @@ package actor GameLauncher {
                fm.fileExists(atPath: directory, isDirectory: &isDirectory), isDirectory.boolValue {
                 guard !Task.isCancelled, !(await isCancelled()) else { return .cancelled }
                 try await open([directory], taskID: request.jobID)
+                if (directory as NSString).pathExtension.lowercased() == "app" {
+                    onLog("app ▸ 正在启动应用: \(request.title)", true)
+                    return .launched
+                }
                 onLog("finder ▸ 已在访达中打开游戏目录: \(request.title)", false)
                 return .openedDirectory
             }
