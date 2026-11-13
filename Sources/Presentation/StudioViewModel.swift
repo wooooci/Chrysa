@@ -19,6 +19,7 @@ package final class StudioViewModel: ObservableObject {
 
     @Published package private(set) var jobs: [Job] = []
     @Published package private(set) var launchGames: [LaunchGame] = []
+    @Published package private(set) var launchGameIcons: [UUID: NSImage] = [:]
     @Published package var launchSearchQuery: String = ""
     @Published package var launchSortOrder: LaunchSortOrder = .lastPlayed
     @Published package var launchErrorAlert: LaunchErrorNotice? = nil
@@ -37,11 +38,11 @@ package final class StudioViewModel: ObservableObject {
     package let settingsStore: AppSettingsStore
     package let taskStore: any LegacyTaskLoading
     package let coordinator: PipelineCoordinator
-
     private var cancellables = Set<AnyCancellable>()
     private var eventTask: Task<Void, Never>?
     private var restorationTask: Task<Void, Never>?
     private var bottleScanTask: Task<Void, Never>?
+    private var attemptedIconSignatureByID: [UUID: String] = [:]
     private var canWriteJobs = true
 
     deinit {
@@ -198,18 +199,26 @@ package final class StudioViewModel: ObservableObject {
             jobs.removeAll { $0.id == id }
         case .launchGameUpdated(let game):
             if let index = launchGames.firstIndex(where: { $0.id == game.id }) {
+                let old = launchGames[index]
                 launchGames[index] = game
+                if old.exePath != game.exePath || old.appID != game.appID || old.title != game.title {
+                    attemptedIconSignatureByID.removeValue(forKey: game.id)
+                    launchGameIcons.removeValue(forKey: game.id)
+                }
             } else {
                 launchGames.append(game)
             }
         case .launchGameRemoved(let id):
             launchGames.removeAll { $0.id == id }
+            launchGameIcons.removeValue(forKey: id)
+            attemptedIconSignatureByID.removeValue(forKey: id)
         case .launchFailed(_, let title, let message):
             launchErrorAlert = LaunchErrorNotice(title: title, message: message)
         case .log(let entry):
             appendLog(entry)
         }
     }
+
     private static func jobOrder(_ lhs: Job, _ rhs: Job) -> Bool {
         if lhs.kind != rhs.kind { return lhs.kind.rawValue < rhs.kind.rawValue }
         if lhs.listPosition != rhs.listPosition { return lhs.listPosition < rhs.listPosition }
@@ -351,12 +360,29 @@ package final class StudioViewModel: ObservableObject {
         Task { await coordinator.removeLaunchGame(game.id) }
     }
 
+    package func launchGameIcon(for game: LaunchGame) -> NSImage? {
+        launchGameIcons[game.id]
+    }
+
+    package func loadLaunchGameIconIfNeeded(for game: LaunchGame) async {
+        let signature = "\(game.exePath ?? "")|\(game.appID ?? "")|\(game.title)"
+        if launchGameIcons[game.id] != nil || attemptedIconSignatureByID[game.id] == signature {
+            return
+        }
+        attemptedIconSignatureByID[game.id] = signature
+        guard let pngData = await coordinator.resolveLaunchGameIcon(game),
+              let image = NSImage(data: pngData) else {
+            return
+        }
+        image.size = NSSize(width: 16, height: 16)
+        launchGameIcons[game.id] = image
+    }
+
     package func importLaunchGame(at url: URL) {
         Task {
             _ = await coordinator.importLaunchGame(at: url, settings: settingsStore.settings)
         }
     }
-
     package func importLaunchGameFromPanel() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true

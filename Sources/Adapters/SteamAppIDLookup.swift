@@ -18,4 +18,30 @@ package enum SteamAppIDLookup {
         return String(idVal)
     }
 
+    /// Fetches the public square `community_icon` CDN URL for a Steam AppID via `IStoreBrowseService`.
+    package static func fetchCommunityIconURL(appID: String) async -> URL? {
+        let trimmed = appID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let numericID = Int(trimmed), numericID > 0, trimmed != "480" else {
+            return nil
+        }
+        let inputPayload = "{\"ids\":[{\"appid\":\(numericID)}],\"context\":{\"language\":\"schinese\",\"country_code\":\"CN\"},\"data_request\":{\"include_assets\":true}}"
+        guard let encoded = inputPayload.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/?input_json=\(encoded)") else {
+            return nil
+        }
+        var request = URLRequest(url: url, timeoutInterval: 6)
+        request.cachePolicy = .returnCacheDataElseLoad
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let resp = root["response"] as? [String: Any],
+              let items = resp["store_items"] as? [[String: Any]],
+              let assets = items.first?["assets"] as? [String: Any],
+              let iconHash = assets["community_icon"] as? String,
+              !iconHash.isEmpty else {
+            return nil
+        }
+        let filename = iconHash.contains(".") ? iconHash : "\(iconHash).jpg"
+        return URL(string: "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/\(numericID)/\(filename)")
+    }
 }

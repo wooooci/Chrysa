@@ -111,6 +111,7 @@ private struct GatedBottleScanServices: WorkflowServices {
     func inspectGameForImport(at url: URL, bottlesDirectory: String) async -> LaunchGame? {
         await base.inspectGameForImport(at: url, bottlesDirectory: bottlesDirectory)
     }
+    func resolveLaunchGameIcon(_ game: LaunchGame) async -> Data? { nil }
     func mergeDLC(installer: String, directory: String, taskID: UUID) async -> Bool {
         await base.mergeDLC(installer: installer, directory: directory, taskID: taskID)
     }

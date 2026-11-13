@@ -282,6 +282,7 @@ private struct StubWorkflowServices: WorkflowServices {
     func resolveDroppedFile(_ url: URL) async -> (kind: JobKind, path: String) { (.unpack, url.path) }
     func scanBottles(directory: String) async -> [LaunchGame] { [] }
     func inspectGameForImport(at url: URL, bottlesDirectory: String) async -> LaunchGame? { nil }
+    func resolveLaunchGameIcon(_ game: LaunchGame) async -> Data? { nil }
     func mergeDLC(installer: String, directory: String, taskID: UUID) async -> Bool { true }
     func cancel(taskID: UUID) async {}
     func clearCancellation(taskID: UUID) async {}

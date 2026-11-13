@@ -8,6 +8,7 @@ package struct DefaultWorkflowServices: WorkflowServices {
     private let unpack: UnpackService
     private let patch: PatchService
     private let launcher: GameLauncher
+    private let iconResolver: GameIconResolver
     private let supervisor: ProcessSupervisor
 
     package init(
@@ -15,12 +16,14 @@ package struct DefaultWorkflowServices: WorkflowServices {
         unpack: UnpackService = UnpackService(),
         patch: PatchService = PatchService(),
         launcher: GameLauncher = GameLauncher(),
+        iconResolver: GameIconResolver = .shared,
         supervisor: ProcessSupervisor = .shared
     ) {
         self.download = download
         self.unpack = unpack
         self.patch = patch
         self.launcher = launcher
+        self.iconResolver = iconResolver
         self.supervisor = supervisor
     }
 
@@ -308,6 +311,10 @@ package struct DefaultWorkflowServices: WorkflowServices {
             appID: foundAppID,
             source: .manualImport
         )
+    }
+
+    package func resolveLaunchGameIcon(_ game: LaunchGame) async -> Data? {
+        await iconResolver.resolveIconPNG(for: game)
     }
 
     package func mergeDLC(installer: String, directory: String, taskID: UUID) async -> Bool {

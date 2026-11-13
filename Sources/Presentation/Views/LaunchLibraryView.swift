@@ -105,7 +105,12 @@ private struct LaunchGameRowView: View {
     @State private var isPlayHovered = false
 
     var body: some View {
+        let icon = vm.launchGameIcon(for: game)
+
         HStack(alignment: .center, spacing: 10) {
+            LaunchGameIconView(icon: icon)
+                .frame(width: 16, height: 16, alignment: .center)
+
             Text(game.title)
                 .font(.system(size: 13.5, weight: .regular))
                 .foregroundColor(.t3TextMain)
@@ -113,7 +118,6 @@ private struct LaunchGameRowView: View {
                 .truncationMode(.tail)
 
             Spacer(minLength: 12)
-
             Text(game.lastPlayedDisplayText())
                 .font(.system(size: 11.5, weight: .regular))
                 .foregroundColor(.t3TextMuted)
@@ -169,6 +173,10 @@ private struct LaunchGameRowView: View {
         .contextMenu {
             gameMenuItems
         }
+        .task(id: "\(game.id.uuidString)|\(game.exePath ?? "")|\(game.appID ?? "")") {
+            guard !isSnapshotMode else { return }
+            await vm.loadLaunchGameIconIfNeeded(for: game)
+        }
     }
 
     @ViewBuilder
@@ -195,6 +203,38 @@ private struct LaunchGameRowView: View {
 
         Button(role: .destructive, action: { vm.removeLaunchGame(game) }) {
             Label("从启动库移除记录", systemImage: "trash")
+        }
+    }
+}
+
+private struct LaunchGameIconView: View {
+    let icon: NSImage?
+
+    var body: some View {
+        if let icon {
+            Image(nsImage: icon)
+                .resizable()
+                .interpolation(.high)
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 16, height: 16)
+                .clipShape(RoundedRectangle(cornerRadius: 3.8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 3.8, style: .continuous)
+                        .stroke(Color.black.opacity(0.08), lineWidth: 0.5)
+                )
+        } else {
+            ZStack {
+                RoundedRectangle(cornerRadius: 3.8, style: .continuous)
+                    .fill(Color.t3TopBoxBg)
+                    .frame(width: 16, height: 16)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 3.8, style: .continuous)
+                            .stroke(Color.t3Divider, lineWidth: 0.6)
+                    )
+                Image(systemName: "gamecontroller")
+                    .font(.system(size: 8.5, weight: .light))
+                    .foregroundColor(.t3TextMuted)
+            }
         }
     }
 }

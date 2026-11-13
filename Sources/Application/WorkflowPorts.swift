@@ -133,6 +133,7 @@ package protocol WorkflowServices: Sendable {
     func resolveDroppedFile(_ url: URL) async -> (kind: JobKind, path: String)
     func scanBottles(directory: String) async -> [LaunchGame]
     func inspectGameForImport(at url: URL, bottlesDirectory: String) async -> LaunchGame?
+    func resolveLaunchGameIcon(_ game: LaunchGame) async -> Data?
     func mergeDLC(installer: String, directory: String, taskID: UUID) async -> Bool
     func cancel(taskID: UUID) async
     func clearCancellation(taskID: UUID) async

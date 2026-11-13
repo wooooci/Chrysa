@@ -1,4 +1,6 @@
 import Foundation
+import AppKit
+import ImageIO
 import SwiftUI
 import Testing
 @testable import Chrysa
@@ -395,4 +397,142 @@ struct ArchitectureSafetyTests {
         #expect(cappedJob.logs.first?.message == "step 60")
     }
 
+    @Test
+    func testPEIconExtractionAndGameIconResolverDiskCache() async throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chrysa-icon-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        var rgba = Data(count: 32 * 32 * 4)
+        for idx in stride(from: 0, to: rgba.count, by: 4) {
+            rgba[idx] = 0x24
+            rgba[idx + 1] = 0x47
+            rgba[idx + 2] = 0x9E
+            rgba[idx + 3] = 0xFF
+        }
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let provider = try #require(CGDataProvider(data: rgba as CFData))
+        let cgImg = try #require(CGImage(
+            width: 32, height: 32, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 32 * 4,
+            space: colorSpace, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
+        ))
+        let pngBuf = NSMutableData()
+        let dest = try #require(CGImageDestinationCreateWithData(pngBuf, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(dest, cgImg, nil)
+        #expect(CGImageDestinationFinalize(dest))
+        let pngPayload = pngBuf as Data
+
+        let peData = Self.makePEWithIconResource(iconPayload: pngPayload, width: 32, height: 32, bitCount: 32)
+        let extracted = try #require(PEBinaryInspector.extractIconData(from: peData))
+        #expect(extracted == pngPayload)
+
+        let exeURL = tmpDir.appendingPathComponent("TestGame.exe")
+        try peData.write(to: exeURL)
+
+        let cacheDir = tmpDir.appendingPathComponent("icon-cache", isDirectory: true)
+        let resolver = GameIconResolver(
+            cacheDirectory: cacheDir,
+            crossOverAppsDirectory: tmpDir.appendingPathComponent("absent-cx-apps").path,
+            allowNetworkFallback: false
+        )
+        let game = LaunchGame(title: "TestGame", exePath: exeURL.path, gameDirectory: tmpDir.path, source: .manualImport)
+        let resolvedPNG = try #require(await resolver.resolveIconPNG(for: game))
+        let resolvedImg = try #require(NSImage(data: resolvedPNG))
+        #expect(resolvedImg.size.width > 0)
+
+        // Removing the source .exe must still serve the cached 32x32 PNG from disk
+        try FileManager.default.removeItem(at: exeURL)
+        let coldResolver = GameIconResolver(
+            cacheDirectory: cacheDir,
+            crossOverAppsDirectory: tmpDir.appendingPathComponent("absent-cx-apps").path,
+            allowNetworkFallback: false
+        )
+        let cachedPNG = try #require(await coldResolver.resolveIconPNG(for: game))
+        #expect(cachedPNG == resolvedPNG)
+    }
+
+    private static func makePEWithIconResource(iconPayload: Data, width: UInt8, height: UInt8, bitCount: UInt16) -> Data {
+        var pe = Data(count: 0x300)
+        func writeU16(_ val: UInt16, at off: Int, into buf: inout Data) {
+            var le = val.littleEndian
+            buf.replaceSubrange(off..<(off + 2), with: Data(bytes: &le, count: 2))
+        }
+        func writeU32(_ val: UInt32, at off: Int, into buf: inout Data) {
+            var le = val.littleEndian
+            buf.replaceSubrange(off..<(off + 4), with: Data(bytes: &le, count: 4))
+        }
+
+        writeU16(0x5A4D, at: 0, into: &pe)
+        writeU32(0x80, at: 0x3C, into: &pe)
+
+        let peOff = 0x80
+        writeU32(0x00004550, at: peOff, into: &pe)
+        writeU16(1, at: peOff + 6, into: &pe)
+        writeU16(240, at: peOff + 20, into: &pe)
+
+        let optStart = peOff + 24
+        writeU16(0x20B, at: optStart, into: &pe)
+        let rsrcRVA: UInt32 = 0x1000
+        let rsrcRawOff = 0x200
+
+        var rsrc = Data(count: 0x120)
+        writeU16(2, at: 0x00 + 14, into: &rsrc)
+        writeU32(3, at: 0x10, into: &rsrc)
+        writeU32(0x8000_0020, at: 0x14, into: &rsrc)
+        writeU32(14, at: 0x18, into: &rsrc)
+        writeU32(0x8000_0060, at: 0x1C, into: &rsrc)
+
+        writeU16(1, at: 0x20 + 14, into: &rsrc)
+        writeU32(1, at: 0x30, into: &rsrc)
+        writeU32(0x8000_0038, at: 0x34, into: &rsrc)
+
+        writeU16(1, at: 0x38 + 14, into: &rsrc)
+        writeU32(0x0409, at: 0x48, into: &rsrc)
+        writeU32(0x50, at: 0x4C, into: &rsrc)
+
+        writeU16(1, at: 0x60 + 14, into: &rsrc)
+        writeU32(1, at: 0x70, into: &rsrc)
+        writeU32(0x8000_0078, at: 0x74, into: &rsrc)
+
+        writeU16(1, at: 0x78 + 14, into: &rsrc)
+        writeU32(0x0409, at: 0x88, into: &rsrc)
+        writeU32(0x90, at: 0x8C, into: &rsrc)
+
+        let grpRel = 0xA0
+        writeU16(0, at: grpRel, into: &rsrc)
+        writeU16(1, at: grpRel + 2, into: &rsrc)
+        writeU16(1, at: grpRel + 4, into: &rsrc)
+        rsrc[grpRel + 6] = width
+        rsrc[grpRel + 7] = height
+        writeU16(1, at: grpRel + 10, into: &rsrc)
+        writeU16(bitCount, at: grpRel + 12, into: &rsrc)
+        writeU32(UInt32(iconPayload.count), at: grpRel + 14, into: &rsrc)
+        writeU16(1, at: grpRel + 18, into: &rsrc)
+
+        let iconRel = rsrc.count
+        rsrc.append(iconPayload)
+
+        writeU32(rsrcRVA + UInt32(iconRel), at: 0x50, into: &rsrc)
+        writeU32(UInt32(iconPayload.count), at: 0x54, into: &rsrc)
+
+        writeU32(rsrcRVA + UInt32(grpRel), at: 0x90, into: &rsrc)
+        writeU32(20, at: 0x94, into: &rsrc)
+
+        writeU32(rsrcRVA, at: optStart + 112 + 16, into: &pe)
+        writeU32(UInt32(rsrc.count), at: optStart + 112 + 20, into: &pe)
+
+        let secOff = optStart + 240
+        writeU32(UInt32(rsrc.count), at: secOff + 8, into: &pe)
+        writeU32(rsrcRVA, at: secOff + 12, into: &pe)
+        writeU32(UInt32(rsrc.count), at: secOff + 16, into: &pe)
+        writeU32(UInt32(rsrcRawOff), at: secOff + 20, into: &pe)
+
+        pe.replaceSubrange(rsrcRawOff..<pe.count, with: rsrc.prefix(pe.count - rsrcRawOff))
+        if rsrcRawOff + rsrc.count > pe.count {
+            pe.append(rsrc.suffix(rsrcRawOff + rsrc.count - pe.count))
+        }
+        return pe
+    }
 }

@@ -738,6 +738,10 @@ package final class PipelineCoordinator {
         workers[id] = nil
         eventContinuation.yield(.launchGameRemoved(id))
     }
+    package func resolveLaunchGameIcon(_ game: LaunchGame) async -> Data? {
+        await services.resolveLaunchGameIcon(game)
+    }
+
 
     package func launchGame(_ game: LaunchGame, settings: AppSettings) {
         guard workers[game.id] == nil else { return }
