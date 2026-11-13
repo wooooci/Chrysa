@@ -334,7 +334,7 @@ struct SettingsView: View {
                         Button(action: { vm.openBottlesDirectoryInFinder() }) {
                             Label("在访达中打开", systemImage: "arrow.up.forward.square")
                         }
-                        Button(action: { vm.rescanCrossOverBottles() }) {
+                        Button(action: { vm.rescanCrossOverBottles(includePreviouslyRemoved: true) }) {
                             Label("重新扫描已安装容器", systemImage: "arrow.clockwise")
                         }
                         Button(action: { vm.chooseBottlesDirectory() }) {

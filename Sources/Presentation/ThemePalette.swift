@@ -28,13 +28,15 @@ package enum StudioTab: Int, CaseIterable, Codable, Sendable {
     case download = 0
     case unpack = 1
     case patch = 2
-    case settings = 3
+    case launch = 3
+    case settings = 4
 
     package var symbolName: String {
         switch self {
         case .download: return "tray.and.arrow.down"
         case .unpack:   return "square.grid.3x1.folder.badge.plus"
         case .patch:    return "puzzlepiece"
+        case .launch:   return "gamecontroller"
         case .settings: return "slider.horizontal.3"
         }
     }

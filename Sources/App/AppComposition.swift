@@ -19,7 +19,8 @@ enum AppComposition {
             taskStore: taskStore ?? TaskStore(inMemoryOnly: ephemeral),
             coordinator: coordinator ?? PipelineCoordinator(
                 services: DefaultWorkflowServices(),
-                jobStore: JobStore(inMemoryOnly: ephemeral)
+                jobStore: JobStore(inMemoryOnly: ephemeral),
+                gameLibrary: LaunchGameStore(inMemoryOnly: ephemeral)
             )
         )
     }

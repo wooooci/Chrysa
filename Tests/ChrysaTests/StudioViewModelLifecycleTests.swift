@@ -48,9 +48,9 @@ struct StudioViewModelLifecycleTests {
 
 private actor BottleScanGate {
     private(set) var started = false
-    private var completion: CheckedContinuation<[Job], Never>?
+    private var completion: CheckedContinuation<[LaunchGame], Never>?
 
-    func scan() async -> [Job] {
+    func scan() async -> [LaunchGame] {
         await withCheckedContinuation { continuation in
             completion = continuation
             started = true
@@ -107,7 +107,10 @@ private struct GatedBottleScanServices: WorkflowServices {
     func resolveDroppedFile(_ url: URL) async -> (kind: JobKind, path: String) {
         await base.resolveDroppedFile(url)
     }
-    func scanBottles(directory: String) async -> [Job] { await gate.scan() }
+    func scanBottles(directory: String) async -> [LaunchGame] { await gate.scan() }
+    func inspectGameForImport(at url: URL, bottlesDirectory: String) async -> LaunchGame? {
+        await base.inspectGameForImport(at: url, bottlesDirectory: bottlesDirectory)
+    }
     func mergeDLC(installer: String, directory: String, taskID: UUID) async -> Bool {
         await base.mergeDLC(installer: installer, directory: directory, taskID: taskID)
     }

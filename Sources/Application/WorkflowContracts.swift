@@ -46,6 +46,14 @@ package struct GameLaunchRequest: Sendable {
         self.gameDirectory = job.input?.kind == .directory ? job.input?.value : job.localPath
         self.bottlesDirectory = bottlesDirectory
     }
+
+    package init(game: LaunchGame, bottlesDirectory: String) {
+        self.jobID = game.id
+        self.title = game.title
+        self.executablePath = game.exePath
+        self.gameDirectory = game.gameDirectory
+        self.bottlesDirectory = bottlesDirectory
+    }
 }
 
 package enum GameLaunchOutcome: Sendable {
@@ -88,3 +96,18 @@ package enum TaskStoreLoadResult: Sendable {
     }
 }
 
+
+package enum LaunchGameStoreLoadResult: Sendable {
+    case missing
+    case loaded([LaunchGame])
+    case recovered([LaunchGame])
+    case corrupt
+    case unsupported
+
+    package var games: [LaunchGame] {
+        switch self {
+        case .loaded(let games), .recovered(let games): return games
+        case .missing, .corrupt, .unsupported: return []
+        }
+    }
+}

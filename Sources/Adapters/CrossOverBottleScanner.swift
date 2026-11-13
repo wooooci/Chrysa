@@ -8,7 +8,7 @@ package enum CrossOverBottleScanner {
         bottlesDirectory: String,
         crossOverAppsDirectory: String? = nil,
         isCancelled: @Sendable () -> Bool = { Task.isCancelled }
-    ) -> [Job] {
+    ) -> [LaunchGame] {
         let fm = FileManager.default
         let bottlesRoot = (bottlesDirectory as NSString).expandingTildeInPath
         guard !isCancelled(), fm.fileExists(atPath: bottlesRoot) else { return [] }
@@ -38,7 +38,7 @@ package enum CrossOverBottleScanner {
             return []
         }
 
-        var discovered: [Job] = []
+        var discovered: [LaunchGame] = []
         for bottle in bottleNames where !bottle.hasPrefix(".") {
             guard !isCancelled() else { return [] }
             if ignoredBottleKeywords.contains(where: { bottle.lowercased().contains($0) }) {
@@ -74,49 +74,81 @@ package enum CrossOverBottleScanner {
                 continue
             }
 
-            var foundEXE: String? = nil
+            var candidateEXEs: [String] = []
+            var unityDataDirs: [String] = []
             var foundAppID: String? = nil
             if let gDir = gameDir, let enumerator = fm.enumerator(atPath: gDir) {
                 while let rel = enumerator.nextObject() as? String {
                     guard !isCancelled() else { return [] }
+                    let relLower = rel.lowercased()
                     let lower = (rel as NSString).lastPathComponent.lowercased()
                     let full = (gDir as NSString).appendingPathComponent(rel)
                     if lower == "steam_appid.txt", foundAppID == nil {
                         let txt = (try? String(contentsOfFile: full, encoding: .utf8))?
                             .trimmingCharacters(in: .whitespacesAndNewlines)
                         if let t = txt, !t.isEmpty { foundAppID = t }
-                    } else if foundEXE == nil, lower.hasSuffix(".exe"),
-                              !rel.lowercased().contains("__redist"),
+                    } else if lower.hasSuffix("_data") {
+                        var dataIsDir: ObjCBool = false
+                        if fm.fileExists(atPath: full, isDirectory: &dataIsDir), dataIsDir.boolValue {
+                            unityDataDirs.append(full)
+                        }
+                    } else if lower.hasSuffix(".exe"),
+                              !relLower.contains("__redist"),
+                              !relLower.contains("/redist/"),
                               !lower.contains("scriptinterpreter"),
                               !lower.contains("unitycrashhandler"),
                               !lower.contains("unins"),
                               !lower.contains("vc_redist"),
-                              !lower.contains("crashreport") {
-                        foundEXE = full
+                              !lower.contains("dxsetup"),
+                              !lower.contains("crashreport"),
+                              !lower.contains("crs-handler"),
+                              !lower.contains("goggalaxy"),
+                              !lower.contains("dosbox"),
+                              !lower.hasPrefix("setup_") {
+                        candidateEXEs.append(full)
                     }
                 }
             }
 
-            let confPath = (bottlePath as NSString).appendingPathComponent("cxbottle.conf")
-            let confText = (try? String(contentsOfFile: confPath, encoding: .utf8)) ?? ""
-            let gfxBackend = confText.contains("d3dmetal") ? "D3DMetal" : "DXMT"
-            let appIDLabel = foundAppID ?? "已就绪"
+            var matchedUnityEXE: String? = nil
+            for dataDir in unityDataDirs {
+                let dirName = (dataDir as NSString).lastPathComponent
+                if dirName.lowercased().hasSuffix("_data") {
+                    let prefix = String(dirName.dropLast("_data".count))
+                    let parent = (dataDir as NSString).deletingLastPathComponent
+                    let expectedEXE = (parent as NSString).appendingPathComponent("\(prefix).exe")
+                    if fm.fileExists(atPath: expectedEXE) {
+                        matchedUnityEXE = expectedEXE
+                        break
+                    }
+                    if let ciMatch = candidateEXEs.first(where: {
+                        (($0 as NSString).lastPathComponent as NSString).deletingPathExtension.caseInsensitiveCompare(prefix) == .orderedSame
+                    }) {
+                        matchedUnityEXE = ciMatch
+                        break
+                    }
+                }
+            }
+
+            let foundEXE = matchedUnityEXE ?? candidateEXEs.max { a, b in
+                let depthA = a.components(separatedBy: "/").count
+                let depthB = b.components(separatedBy: "/").count
+                if depthA != depthB {
+                    return depthA > depthB
+                }
+                let sa = (try? fm.attributesOfItem(atPath: a)[.size] as? Int64) ?? 0
+                let sb = (try? fm.attributesOfItem(atPath: b)[.size] as? Int64) ?? 0
+                return sa < sb
+            }
 
             discovered.append(
-                Job(
-                    kind: .patch,
+                LaunchGame(
                     title: displayTitle,
-                    status: .succeeded,
-                    source: ArtifactRef(kind: .directory, value: gameDir ?? bottlePath),
-                    output: foundEXE.map { ArtifactRef(kind: .file, value: $0) },
-                    message: "Goldberg x64",
-                    rightText: "▶ 启动",
+                    exePath: foundEXE,
+                    gameDirectory: gameDir ?? bottlePath,
+                    bottleName: bottle,
                     appID: foundAppID,
-                    expanded: discovered.isEmpty,
-                    checklist: [
-                        CheckItem(title: "Goldberg 环境 (\(appIDLabel))", isChecked: true),
-                        CheckItem(title: "CrossOver 容器 [\(bottle)] (\(gfxBackend) + MSync)", isChecked: true)
-                    ]
+                    source: .crossoverScan
                 )
             )
         }

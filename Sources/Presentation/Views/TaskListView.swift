@@ -15,7 +15,7 @@ struct PageHeaderView: View {
             Text(tabTitle)
                 .font(.system(size: 24, weight: .bold))
                 .foregroundColor(.t3TextMain)
-            if vm.activeTab != .settings && !isSnapshotMode {
+            if vm.activeTab != .settings && vm.activeTab != .launch && !isSnapshotMode {
                 Menu {
                     Button(action: { vm.archiveAllCompletedInActiveTab() }) {
                         Label("归档所有已完成项目", systemImage: "archivebox")
@@ -42,7 +42,7 @@ struct PageHeaderView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-            } else if vm.activeTab != .settings {
+            } else if vm.activeTab != .settings && vm.activeTab != .launch {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 14, weight: .bold))
                     .foregroundColor(.t3TextMuted)
@@ -51,7 +51,28 @@ struct PageHeaderView: View {
 
             Spacer()
 
-            if vm.activeTab != .settings {
+            if vm.activeTab == .launch {
+                if isSnapshotMode {
+                    launchSortLabel
+                } else {
+                    Menu {
+                        ForEach(LaunchSortOrder.allCases) { order in
+                            Button(action: { vm.launchSortOrder = order }) {
+                                HStack {
+                                    Text(order.label)
+                                    if vm.launchSortOrder == order {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        launchSortLabel
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
+            } else if vm.activeTab != .settings {
                 Button(action: { vm.showArchived.toggle() }) {
                     Text(vm.showArchived ? "含已归档" : "进行中")
                         .font(.system(size: 11.5, weight: .semibold))
@@ -71,11 +92,27 @@ struct PageHeaderView: View {
         }
     }
 
+    private var launchSortLabel: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "arrow.up.arrow.down")
+                .font(.system(size: 10, weight: .medium))
+            Text(vm.launchSortOrder.label)
+                .font(.system(size: 11.5, weight: .semibold))
+        }
+        .foregroundColor(.t3TextSub)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 2.5)
+        .background(
+            Capsule().fill(Color.t3TopBoxBg)
+        )
+    }
+
     private var tabTitle: String {
         switch vm.activeTab {
         case .download: return "下载"
         case .unpack:   return "解压"
         case .patch:    return "补丁"
+        case .launch:   return "启动"
         case .settings: return "设置"
         }
     }
@@ -168,7 +205,7 @@ struct TaskListSectionView: View {
         switch vm.activeTab {
         case .download: return "粘贴下载链接，或将种子文件拖入此处..."
         case .unpack:   return "拖入 .7z / .rar / .zip 压缩包，或点击选择文件..."
-        case .patch, .settings: return "拖入游戏文件夹 / .exe，或点击选择本地目录..."
+        case .patch, .launch, .settings: return "拖入游戏文件夹 / .exe，或点击选择本地目录..."
         }
     }
 
@@ -176,7 +213,7 @@ struct TaskListSectionView: View {
         switch vm.activeTab {
         case .download: return "+ 新建"
         case .unpack:   return "+ 添加文件"
-        case .patch, .settings: return "+ 选择目录"
+        case .patch, .launch, .settings: return "+ 选择目录"
         }
     }
 
@@ -184,7 +221,7 @@ struct TaskListSectionView: View {
         let kind: JobKind = switch vm.activeTab {
         case .download: .download
         case .unpack: .unpack
-        case .patch, .settings: .patch
+        case .patch, .launch, .settings: .patch
         }
         let rawList = vm.tasks(for: kind)
         return vm.showArchived ? rawList : rawList.filter { !$0.isArchived }
@@ -253,18 +290,9 @@ struct TaskListSectionView: View {
                             .help("停止任务")
                         }
 
-                        if vm.activeTab == .patch, row.status == .done {
-                            Button(action: { vm.launchGame(row) }) {
-                                Text(row.rightText)
-                                    .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
-                                    .foregroundColor(theme.accent)
-                            }
-                            .buttonStyle(.plain)
-                        } else {
-                            Text(row.rightText)
-                                .font(.system(size: 11.5, weight: .regular, design: .monospaced))
-                                .foregroundColor(.t3TextMuted)
-                        }
+                        Text(vm.activeTab == .patch && row.status == .done && row.rightText == "▶ 启动" ? "已入库" : row.rightText)
+                            .font(.system(size: 11.5, weight: .regular, design: .monospaced))
+                            .foregroundColor(.t3TextMuted)
 
                         if !isSnapshotMode {
                             Menu {
@@ -317,7 +345,7 @@ struct TaskListSectionView: View {
         if row.isArchived {
             return .t3TextMuted
         }
-        if case .done = row.status, vm.activeTab != .patch {
+        if case .done = row.status {
             return .t3TextMuted
         }
         return .t3TextMain

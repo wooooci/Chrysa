@@ -41,6 +41,13 @@ package struct ThingsStudioMainView: View {
                 .environment(\.appTheme, vm.themePalette)
                 .tint(vm.themePalette.accent)
         }
+        .alert(item: $vm.launchErrorAlert) { notice in
+            Alert(
+                title: Text("无法启动「\(notice.title)」"),
+                message: Text(notice.message),
+                dismissButton: .default(Text("好"))
+            )
+        }
     }
 
     private var mainCanvasView: some View {
@@ -53,9 +60,12 @@ package struct ThingsStudioMainView: View {
                     .padding(.bottom, 12)
 
                 Group {
-                    if vm.activeTab == .settings {
+                    switch vm.activeTab {
+                    case .settings:
                         SettingsView(vm: vm, isSnapshotMode: isSnapshotMode)
-                    } else {
+                    case .launch:
+                        LaunchLibraryView(vm: vm, isSnapshotMode: isSnapshotMode)
+                    case .download, .unpack, .patch:
                         TaskListSectionView(vm: vm, isSnapshotMode: isSnapshotMode)
                     }
                 }
@@ -64,14 +74,13 @@ package struct ThingsStudioMainView: View {
             .padding(.horizontal, 34)
             .padding(.bottom, 14)
 
-            if vm.isLogDrawerPresented && !isSnapshotMode {
+            if vm.isLogDrawerPresented && vm.activeTab != .launch && !isSnapshotMode {
                 Rectangle()
                     .fill(Color.t3Divider)
                     .frame(height: 1)
                 GlobalLogDrawerView(vm: vm)
                     .frame(height: 200)
             }
-
             Rectangle()
                 .fill(Color.t3Divider)
                 .frame(height: 1)
@@ -106,9 +115,18 @@ package struct ThingsStudioMainView: View {
             }
             .buttonStyle(.plain)
 
-            Button(action: { vm.toggleLogDrawer() }) {
+            Button(action: {
+                if vm.activeTab == .launch {
+                    vm.activeTab = .patch
+                    if !vm.isLogDrawerPresented {
+                        vm.toggleLogDrawer()
+                    }
+                } else {
+                    vm.toggleLogDrawer()
+                }
+            }) {
                 Image(systemName: "terminal")
-                    .foregroundColor(vm.isLogDrawerPresented ? vm.themePalette.accent : .t3TextSub)
+                    .foregroundColor(vm.isLogDrawerPresented && vm.activeTab != .launch ? vm.themePalette.accent : .t3TextSub)
                     .overlay(alignment: .topTrailing) {
                         if vm.hasUnreadErrorLogs {
                             Circle()

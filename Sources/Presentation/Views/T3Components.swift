@@ -28,6 +28,7 @@ struct T3SidebarIcon: View {
         case .download: return 1.00
         case .unpack:   return 0.95
         case .patch:    return 0.92
+        case .launch:   return 0.88
         case .settings: return 1.04
         }
     }
@@ -37,6 +38,7 @@ struct T3SidebarIcon: View {
         case .download: return CGSize(width: 0.25, height: 0.0)
         case .unpack:   return CGSize(width: -0.75, height: -0.5)
         case .patch:    return CGSize(width: 0.25, height: -0.25)
+        case .launch:   return CGSize(width: 0.0, height: 0.0)
         case .settings: return CGSize(width: 0.25, height: 0.0)
         }
     }
@@ -46,6 +48,7 @@ struct T3SidebarIcon: View {
         case .download: return CGSize(width: -2.0, height: 0.5)
         case .unpack:   return CGSize(width: -1.5, height: 0.25)
         case .patch:    return CGSize(width: -2.0, height: 0.75)
+        case .launch:   return CGSize(width: -1.5, height: 0.5)
         case .settings: return CGSize(width: -2.0, height: 0.75)
         }
     }

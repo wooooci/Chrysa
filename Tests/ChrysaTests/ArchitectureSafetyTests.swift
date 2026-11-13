@@ -76,8 +76,8 @@ struct ArchitectureSafetyTests {
         #expect(StudioTab.download.symbolName == "tray.and.arrow.down")
         #expect(StudioTab.unpack.symbolName == "square.grid.3x1.folder.badge.plus")
         #expect(StudioTab.patch.symbolName == "puzzlepiece")
+        #expect(StudioTab.launch.symbolName == "gamecontroller")
         #expect(StudioTab.settings.symbolName == "slider.horizontal.3")
-
         let tmpDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("chrysa-theme-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
@@ -198,10 +198,113 @@ struct ArchitectureSafetyTests {
         #expect(patchJobs.contains(where: { $0.id == directRimWorld.id && $0.checklist.first?.title.contains("steam_api64.dll") == true }))
         #expect(patchJobs.contains(where: { $0.id == migratedParabox.id }))
 
-        // Rescanning bottles afterwards must add 0 duplicates
-        let coordinator = PipelineCoordinator(services: DefaultWorkflowServices(), jobStore: reloaded)
-        let added = await coordinator.addDiscoveredBottles([scannedRimWorld, scannedParabox])
-        #expect(added == 0)
+        // Rescanning bottles afterwards adds to Launch library instead of Patch jobs, and avoids duplicates
+        let launchStore = LaunchGameStore(inMemoryOnly: true)
+        let coordinator = PipelineCoordinator(services: DefaultWorkflowServices(), jobStore: reloaded, gameLibrary: launchStore)
+        let scannedGames = [
+            LaunchGame(title: "RimWorld", exePath: directRimWorld.exePath, gameDirectory: directRimWorld.localPath, bottleName: "RimWorld", appID: "294100", source: .crossoverScan),
+            LaunchGame(title: "Patrick‘s Parabox", gameDirectory: "/Users/test/Bottles/Patrick‘s Parabox", bottleName: "Patrick‘s Parabox", source: .crossoverScan)
+        ]
+        let added = await coordinator.addDiscoveredLaunchGames(scannedGames)
+        #expect(added == 2)
+        let addedAgain = await coordinator.addDiscoveredLaunchGames(scannedGames)
+        #expect(addedAgain == 0)
+        #expect((await reloaded.all()).filter { $0.kind == .patch }.count == 2)
+    }
+
+    @MainActor
+    @Test
+    func testLaunchModuleDecouplingPersistenceImportAndMigration() async throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chrysa-launch-sep-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let gameDir = tmpDir.appendingPathComponent("Hollow Knight", isDirectory: true)
+        try FileManager.default.createDirectory(at: gameDir, withIntermediateDirectories: true)
+        let gameEXE = gameDir.appendingPathComponent("hollow_knight.exe")
+        try Data(repeating: 0x4D, count: 2048).write(to: gameEXE)
+        try Data(repeating: 0x4D, count: 2_100_000).write(to: gameDir.appendingPathComponent("steam_api64.dll"))
+        try "367520\n".write(to: gameDir.appendingPathComponent("steam_appid.txt"), atomically: true, encoding: .utf8)
+
+        let manualDir = tmpDir.appendingPathComponent("Celeste", isDirectory: true)
+        try FileManager.default.createDirectory(at: manualDir, withIntermediateDirectories: true)
+        let manualEXE = manualDir.appendingPathComponent("Celeste.exe")
+        try Data(repeating: 0x4D, count: 1024).write(to: manualEXE)
+
+        let jobsURL = tmpDir.appendingPathComponent("jobs.json")
+        let gamesURL = tmpDir.appendingPathComponent("games.json")
+        let jobStore = JobStore(customFileURL: jobsURL)
+        let gameStore = LaunchGameStore(customFileURL: gamesURL)
+
+        // Seed a legacy scanner-discovered patch job to verify one-time cleanup migration
+        let legacyScannerPatch = Job(
+            kind: .patch,
+            title: "Legacy Scanned Game",
+            status: .succeeded,
+            source: ArtifactRef(kind: .directory, value: tmpDir.appendingPathComponent("legacy-bottle").path),
+            checklist: [CheckItem(title: "CrossOver 容器 [Legacy Scanned Game] (DXMT + MSync)", isChecked: true)]
+        )
+        await jobStore.upsert(legacyScannerPatch)
+
+        let settingsStore = AppSettingsStore(inMemoryOnly: true)
+        settingsStore.settings.bottlesDirectory = tmpDir.appendingPathComponent("absent-bottles").path
+
+        let coordinator = PipelineCoordinator(services: DefaultWorkflowServices(), jobStore: jobStore, gameLibrary: gameStore)
+        let vm = StudioViewModel(
+            inMemoryOnly: true,
+            settingsStore: settingsStore,
+            taskStore: TaskStore(inMemoryOnly: true),
+            coordinator: coordinator
+        )
+
+        // 1. Migrate legacy scanner patch out of JobStore into LaunchGameStore
+        _ = await coordinator.loadJobs(migratingLegacyStore: TaskStore(inMemoryOnly: true))
+        _ = await coordinator.loadLaunchLibrary()
+        await coordinator.migrateLegacyPatchEntriesToLaunchLibrary()
+        let postMigrationJobs = await jobStore.all()
+        #expect(!postMigrationJobs.contains(where: { $0.id == legacyScannerPatch.id }))
+        let migratedGames = await gameStore.all()
+        let migratedEntry = try #require(migratedGames.first(where: { $0.title == "Legacy Scanned Game" }))
+        #expect(migratedEntry.source == .crossoverScan)
+
+        // 2. Patch task completion auto-registers into LaunchGameStore; archiving/deleting Patch job leaves LaunchGame intact
+        vm.startPatch(folderPath: gameDir.path)
+        let deadline = Date().addingTimeInterval(5)
+        while !(vm.jobs(of: .patch).first?.status == .succeeded) && Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let patchJob = try #require(vm.jobs(of: .patch).first)
+        #expect(patchJob.status == .succeeded)
+        try await Task.sleep(nanoseconds: 30_000_000)
+        let launchedHollow = try #require(vm.launchGames.first(where: { $0.title == "Hollow Knight" }))
+        #expect(launchedHollow.source == .patchPipeline)
+        #expect(launchedHollow.appID == "367520")
+
+        vm.archiveTask(patchJob.legacyTask())
+        vm.deleteTask(patchJob.legacyTask())
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(vm.jobs(of: .patch).isEmpty)
+        #expect(vm.launchGames.contains(where: { $0.title == "Hollow Knight" }))
+
+        // 3. Manual import (.exe and directory) populates LaunchGameStore and persists across reload
+        let importedCeleste = await coordinator.importLaunchGame(at: manualEXE, settings: settingsStore.settings)
+        #expect(importedCeleste?.title == "Celeste")
+        #expect(importedCeleste?.exePath == manualEXE.path)
+        #expect(importedCeleste?.source == .manualImport)
+
+        let reloadedGameStore = LaunchGameStore(customFileURL: gamesURL)
+        let reloadedGames = await reloadedGameStore.load().games
+        #expect(reloadedGames.contains(where: { $0.title == "Hollow Knight" }))
+        #expect(reloadedGames.contains(where: { $0.title == "Celeste" }))
+        #expect(reloadedGames.contains(where: { $0.title == "Legacy Scanned Game" }))
+
+        // 4. Removing a scanned game suppresses auto-rescan resurrection until explicit rescan
+        let legacyEntry = try #require(vm.launchGames.first(where: { $0.title == "Legacy Scanned Game" }))
+        await coordinator.removeLaunchGame(legacyEntry.id)
+        let scannedAgain = [LaunchGame(title: "Legacy Scanned Game", bottleName: "Legacy Scanned Game", source: .crossoverScan)]
+        let readded = await coordinator.addDiscoveredLaunchGames(scannedAgain)
+        #expect(readded == 0)
     }
 
     @MainActor

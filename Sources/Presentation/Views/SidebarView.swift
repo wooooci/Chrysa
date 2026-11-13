@@ -40,6 +40,14 @@ struct SidebarView: View {
                     .padding(.vertical, 8)
                     .padding(.horizontal, 8)
 
+                sidebarRow(tab: .launch,   title: "启动", count: "\(vm.launchGames.count)")
+
+                Rectangle()
+                    .fill(Color.t3SidebarBorder)
+                    .frame(height: 1)
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 8)
+
                 sidebarRow(tab: .settings, title: "设置", count: "")
             }
             .padding(.horizontal, 10)

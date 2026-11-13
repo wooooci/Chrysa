@@ -85,5 +85,56 @@ struct CoreModelTests {
         changed.progress = -.infinity
         #expect(changed.progress == 0)
         _ = try JSONEncoder().encode(changed)
+        _ = try JSONEncoder().encode(changed)
+    }
+
+    @Test
+    func testLaunchGameDeduplicationSortingAndDisplayText() throws {
+        let now = Date()
+        let scanned = LaunchGame(
+            title: "Patrick‘s Parabox",
+            exePath: "/Games/Parabox/Parabox.exe",
+            gameDirectory: "/Games/Parabox",
+            bottleName: "Patrick's Parabox",
+            source: .crossoverScan,
+            addedAt: now.addingTimeInterval(-3600)
+        )
+        let patched = LaunchGame(
+            title: "Patrick's Parabox",
+            exePath: "/Games/Parabox/Parabox.exe",
+            gameDirectory: "/Games/Parabox",
+            appID: "1260520",
+            source: .patchPipeline,
+            addedAt: now,
+            lastPlayedAt: now.addingTimeInterval(-120)
+        )
+        let otherGame = LaunchGame(
+            title: "Animal Well",
+            exePath: "/Games/Animal Well/AnimalWell.exe",
+            gameDirectory: "/Games/Animal Well",
+            source: .manualImport,
+            addedAt: now.addingTimeInterval(-7200),
+            lastPlayedAt: nil
+        )
+
+        let deduped = LaunchGame.deduplicate([scanned, patched, otherGame])
+        #expect(deduped.count == 2)
+        let mergedParabox = try #require(deduped.first(where: { $0.appID == "1260520" }))
+        #expect(mergedParabox.source == .patchPipeline)
+        #expect(mergedParabox.bottleName == "Patrick's Parabox")
+        #expect(mergedParabox.lastPlayedAt == patched.lastPlayedAt)
+
+        let byPlayed = LaunchGame.sorted(deduped, by: .lastPlayed)
+        #expect(byPlayed.map(\.title) == ["Patrick's Parabox", "Animal Well"])
+
+        let byName = LaunchGame.sorted(deduped, by: .name)
+        #expect(byName.map(\.title) == ["Animal Well", "Patrick's Parabox"])
+
+        #expect(otherGame.lastPlayedDisplayText(relativeTo: now) == "未游玩")
+        #expect(mergedParabox.lastPlayedDisplayText(relativeTo: now) == "2 分钟前")
+
+        let encoded = try JSONEncoder().encode(mergedParabox)
+        let decoded = try JSONDecoder().decode(LaunchGame.self, from: encoded)
+        #expect(decoded == mergedParabox)
     }
 }

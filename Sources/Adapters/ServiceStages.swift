@@ -158,7 +158,8 @@ package struct PatchStage: Stage {
                     "title": payload.displayTitle,
                     "message": payload.pill,
                     "rightText": payload.rightText,
-                    "appID": payload.appID
+                    "appID": payload.appID,
+                    "bottleName": payload.bottleName ?? ""
                 ],
                 checklist: payload.checklist
             ))

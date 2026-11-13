@@ -8,6 +8,7 @@ package struct PatchResultPayload: Sendable {
     package let rightText: String
     package let exePath: String?
     package let appID: String
+    package let bottleName: String?
     package let checklist: [CheckItem]
 }
 
@@ -366,9 +367,10 @@ package actor PatchService {
         return PatchResultPayload(
             displayTitle: effectiveTitle,
             pill: patchModePill,
-            rightText: isStandalonePatchPack ? "打开目录" : "▶ 启动",
+            rightText: isStandalonePatchPack ? "打开目录" : "已入库",
             exePath: mainEXE,
             appID: finalAppID,
+            bottleName: isStandalonePatchPack ? nil : configuredBottle,
             checklist: checklist
         )
     }

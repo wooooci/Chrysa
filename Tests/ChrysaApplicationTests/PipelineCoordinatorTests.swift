@@ -280,7 +280,8 @@ private struct StubWorkflowServices: WorkflowServices {
     func fileSize(_ path: String) -> Int64? { nil }
     func fileExists(_ path: String) -> Bool { true }
     func resolveDroppedFile(_ url: URL) async -> (kind: JobKind, path: String) { (.unpack, url.path) }
-    func scanBottles(directory: String) async -> [Job] { [] }
+    func scanBottles(directory: String) async -> [LaunchGame] { [] }
+    func inspectGameForImport(at url: URL, bottlesDirectory: String) async -> LaunchGame? { nil }
     func mergeDLC(installer: String, directory: String, taskID: UUID) async -> Bool { true }
     func cancel(taskID: UUID) async {}
     func clearCancellation(taskID: UUID) async {}

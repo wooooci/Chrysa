@@ -18,12 +18,22 @@ package final class StudioViewModel: ObservableObject {
     @Published package var editPathOrURLInput: String = ""
 
     @Published package private(set) var jobs: [Job] = []
+    @Published package private(set) var launchGames: [LaunchGame] = []
+    @Published package var launchSearchQuery: String = ""
+    @Published package var launchSortOrder: LaunchSortOrder = .lastPlayed
+    @Published package var launchErrorAlert: LaunchErrorNotice? = nil
     @Published package var logs: [LogEntry] = []
     @Published package var isLogDrawerPresented: Bool = false
     @Published package var logModuleFilter: LogModule? = nil
     @Published package var logErrorsOnly: Bool = false
     @Published package var logSearchQuery: String = ""
     @Published package var hasUnreadErrorLogs: Bool = false
+
+    package struct LaunchErrorNotice: Identifiable, Equatable {
+        package let id = UUID()
+        package let title: String
+        package let message: String
+    }
     package let settingsStore: AppSettingsStore
     package let taskStore: any LegacyTaskLoading
     package let coordinator: PipelineCoordinator
@@ -91,6 +101,7 @@ package final class StudioViewModel: ObservableObject {
             )
             restorationTask = Task { [weak self, coordinator = resolvedCoordinator, legacyStore = resolvedTaskStore] in
                 let result = await coordinator.loadJobs(migratingLegacyStore: legacyStore)
+                _ = await coordinator.loadLaunchLibrary()
                 await self?.restorePersistedTasks(result)
             }
         }
@@ -121,19 +132,28 @@ package final class StudioViewModel: ObservableObject {
             appendLog(LogEntry(module: .patch, level: .warning, message: "persistence ▸ 任务档案由较新版本创建，当前仅显示只读旧记录"))
         }
 
-        jobs = restoredJobs
-        let persistedLogs = restoredJobs.flatMap(\.logs)
+        if canWriteJobs {
+            await coordinator.migrateLegacyPatchEntriesToLaunchLibrary()
+            jobs = await coordinator.jobStore.all()
+        } else {
+            jobs = restoredJobs
+        }
+        launchGames = await coordinator.gameLibrary.all()
+        let persistedLogs = jobs.flatMap(\.logs)
         if !persistedLogs.isEmpty {
             logs = Array((persistedLogs + logs).suffix(300))
         }
         rescanCrossOverBottles()
     }
 
-    package func rescanCrossOverBottles() {
+    package func rescanCrossOverBottles(includePreviouslyRemoved: Bool = false) {
         let bottlesDirectory = settingsStore.settings.bottlesDirectory
         bottleScanTask?.cancel()
         bottleScanTask = Task { [coordinator] in
-            await coordinator.rescanCrossOverBottles(bottlesDirectory: bottlesDirectory)
+            await coordinator.rescanCrossOverBottles(
+                bottlesDirectory: bottlesDirectory,
+                includePreviouslyRemoved: includePreviouslyRemoved
+            )
         }
     }
 
@@ -147,6 +167,14 @@ package final class StudioViewModel: ObservableObject {
 
     package func task(for id: UUID) -> StudioTask? {
         jobs.first(where: { $0.id == id })?.legacyTask()
+    }
+
+    package var filteredAndSortedLaunchGames: [LaunchGame] {
+        let query = launchSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filtered = query.isEmpty
+            ? launchGames
+            : launchGames.filter { $0.title.localizedCaseInsensitiveContains(query) }
+        return LaunchGame.sorted(filtered, by: launchSortOrder)
     }
 
     package func flushTasksImmediately() async {
@@ -168,11 +196,20 @@ package final class StudioViewModel: ObservableObject {
             jobs.sort(by: Self.jobOrder)
         case .jobRemoved(let id):
             jobs.removeAll { $0.id == id }
+        case .launchGameUpdated(let game):
+            if let index = launchGames.firstIndex(where: { $0.id == game.id }) {
+                launchGames[index] = game
+            } else {
+                launchGames.append(game)
+            }
+        case .launchGameRemoved(let id):
+            launchGames.removeAll { $0.id == id }
+        case .launchFailed(_, let title, let message):
+            launchErrorAlert = LaunchErrorNotice(title: title, message: message)
         case .log(let entry):
             appendLog(entry)
         }
     }
-
     private static func jobOrder(_ lhs: Job, _ rhs: Job) -> Bool {
         if lhs.kind != rhs.kind { return lhs.kind.rawValue < rhs.kind.rawValue }
         if lhs.listPosition != rhs.listPosition { return lhs.listPosition < rhs.listPosition }
@@ -306,9 +343,111 @@ package final class StudioViewModel: ObservableObject {
         coordinator.startPatch(folderPath: folderPath, settings: settingsStore.settings)
     }
 
-    package func launchGame(_ task: StudioTask) {
-        guard let job = jobs.first(where: { $0.id == task.id }) else { return }
-        coordinator.launchGame(job, settings: settingsStore.settings)
+    package func launchGame(_ game: LaunchGame) {
+        coordinator.launchGame(game, settings: settingsStore.settings)
+    }
+
+    package func removeLaunchGame(_ game: LaunchGame) {
+        Task { await coordinator.removeLaunchGame(game.id) }
+    }
+
+    package func importLaunchGame(at url: URL) {
+        Task {
+            _ = await coordinator.importLaunchGame(at: url, settings: settingsStore.settings)
+        }
+    }
+
+    package func importLaunchGameFromPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.message = "选择要导入「启动」库的游戏目录或主程序 .exe"
+        if panel.runModal() == .OK {
+            let urls = panel.urls
+            Task {
+                for url in urls {
+                    _ = await coordinator.importLaunchGame(at: url, settings: settingsStore.settings)
+                }
+            }
+        }
+    }
+
+    package func hasAccessibleDirectory(for game: LaunchGame) -> Bool {
+        let fm = FileManager.default
+        if let dir = game.gameDirectory, fm.fileExists(atPath: dir) {
+            return true
+        }
+        if let exe = game.exePath {
+            let parent = (exe as NSString).deletingLastPathComponent
+            return fm.fileExists(atPath: parent)
+        }
+        return false
+    }
+
+    package func openLaunchGameDirectory(_ game: LaunchGame) {
+        let fm = FileManager.default
+        if let dir = game.gameDirectory {
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: dir, isDirectory: &isDir), isDir.boolValue {
+                NSWorkspace.shared.open(URL(fileURLWithPath: dir))
+                return
+            }
+        }
+        if let exe = game.exePath, fm.fileExists(atPath: exe) {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: exe)])
+        }
+    }
+
+    package func resolvedBottlePath(for game: LaunchGame) -> String? {
+        let fm = FileManager.default
+        let bottlesRoot = (settingsStore.settings.bottlesDirectory as NSString).expandingTildeInPath
+        guard fm.fileExists(atPath: bottlesRoot) else { return nil }
+
+        if let bottle = game.bottleName, !bottle.isEmpty {
+            let candidate = (bottlesRoot as NSString).appendingPathComponent(bottle)
+            if fm.fileExists(atPath: candidate) {
+                return candidate
+            }
+        }
+
+        for path in [game.exePath, game.gameDirectory].compactMap({ $0 }) {
+            let canonicalTarget = LaunchGame.canonicalPath(path) ?? path
+            let canonicalRoot = LaunchGame.canonicalPath(bottlesRoot) ?? bottlesRoot
+            if canonicalTarget.hasPrefix(canonicalRoot + "/") {
+                let rel = String(canonicalTarget.dropFirst((canonicalRoot + "/").count))
+                if let bottle = rel.components(separatedBy: "/").first, !bottle.isEmpty {
+                    let candidate = (bottlesRoot as NSString).appendingPathComponent(bottle)
+                    if fm.fileExists(atPath: candidate) {
+                        return candidate
+                    }
+                }
+            }
+        }
+
+        let normTitle = LaunchGame.normalizedIdentityTitle(game.title)
+        if !normTitle.isEmpty,
+           let entries = try? fm.contentsOfDirectory(atPath: bottlesRoot),
+           let match = entries.first(where: { LaunchGame.normalizedIdentityTitle($0) == normTitle }) {
+            let candidate = (bottlesRoot as NSString).appendingPathComponent(match)
+            if fm.fileExists(atPath: candidate) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    package func revealLaunchGameBottle(_ game: LaunchGame, bottlePath: String? = nil) {
+        if let path = bottlePath ?? resolvedBottlePath(for: game),
+           FileManager.default.fileExists(atPath: path) {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+            return
+        }
+        let cxAppsDir = ("~/Applications/CrossOver" as NSString).expandingTildeInPath
+        let shortcutApp = (cxAppsDir as NSString).appendingPathComponent("\(game.title).app")
+        if FileManager.default.fileExists(atPath: shortcutApp) {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: shortcutApp)])
+        }
     }
 
     // MARK: - File Picker & Drag-and-Drop Routing
@@ -330,6 +469,8 @@ package final class StudioViewModel: ObservableObject {
             if panel.runModal() == .OK, let url = panel.url {
                 startUnpack(filePath: url.path)
             }
+        case .launch:
+            importLaunchGameFromPanel()
         case .patch, .settings:
             panel.canChooseFiles = true
             panel.canChooseDirectories = true
@@ -345,6 +486,7 @@ package final class StudioViewModel: ObservableObject {
     }
 
     package func handleDroppedProviders(_ providers: [NSItemProvider]) -> Bool {
+        var handled = false
         for provider in providers {
             if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                 provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
@@ -354,7 +496,7 @@ package final class StudioViewModel: ObservableObject {
                         self.routeDroppedFile(url: fileURL)
                     }
                 }
-                return true
+                handled = true
             } else if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
                 provider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { item, _ in
                     if let text = item as? String {
@@ -367,13 +509,27 @@ package final class StudioViewModel: ObservableObject {
                 return true
             }
         }
-        return false
+        return handled
     }
 
     private func routeDroppedFile(url: URL) {
+        let droppedOnLaunch = (activeTab == .launch)
         Task { [weak self, coordinator] in
             let input = await coordinator.resolveDroppedFile(url)
             guard let self else { return }
+            if droppedOnLaunch {
+                var isDir: ObjCBool = false
+                FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+                let ext = url.pathExtension.lowercased()
+                if isDir.boolValue && input.kind != .unpack {
+                    _ = await coordinator.importLaunchGame(at: url, settings: settingsStore.settings)
+                    return
+                }
+                if ext == "exe" || ext == "app" {
+                    _ = await coordinator.importLaunchGame(at: url, settings: settingsStore.settings)
+                    return
+                }
+            }
             switch input.kind {
             case .download:
                 activeTab = .download
@@ -387,7 +543,6 @@ package final class StudioViewModel: ObservableObject {
             }
         }
     }
-
     // MARK: - Task Management (Stop / Archive / Delete / Retry / Edit / Batch)
     package func stopTask(_ task: StudioTask) {
         Task { await coordinator.cancelTask(task.id) }
@@ -514,10 +669,9 @@ package final class StudioViewModel: ObservableObject {
         case .download: return jobs(of: .download)
         case .unpack: return jobs(of: .unpack)
         case .patch: return jobs(of: .patch)
-        case .settings: return []
+        case .launch, .settings: return []
         }
     }
-
     private func retry(_ job: Job) {
         switch job.kind {
         case .download:
@@ -642,7 +796,7 @@ package final class StudioViewModel: ObservableObject {
                 title: "Esoteric Ebb",
                 status: .done,
                 pill: "Goldberg x64",
-                rightText: "▶ 启动",
+                rightText: "已入库",
                 appID: "2057760",
                 expanded: true,
                 checklist: [
@@ -654,7 +808,7 @@ package final class StudioViewModel: ObservableObject {
                 title: "Order of the Sinking Star",
                 status: .done,
                 pill: "PE 补全 x64",
-                rightText: "▶ 启动",
+                rightText: "已入库",
                 appID: "499170",
                 expanded: false,
                 checklist: [
@@ -666,6 +820,14 @@ package final class StudioViewModel: ObservableObject {
         jobs = downloadTasks.map { Job.fromLegacy($0, kind: .download) }
             + unpackTasks.map { Job.fromLegacy($0, kind: .unpack) }
             + patchTasks.map { Job.fromLegacy($0, kind: .patch) }
+
+        let now = Date()
+        launchGames = [
+            LaunchGame(title: "Esoteric Ebb", source: .patchPipeline, addedAt: now.addingTimeInterval(-7200), lastPlayedAt: now.addingTimeInterval(-1800)),
+            LaunchGame(title: "Order of the Sinking Star", source: .patchPipeline, addedAt: now.addingTimeInterval(-86400), lastPlayedAt: now.addingTimeInterval(-86400)),
+            LaunchGame(title: "Patrick's Parabox", source: .crossoverScan, addedAt: now.addingTimeInterval(-86400 * 3), lastPlayedAt: now.addingTimeInterval(-86400 * 3)),
+            LaunchGame(title: "Hollow Knight", source: .manualImport, addedAt: now.addingTimeInterval(-86400 * 5), lastPlayedAt: nil)
+        ]
         Task {
             for job in jobs { await coordinator.addJob(job) }
         }

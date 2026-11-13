@@ -138,6 +138,7 @@ struct ChrysaAppMain {
                 (.download, .appearance, "dl"),
                 (.unpack, .appearance, "un"),
                 (.patch, .appearance, "pa"),
+                (.launch, .appearance, "launch"),
                 (.settings, .appearance, "settings_appearance"),
                 (.settings, .download, "settings_download"),
                 (.settings, .unpack, "settings_unpack"),
@@ -308,29 +309,28 @@ struct ChrysaAppMain {
         precondition(discoveredBottles.count == 1 && discoveredBottles[0].title == "Fixture Bottle")
         print("5A. CrossOver Bottle Scanner -> isolated local fixture discovered")
 
-        let collapsedBottle = Job(
-            kind: .patch,
+        let existingBottle = LaunchGame(
             title: "Existing Bottle",
-            status: .succeeded,
-            source: ArtifactRef(kind: .directory, value: tmpDir.appendingPathComponent("existing-bottle").path),
-            expanded: false
+            gameDirectory: tmpDir.appendingPathComponent("existing-bottle").path,
+            bottleName: "Existing Bottle",
+            source: .crossoverScan
         )
-        let newBottle = Job(
-            kind: .patch,
+        let newBottle = LaunchGame(
             title: "New Bottle",
-            status: .succeeded,
-            source: ArtifactRef(kind: .directory, value: tmpDir.appendingPathComponent("new-bottle").path)
+            gameDirectory: tmpDir.appendingPathComponent("new-bottle").path,
+            bottleName: "New Bottle",
+            source: .crossoverScan
         )
         let scanCoordinator = PipelineCoordinator(
             services: DefaultWorkflowServices(),
-            jobStore: JobStore(inMemoryOnly: true, seed: [collapsedBottle])
+            jobStore: JobStore(inMemoryOnly: true),
+            gameLibrary: LaunchGameStore(inMemoryOnly: true, seed: [existingBottle])
         )
-        let addedBottleCount = await scanCoordinator.addDiscoveredBottles([newBottle])
-        let bottleJobs = await scanCoordinator.jobStore.all().filter { $0.kind == .patch }
-        let firstBottle = bottleJobs.min { $0.listPosition < $1.listPosition }
-        precondition(addedBottleCount == 1 && firstBottle?.id == collapsedBottle.id && firstBottle?.expanded == true)
-        print("5B. Dynamic Bottle Scanner -> discovered-job merge and first-item expansion verified")
-
+        let addedBottleCount = await scanCoordinator.addDiscoveredLaunchGames([newBottle])
+        let libraryGames = await scanCoordinator.gameLibrary.all()
+        let patchJobsDuringScan = await scanCoordinator.jobStore.all().filter { $0.kind == .patch }
+        precondition(addedBottleCount == 1 && libraryGames.count == 2 && patchJobsDuringScan.isEmpty)
+        print("5B. Dynamic Bottle Scanner -> LaunchGame library merge without polluting Patch jobs verified")
         // Verify GOG thin Unity EXE selection + configurable defaultLanguage (tchinese -> TW)
         let gogMock = tmpDir.appendingPathComponent("GOG_RainWorld_Refactor_Mock").path
         try? FileManager.default.createDirectory(atPath: "\(gogMock)/__redist/ISI", withIntermediateDirectories: true)

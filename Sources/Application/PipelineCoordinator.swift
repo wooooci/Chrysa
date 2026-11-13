@@ -4,6 +4,9 @@ import Foundation
 package enum PipelineEvent: Sendable {
     case jobUpdated(Job)
     case jobRemoved(UUID)
+    case launchGameUpdated(LaunchGame)
+    case launchGameRemoved(UUID)
+    case launchFailed(gameID: UUID, title: String, message: String)
     case log(LogEntry)
 }
 
@@ -12,6 +15,7 @@ package enum PipelineEvent: Sendable {
 package final class PipelineCoordinator {
     private let services: any WorkflowServices
     package let jobStore: any JobRepository
+    package let gameLibrary: any LaunchGameRepository
     package let events: AsyncStream<PipelineEvent>
 
     private let eventContinuation: AsyncStream<PipelineEvent>.Continuation
@@ -20,9 +24,14 @@ package final class PipelineCoordinator {
     private var folderQueueOwners: Set<UUID> = []
     private var bottleScanID: UUID?
 
-    package init(services: any WorkflowServices, jobStore: any JobRepository) {
+    package init(
+        services: any WorkflowServices,
+        jobStore: any JobRepository,
+        gameLibrary: any LaunchGameRepository = InMemoryLaunchGameRepository()
+    ) {
         self.services = services
         self.jobStore = jobStore
+        self.gameLibrary = gameLibrary
         let stream = AsyncStream<PipelineEvent>.makeStream()
         self.events = stream.stream
         self.eventContinuation = stream.continuation
@@ -32,52 +41,111 @@ package final class PipelineCoordinator {
         await jobStore.load(migratingLegacyStore: migratingLegacyStore)
     }
 
+    package func loadLaunchLibrary() async -> LaunchGameStoreLoadResult {
+        await gameLibrary.load()
+    }
+
+    package func migrateLegacyPatchEntriesToLaunchLibrary() async {
+        let allJobs = await jobStore.all()
+        let migratedAlready = await gameLibrary.isLegacyJobMigrationCompleted()
+
+        for job in allJobs where job.kind == .patch {
+            if job.isScannerDiscoveredPatch {
+                let bottleName = Self.extractBottleName(from: job.checklist) ?? job.title
+                let game = LaunchGame(
+                    title: job.title,
+                    exePath: job.exePath,
+                    gameDirectory: job.localPath,
+                    bottleName: bottleName,
+                    appID: job.appID,
+                    source: .crossoverScan,
+                    addedAt: job.createdAt,
+                    updatedAt: job.updatedAt
+                )
+                let stored = await gameLibrary.upsert(game, preferIncomingMetadata: false)
+                eventContinuation.yield(.launchGameUpdated(stored))
+                await jobStore.remove(id: job.id)
+                eventContinuation.yield(.jobRemoved(job.id))
+            } else if !migratedAlready, job.status == .succeeded, job.exePath != nil {
+                let game = LaunchGame(
+                    title: job.title,
+                    exePath: job.exePath,
+                    gameDirectory: job.localPath,
+                    bottleName: nil,
+                    appID: job.appID,
+                    source: .patchPipeline,
+                    addedAt: job.createdAt,
+                    updatedAt: job.updatedAt
+                )
+                let stored = await gameLibrary.upsert(game, preferIncomingMetadata: false)
+                eventContinuation.yield(.launchGameUpdated(stored))
+            }
+        }
+
+        if !migratedAlready {
+            await gameLibrary.markLegacyJobMigrationCompleted()
+        }
+    }
+
+    private static func extractBottleName(from checklist: [CheckItem]) -> String? {
+        for item in checklist {
+            guard let start = item.title.range(of: "CrossOver 容器 [") else { continue }
+            let after = item.title[start.upperBound...]
+            if let end = after.firstIndex(of: "]") {
+                let name = String(after[..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !name.isEmpty { return name }
+            }
+        }
+        return nil
+    }
+
     package func addJob(_ job: Job) async {
         let storedJob = await jobStore.upsert(job)
         eventContinuation.yield(.jobUpdated(storedJob))
     }
 
-    package func rescanCrossOverBottles(bottlesDirectory: String) async {
+    package func rescanCrossOverBottles(bottlesDirectory: String, includePreviouslyRemoved: Bool = false) async {
         let scanID = UUID()
         bottleScanID = scanID
+        if includePreviouslyRemoved {
+            await gameLibrary.clearAllSuppressions()
+        }
         let scanned = await services.scanBottles(directory: bottlesDirectory)
         guard bottleScanID == scanID, !Task.isCancelled else { return }
-        let addedCount = await addDiscoveredBottles(scanned)
+        let addedCount = await addDiscoveredLaunchGames(scanned)
         if addedCount > 0 {
-            await recordLog(taskID: nil, module: .patch, level: .info, message: "容器目录扫描新增 \(addedCount) 款游戏")
+            await recordLog(taskID: nil, module: .launch, level: .info, message: "容器目录扫描新增 \(addedCount) 款游戏")
         }
     }
 
     @discardableResult
-    package func addDiscoveredBottles(_ discoveredJobs: [Job]) async -> Int {
-        let existingJobs = await jobStore.all()
-        var patchJobs = existingJobs.filter { $0.kind == .patch }
-        var nextPosition = (patchJobs.map(\.listPosition).max() ?? -1) + 1
+    package func addDiscoveredLaunchGames(_ discoveredGames: [LaunchGame]) async -> Int {
+        let existingGames = await gameLibrary.all()
+        var knownGames = existingGames
         var addedCount = 0
 
-        for discoveredJob in discoveredJobs where discoveredJob.kind == .patch {
-            let exists = patchJobs.contains { existing in
-                existing.matchesDiscoveredPatchBottle(discoveredJob)
+        for candidate in discoveredGames {
+            if await gameLibrary.isSuppressed(candidate) {
+                continue
             }
-            guard !exists else { continue }
-            var job = discoveredJob
-            job.listPosition = nextPosition
-            job.expanded = false
-            nextPosition += 1
-            await jobStore.upsert(job)
-            patchJobs.append(job)
-            eventContinuation.yield(.jobUpdated(job))
-            addedCount += 1
-        }
-
-        if !patchJobs.contains(where: \.expanded),
-           let firstJob = patchJobs.min(by: Self.jobOrder) {
-            await updateJob(firstJob.id, expanded: true)
+            if let match = knownGames.first(where: { $0.matches(candidate) }) {
+                let updated = await gameLibrary.upsert(candidate, preferIncomingMetadata: false)
+                if updated != match {
+                    if let idx = knownGames.firstIndex(where: { $0.id == updated.id }) {
+                        knownGames[idx] = updated
+                    }
+                    eventContinuation.yield(.launchGameUpdated(updated))
+                }
+            } else {
+                let stored = await gameLibrary.upsert(candidate, preferIncomingMetadata: false)
+                knownGames.append(stored)
+                eventContinuation.yield(.launchGameUpdated(stored))
+                addedCount += 1
+            }
         }
 
         return addedCount
     }
-
     @discardableResult
     package func updateJob(
         _ id: UUID,
@@ -147,6 +215,7 @@ package final class PipelineCoordinator {
 
     package func flushJobStoreWrites() async {
         _ = await jobStore.all()
+        _ = await gameLibrary.all()
     }
 
     package func resolveDroppedFile(_ url: URL) async -> (kind: JobKind, path: String) {
@@ -629,6 +698,21 @@ package final class PipelineCoordinator {
                 appID: output.metadata["appID"],
                 checklist: output.checklist
             )
+            if output.artifact?.kind == .file {
+                let resolvedTitle = output.metadata["title"] ?? cleanTitle
+                let rawBottle = output.metadata["bottleName"]
+                let bottleName = (rawBottle?.isEmpty == false && rawBottle != "独立补丁包" && rawBottle != "Default") ? rawBottle : nil
+                let game = LaunchGame(
+                    title: resolvedTitle,
+                    exePath: output.artifact?.value,
+                    gameDirectory: folderPath,
+                    bottleName: bottleName,
+                    appID: output.metadata["appID"],
+                    source: .patchPipeline
+                )
+                let stored = await gameLibrary.upsert(game, preferIncomingMetadata: true)
+                eventContinuation.yield(.launchGameUpdated(stored))
+            }
         case .cancelled:
             await updateJob(taskID, status: .cancelled, message: "已停止", rightText: "已停止")
         case .failure(let failure):
@@ -636,29 +720,57 @@ package final class PipelineCoordinator {
         }
     }
 
-    package func launchGame(_ job: Job, settings: AppSettings) {
-        guard job.kind == .patch, job.status == .succeeded, workers[job.id] == nil else { return }
-        let taskID = job.id
-        cancelledTaskIDs.remove(taskID)
-        workers[taskID] = Task { [weak self] in
-            guard let self else { return }
-            defer { self.workers[taskID] = nil }
-            await self.services.clearCancellation(taskID: taskID)
-            guard let storedJob = await self.jobStore.job(for: taskID),
-                  storedJob.kind == .patch, storedJob.status == .succeeded,
-                  self.acceptsProgress(for: taskID) else { return }
-            let request = GameLaunchRequest(job: storedJob, bottlesDirectory: settings.bottlesDirectory)
-            let stage = self.services.launchStage(request: request)
-            _ = await self.execute(
-                registry: StageRegistry(stages: [stage]),
-                stageID: stage.id,
-                jobID: taskID,
-                module: .launch,
-                input: storedJob.output
-            )
+    @discardableResult
+    package func importLaunchGame(at url: URL, settings: AppSettings) async -> LaunchGame? {
+        guard let inspected = await services.inspectGameForImport(at: url, bottlesDirectory: settings.bottlesDirectory) else {
+            return nil
         }
+        let stored = await gameLibrary.upsert(inspected, preferIncomingMetadata: true)
+        eventContinuation.yield(.launchGameUpdated(stored))
+        return stored
     }
 
+    package func removeLaunchGame(_ id: UUID) async {
+        workers[id]?.cancel()
+        cancelledTaskIDs.insert(id)
+        await services.cancel(taskID: id)
+        await gameLibrary.remove(id: id, suppressRescan: true)
+        workers[id] = nil
+        eventContinuation.yield(.launchGameRemoved(id))
+    }
+
+    package func launchGame(_ game: LaunchGame, settings: AppSettings) {
+        guard workers[game.id] == nil else { return }
+        let gameID = game.id
+        cancelledTaskIDs.remove(gameID)
+        workers[gameID] = Task { [weak self] in
+            guard let self else { return }
+            defer { self.workers[gameID] = nil }
+            await self.services.clearCancellation(taskID: gameID)
+            let storedGame = await self.gameLibrary.game(for: gameID) ?? game
+            guard self.acceptsProgress(for: gameID) else { return }
+            let request = GameLaunchRequest(game: storedGame, bottlesDirectory: settings.bottlesDirectory)
+            let stage = self.services.launchStage(request: request)
+            let result = await self.execute(
+                registry: StageRegistry(stages: [stage]),
+                stageID: stage.id,
+                jobID: gameID,
+                module: .launch,
+                input: storedGame.exePath.map { ArtifactRef(kind: .file, value: $0) }
+                    ?? storedGame.gameDirectory.map { ArtifactRef(kind: .directory, value: $0) }
+            )
+            switch result {
+            case .success:
+                if let updated = await self.gameLibrary.markPlayed(id: gameID, at: Date()) {
+                    self.eventContinuation.yield(.launchGameUpdated(updated))
+                }
+            case .failure(let failure):
+                self.eventContinuation.yield(.launchFailed(gameID: gameID, title: storedGame.title, message: failure.message))
+            case .cancelled:
+                break
+            }
+        }
+    }
     private func execute(
         registry: StageRegistry,
         stageID: StageID,
