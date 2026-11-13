@@ -76,7 +76,8 @@ package actor LaunchGameStore: LaunchGameRepository {
             preserveUnsupportedFile = false
             dismissedScanKeys = decoded.dismissedScanKeys
             legacyPatchMigrationCompleted = decoded.legacyPatchMigrationCompleted
-            let deduped = LaunchGame.deduplicate(decoded.games)
+            let repaired = Self.repairHelperExecutables(in: decoded.games)
+            let deduped = LaunchGame.deduplicate(repaired)
             applyLoadedGames(deduped)
             if deduped != decoded.games {
                 persist()
@@ -93,7 +94,8 @@ package actor LaunchGameStore: LaunchGameRepository {
         if let backup, let restored = Self.decodeArchive(backup) {
             dismissedScanKeys = restored.dismissedScanKeys
             legacyPatchMigrationCompleted = restored.legacyPatchMigrationCompleted
-            let deduped = LaunchGame.deduplicate(restored.games)
+            let repaired = Self.repairHelperExecutables(in: restored.games)
+            let deduped = LaunchGame.deduplicate(repaired)
             applyLoadedGames(deduped)
             persist()
             print("[persistence] restored games from backup: \(fileURL.path).bak")
@@ -189,6 +191,22 @@ package actor LaunchGameStore: LaunchGameRepository {
     private func applyLoadedGames(_ loaded: [LaunchGame]) {
         games = loaded.reduce(into: [:]) { $0[$1.id] = $1 }
         orderedIDs = loaded.map(\.id)
+    }
+
+    private static func repairHelperExecutables(in games: [LaunchGame]) -> [LaunchGame] {
+        games.map { game in
+            guard LaunchGame.isIgnoredHelperExecutable(game.exePath) else {
+                return game
+            }
+            var updated = game
+            if let dir = game.gameDirectory,
+               let betterEXE = CrossOverBottleScanner.findMainExecutable(in: dir) {
+                updated.exePath = betterEXE
+            } else {
+                updated.exePath = nil
+            }
+            return updated
+        }
     }
 
     @discardableResult

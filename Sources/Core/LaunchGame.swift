@@ -96,6 +96,24 @@ package struct LaunchGame: Identifiable, Codable, Equatable, Sendable {
         Job.normalizedPatchIdentityTitle(raw)
     }
 
+    package static func isIgnoredHelperExecutable(_ path: String?) -> Bool {
+        guard let path, !path.isEmpty else { return false }
+        let relLower = path.lowercased()
+        let lower = (path as NSString).lastPathComponent.lowercased()
+        return relLower.contains("__redist")
+            || relLower.contains("/redist/")
+            || lower.contains("scriptinterpreter")
+            || lower.contains("unitycrashhandler")
+            || lower.contains("unins")
+            || lower.contains("vc_redist")
+            || lower.contains("dxsetup")
+            || lower.contains("crashreport")
+            || lower.contains("crs-handler")
+            || lower.contains("goggalaxy")
+            || lower.contains("dosbox")
+            || lower.hasPrefix("setup_")
+    }
+
     package static func canonicalPath(_ raw: String?) -> String? {
         guard let raw, !raw.isEmpty else { return nil }
         let expanded = (raw as NSString).expandingTildeInPath

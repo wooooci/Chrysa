@@ -109,8 +109,7 @@ private struct LaunchGameRowView: View {
 
         HStack(alignment: .center, spacing: 10) {
             LaunchGameIconView(icon: icon)
-                .frame(width: 16, height: 16, alignment: .center)
-
+                .frame(width: 22, height: 22, alignment: .center)
             Text(game.title)
                 .font(.system(size: 13.5, weight: .regular))
                 .foregroundColor(.t3TextMain)
@@ -124,7 +123,7 @@ private struct LaunchGameRowView: View {
                 .padding(.trailing, isHovered && !isSnapshotMode ? 54 : 0)
         }
         .padding(.horizontal, 12)
-        .frame(height: 34)
+        .frame(height: 38)
         .overlay(alignment: .trailing) {
             if !isSnapshotMode {
                 HStack(spacing: 4) {
@@ -149,6 +148,7 @@ private struct LaunchGameRowView: View {
                             .contentShape(Rectangle())
                     }
                     .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
                     .fixedSize()
                 }
                 .padding(.trailing, 10)
@@ -216,23 +216,23 @@ private struct LaunchGameIconView: View {
                 .resizable()
                 .interpolation(.high)
                 .aspectRatio(contentMode: .fill)
-                .frame(width: 16, height: 16)
-                .clipShape(RoundedRectangle(cornerRadius: 3.8, style: .continuous))
+                .frame(width: 22, height: 22)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 3.8, style: .continuous)
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
                         .stroke(Color.black.opacity(0.08), lineWidth: 0.5)
                 )
         } else {
             ZStack {
-                RoundedRectangle(cornerRadius: 3.8, style: .continuous)
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
                     .fill(Color.t3TopBoxBg)
-                    .frame(width: 16, height: 16)
+                    .frame(width: 22, height: 22)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 3.8, style: .continuous)
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
                             .stroke(Color.t3Divider, lineWidth: 0.6)
                     )
                 Image(systemName: "gamecontroller")
-                    .font(.system(size: 8.5, weight: .light))
+                    .font(.system(size: 10.5, weight: .light))
                     .foregroundColor(.t3TextMuted)
             }
         }

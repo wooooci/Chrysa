@@ -74,34 +74,42 @@ package actor GameIconResolver {
         crossOverAppsDirectory: String,
         allowNetworkFallback: Bool
     ) async -> Data? {
-        // 1. CrossOver helper .app .icns
-        if let icnsData = loadCrossOverShortcutIcon(title: game.title, cxAppsDir: crossOverAppsDirectory),
-           let png = normalizeToSquarePNG(icnsData) {
-            return png
-        }
-
-        // 2. Windows PE .exe resource section (RT_GROUP_ICON / RT_ICON)
-        if let exePath = game.exePath, FileManager.default.fileExists(atPath: exePath),
+        // 1. Windows PE .exe resource section (RT_GROUP_ICON / RT_ICON)
+        // Ignore installer/redist helpers (e.g. scriptinterpreter.exe) and auto-discover the real game EXE if needed.
+        let candidateEXE: String? = {
+            if let exe = game.exePath,
+               !LaunchGame.isIgnoredHelperExecutable(exe),
+               FileManager.default.fileExists(atPath: exe) {
+                return exe
+            }
+            if let dir = game.gameDirectory {
+                return CrossOverBottleScanner.findMainExecutable(in: dir)
+            }
+            return nil
+        }()
+        if let exePath = candidateEXE,
            let rawIcon = PEBinaryInspector.extractIconData(exePath: exePath),
-           let png = normalizeToSquarePNG(rawIcon) {
+           let png = normalizeToSquarePNG(rawIcon, pixelSize: 64) {
             return png
         }
 
-        // 3. Steam community_icon by AppID (fallback lookup by title if missing or generic 480)
-        guard allowNetworkFallback else { return nil }
-        var effectiveAppID = game.appID?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if effectiveAppID == nil || effectiveAppID?.isEmpty == true || effectiveAppID == "480" {
-            effectiveAppID = await SteamAppIDLookup.fetch(for: game.title)
-        }
-        if let appID = effectiveAppID,
-           let iconURL = await SteamAppIDLookup.fetchCommunityIconURL(appID: appID) {
-            var request = URLRequest(url: iconURL, timeoutInterval: 6)
-            request.cachePolicy = .returnCacheDataElseLoad
-            if let (data, response) = try? await URLSession.shared.data(for: request),
-               (response as? HTTPURLResponse)?.statusCode == 200,
-               let png = normalizeToSquarePNG(data) {
+        // 2. Steam official square community_icon by AppID (or title lookup when missing/480)
+        if allowNetworkFallback {
+            var effectiveAppID = game.appID?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if effectiveAppID == nil || effectiveAppID?.isEmpty == true || effectiveAppID == "480" {
+                effectiveAppID = await SteamAppIDLookup.fetch(for: game.title)
+            }
+            if let appID = effectiveAppID,
+               let iconData = await SteamAppIDLookup.fetchCommunityIconData(appID: appID),
+               let png = normalizeToSquarePNG(iconData, pixelSize: 64) {
                 return png
             }
+        }
+
+        // 3. CrossOver helper .app .icns fallback (used when no EXE/Steam icon was obtained)
+        if let icnsData = loadCrossOverShortcutIcon(title: game.title, cxAppsDir: crossOverAppsDirectory),
+           let png = normalizeToSquarePNG(icnsData, pixelSize: 64) {
+            return png
         }
 
         return nil
@@ -133,13 +141,12 @@ package actor GameIconResolver {
         return nil
     }
 
-    package static func normalizeToSquarePNG(_ rawData: Data, pixelSize: Int = 32) -> Data? {
+    package static func normalizeToSquarePNG(_ rawData: Data, pixelSize: Int = 64) -> Data? {
         guard let source = CGImageSourceCreateWithData(rawData as CFData, nil) else {
             return nil
         }
         let count = CGImageSourceGetCount(source)
         guard count > 0 else { return nil }
-
         // Pick the image frame closest to (and >=) target pixelSize, or largest available.
         var bestImage: CGImage?
         var bestScore = Int.min
@@ -189,7 +196,7 @@ package actor GameIconResolver {
         let exe = LaunchGame.canonicalPath(game.exePath) ?? ""
         let appID = game.appID ?? ""
         let normTitle = LaunchGame.normalizedIdentityTitle(game.title)
-        let seed = "\(exe)|\(appID)|\(normTitle)|\(game.id.uuidString)"
+        let seed = "v2|\(exe)|\(appID)|\(normTitle)|\(game.id.uuidString)"
         let digest = SHA256.hash(data: Data(seed.utf8))
         return digest.prefix(16).map { String(format: "%02x", $0) }.joined()
     }

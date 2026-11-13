@@ -374,7 +374,7 @@ package final class StudioViewModel: ObservableObject {
               let image = NSImage(data: pngData) else {
             return
         }
-        image.size = NSSize(width: 16, height: 16)
+        image.size = NSSize(width: 22, height: 22)
         launchGameIcons[game.id] = image
     }
 

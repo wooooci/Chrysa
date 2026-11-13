@@ -74,72 +74,25 @@ package enum CrossOverBottleScanner {
                 continue
             }
 
-            var candidateEXEs: [String] = []
-            var unityDataDirs: [String] = []
             var foundAppID: String? = nil
             if let gDir = gameDir, let enumerator = fm.enumerator(atPath: gDir) {
                 while let rel = enumerator.nextObject() as? String {
                     guard !isCancelled() else { return [] }
-                    let relLower = rel.lowercased()
                     let lower = (rel as NSString).lastPathComponent.lowercased()
-                    let full = (gDir as NSString).appendingPathComponent(rel)
-                    if lower == "steam_appid.txt", foundAppID == nil {
+                    if lower == "steam_appid.txt" {
+                        let full = (gDir as NSString).appendingPathComponent(rel)
                         let txt = (try? String(contentsOfFile: full, encoding: .utf8))?
                             .trimmingCharacters(in: .whitespacesAndNewlines)
-                        if let t = txt, !t.isEmpty { foundAppID = t }
-                    } else if lower.hasSuffix("_data") {
-                        var dataIsDir: ObjCBool = false
-                        if fm.fileExists(atPath: full, isDirectory: &dataIsDir), dataIsDir.boolValue {
-                            unityDataDirs.append(full)
+                        if let t = txt, !t.isEmpty {
+                            foundAppID = t
+                            break
                         }
-                    } else if lower.hasSuffix(".exe"),
-                              !relLower.contains("__redist"),
-                              !relLower.contains("/redist/"),
-                              !lower.contains("scriptinterpreter"),
-                              !lower.contains("unitycrashhandler"),
-                              !lower.contains("unins"),
-                              !lower.contains("vc_redist"),
-                              !lower.contains("dxsetup"),
-                              !lower.contains("crashreport"),
-                              !lower.contains("crs-handler"),
-                              !lower.contains("goggalaxy"),
-                              !lower.contains("dosbox"),
-                              !lower.hasPrefix("setup_") {
-                        candidateEXEs.append(full)
                     }
                 }
             }
 
-            var matchedUnityEXE: String? = nil
-            for dataDir in unityDataDirs {
-                let dirName = (dataDir as NSString).lastPathComponent
-                if dirName.lowercased().hasSuffix("_data") {
-                    let prefix = String(dirName.dropLast("_data".count))
-                    let parent = (dataDir as NSString).deletingLastPathComponent
-                    let expectedEXE = (parent as NSString).appendingPathComponent("\(prefix).exe")
-                    if fm.fileExists(atPath: expectedEXE) {
-                        matchedUnityEXE = expectedEXE
-                        break
-                    }
-                    if let ciMatch = candidateEXEs.first(where: {
-                        (($0 as NSString).lastPathComponent as NSString).deletingPathExtension.caseInsensitiveCompare(prefix) == .orderedSame
-                    }) {
-                        matchedUnityEXE = ciMatch
-                        break
-                    }
-                }
-            }
-
-            let foundEXE = matchedUnityEXE ?? candidateEXEs.max { a, b in
-                let depthA = a.components(separatedBy: "/").count
-                let depthB = b.components(separatedBy: "/").count
-                if depthA != depthB {
-                    return depthA > depthB
-                }
-                let sa = (try? fm.attributesOfItem(atPath: a)[.size] as? Int64) ?? 0
-                let sb = (try? fm.attributesOfItem(atPath: b)[.size] as? Int64) ?? 0
-                return sa < sb
-            }
+            let foundEXE = gameDir.flatMap { findMainExecutable(in: $0, isCancelled: isCancelled) }
+            guard !isCancelled() else { return [] }
 
             discovered.append(
                 LaunchGame(
@@ -154,5 +107,61 @@ package enum CrossOverBottleScanner {
         }
 
         return discovered
+    }
+
+    package static func findMainExecutable(
+        in directory: String,
+        isCancelled: @Sendable () -> Bool = { Task.isCancelled }
+    ) -> String? {
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: directory, isDirectory: &isDir), isDir.boolValue,
+              let enumerator = fm.enumerator(atPath: directory) else {
+            return nil
+        }
+
+        var candidateEXEs: [String] = []
+        var unityDataDirs: [String] = []
+        while let rel = enumerator.nextObject() as? String {
+            guard !isCancelled() else { return nil }
+            let lower = (rel as NSString).lastPathComponent.lowercased()
+            let full = (directory as NSString).appendingPathComponent(rel)
+            if lower.hasSuffix("_data") {
+                var dataIsDir: ObjCBool = false
+                if fm.fileExists(atPath: full, isDirectory: &dataIsDir), dataIsDir.boolValue {
+                    unityDataDirs.append(full)
+                }
+            } else if lower.hasSuffix(".exe"), !LaunchGame.isIgnoredHelperExecutable(full) {
+                candidateEXEs.append(full)
+            }
+        }
+
+        for dataDir in unityDataDirs {
+            let dirName = (dataDir as NSString).lastPathComponent
+            if dirName.lowercased().hasSuffix("_data") {
+                let prefix = String(dirName.dropLast("_data".count))
+                let parent = (dataDir as NSString).deletingLastPathComponent
+                let expectedEXE = (parent as NSString).appendingPathComponent("\(prefix).exe")
+                if fm.fileExists(atPath: expectedEXE) {
+                    return expectedEXE
+                }
+                if let ciMatch = candidateEXEs.first(where: {
+                    (($0 as NSString).lastPathComponent as NSString).deletingPathExtension.caseInsensitiveCompare(prefix) == .orderedSame
+                }) {
+                    return ciMatch
+                }
+            }
+        }
+
+        return candidateEXEs.max { a, b in
+            let depthA = a.components(separatedBy: "/").count
+            let depthB = b.components(separatedBy: "/").count
+            if depthA != depthB {
+                return depthA > depthB
+            }
+            let sa = (try? fm.attributesOfItem(atPath: a)[.size] as? Int64) ?? 0
+            let sb = (try? fm.attributesOfItem(atPath: b)[.size] as? Int64) ?? 0
+            return sa < sb
+        }
     }
 }

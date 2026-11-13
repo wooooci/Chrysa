@@ -29,7 +29,7 @@ package enum SteamAppIDLookup {
               let url = URL(string: "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/?input_json=\(encoded)") else {
             return nil
         }
-        var request = URLRequest(url: url, timeoutInterval: 6)
+        var request = URLRequest(url: url, timeoutInterval: 4)
         request.cachePolicy = .returnCacheDataElseLoad
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 200,
@@ -43,5 +43,27 @@ package enum SteamAppIDLookup {
         }
         let filename = iconHash.contains(".") ? iconHash : "\(iconHash).jpg"
         return URL(string: "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/\(numericID)/\(filename)")
+    }
+
+    package static func fetchCommunityIconData(appID: String) async -> Data? {
+        guard let primaryURL = await fetchCommunityIconURL(appID: appID) else { return nil }
+        let urls: [URL] = [
+            primaryURL,
+            URL(string: primaryURL.absoluteString.replacingOccurrences(
+                of: "cdn.cloudflare.steamstatic.com",
+                with: "steamcdn-a.akamaihd.net"
+            ))
+        ].compactMap { $0 }
+
+        for url in urls {
+            var req = URLRequest(url: url, timeoutInterval: 5)
+            req.cachePolicy = .returnCacheDataElseLoad
+            if let (data, resp) = try? await URLSession.shared.data(for: req),
+               (resp as? HTTPURLResponse)?.statusCode == 200,
+               !data.isEmpty {
+                return data
+            }
+        }
+        return nil
     }
 }
