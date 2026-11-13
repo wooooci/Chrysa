@@ -17,7 +17,6 @@ package final class StudioViewModel: ObservableObject {
     @Published package var editingLaunchGame: LaunchGame? = nil
     @Published package var editTitleInput: String = ""
     @Published package var editPathOrURLInput: String = ""
-
     @Published package private(set) var jobs: [Job] = []
     @Published package private(set) var launchGames: [LaunchGame] = []
     @Published package private(set) var launchGameIcons: [UUID: NSImage] = [:]
@@ -265,6 +264,10 @@ package final class StudioViewModel: ObservableObject {
         settingsStore.settings.maxConcurrentConnections = count
     }
 
+    package func setMaxConcurrentDownloads(_ count: Int) {
+        settingsStore.settings.maxConcurrentDownloads = count
+        coordinator.updateMaxConcurrentDownloads(settingsStore.settings.maxConcurrentDownloads)
+    }
     package func setDefaultLanguage(_ lang: SteamLanguageOption) {
         settingsStore.settings.defaultLanguage = lang
     }
@@ -330,21 +333,27 @@ package final class StudioViewModel: ObservableObject {
         let raw = urlInput.trimmingCharacters(in: .whitespacesAndNewlines)
         if !raw.isEmpty {
             urlInput = ""
-            startDownload(urlString: coordinator.normalizeDownloadInput(raw) ?? raw)
+            startDownload(urlString: raw)
             return
         }
         if let clip = NSPasteboard.general.string(forType: .string),
-           let normalized = coordinator.normalizeDownloadInput(clip) {
-            startDownload(urlString: normalized)
+           coordinator.containsValidDownloadURL(clip) {
+            startDownload(urlString: clip)
             return
         }
         pickFileForActiveTab()
     }
 
     package func startDownload(urlString: String) {
-        coordinator.startDownload(urlString: urlString, settings: settingsStore.settings)
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.lowercased().hasSuffix(".txt"),
+           FileManager.default.fileExists(atPath: trimmed),
+           let text = try? String(contentsOfFile: trimmed, encoding: .utf8) {
+            coordinator.startDownloads(rawInput: text, settings: settingsStore.settings)
+            return
+        }
+        coordinator.startDownloads(rawInput: urlString, settings: settingsStore.settings)
     }
-
     package func startUnpack(filePath: String) {
         coordinator.startUnpack(filePath: filePath, settings: settingsStore.settings)
     }
@@ -575,7 +584,8 @@ package final class StudioViewModel: ObservableObject {
         case .download:
             panel.canChooseFiles = true
             panel.canChooseDirectories = false
-            panel.message = "选择种子文件 (.torrent) 或包含下载链接的文本"
+            panel.allowedContentTypes = [.plainText]
+            panel.message = "选择包含下载链接的文本文件 (.txt)"
             if panel.runModal() == .OK, let url = panel.url {
                 startDownload(urlString: url.path)
             }
@@ -660,9 +670,30 @@ package final class StudioViewModel: ObservableObject {
             }
         }
     }
-    // MARK: - Task Management (Stop / Archive / Delete / Retry / Edit / Batch)
+    // MARK: - Task Management (Pause / Resume / Stop / Archive / Delete / Retry / Edit / Batch)
+    package func pauseTask(_ task: StudioTask) {
+        Task { await coordinator.pauseTask(task.id) }
+    }
+
+    package func resumeTask(_ task: StudioTask) {
+        coordinator.resumeDownloadJob(task.id, settings: settingsStore.settings)
+    }
+
+    package func retryDownloadPart(jobID: UUID, partID: UUID) {
+        coordinator.retryDownloadPart(jobID: jobID, partID: partID, settings: settingsStore.settings)
+    }
+
+    package func downloadParts(for taskID: UUID) -> [DownloadPart] {
+        jobs.first(where: { $0.id == taskID })?.downloadParts ?? []
+    }
+
     package func stopTask(_ task: StudioTask) {
-        Task { await coordinator.cancelTask(task.id) }
+        Task {
+            await coordinator.cancelTask(
+                task.id,
+                downloadDirectory: settingsStore.settings.downloadDirectory
+            )
+        }
     }
 
     package func archiveTask(_ task: StudioTask) {
@@ -673,7 +704,10 @@ package final class StudioViewModel: ObservableObject {
     package func deleteTask(_ task: StudioTask, deleteLocalFile: Bool = false) {
         Task { [weak self] in
             guard let self else { return }
-            await coordinator.removeJob(task.id)
+            await coordinator.removeJob(
+                task.id,
+                downloadDirectory: settingsStore.settings.downloadDirectory
+            )
             if deleteLocalFile, let local = task.localPath {
                 do {
                     _ = try coordinator.deleteDownloadedFile(local, downloadDirectory: settingsStore.settings.downloadDirectory)
@@ -691,8 +725,12 @@ package final class StudioViewModel: ObservableObject {
 
     package func retryTask(_ task: StudioTask) {
         guard let job = jobs.first(where: { $0.id == task.id }) else { return }
+        if job.kind == .download {
+            coordinator.retryDownloadJob(job.id, settings: settingsStore.settings)
+            return
+        }
         Task {
-            await coordinator.removeJob(job.id)
+            await coordinator.removeJob(job.id, downloadDirectory: settingsStore.settings.downloadDirectory)
             retry(job)
         }
     }
@@ -736,7 +774,7 @@ package final class StudioViewModel: ObservableObject {
         Task {
             await coordinator.updateJob(job.id, title: job.title, source: job.source, input: job.input, output: job.output)
             if andRetry {
-                await coordinator.removeJob(job.id)
+                await coordinator.removeJob(job.id, downloadDirectory: settingsStore.settings.downloadDirectory)
                 retry(job)
             }
         }
@@ -750,21 +788,35 @@ package final class StudioViewModel: ObservableObject {
 
     package func deleteAllFailedInActiveTab() {
         let failedIDs = activeJobs.filter { $0.status == .failed || $0.status == .cancelled }.map(\.id)
-        Task { await coordinator.clearJobs(failedIDs) }
+        Task {
+            await coordinator.clearJobs(
+                failedIDs,
+                downloadDirectory: settingsStore.settings.downloadDirectory
+            )
+        }
     }
 
     package func retryAllFailedInActiveTab() {
         for job in activeJobs where job.status == .failed || job.status == .cancelled {
-            Task {
-                await coordinator.removeJob(job.id)
-                retry(job)
+            if job.kind == .download {
+                coordinator.retryDownloadJob(job.id, settings: settingsStore.settings)
+            } else {
+                Task {
+                    await coordinator.removeJob(job.id, downloadDirectory: settingsStore.settings.downloadDirectory)
+                    retry(job)
+                }
             }
         }
     }
 
     package func clearAllInActiveTab() {
         let ids = activeJobs.map(\.id)
-        Task { await coordinator.clearJobs(ids) }
+        Task {
+            await coordinator.clearJobs(
+                ids,
+                downloadDirectory: settingsStore.settings.downloadDirectory
+            )
+        }
     }
     package func toggleExpanded(_ task: StudioTask) {
         guard let job = jobs.first(where: { $0.id == task.id }) else { return }

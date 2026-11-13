@@ -47,17 +47,22 @@ package struct AppearanceSettings: Codable, Equatable, Sendable {
 }
 
 package struct DownloadSettings: Codable, Equatable, Sendable {
-    private enum CodingKeys: String, CodingKey { case downloadDirectory, maxConcurrentConnections }
+    private enum CodingKeys: String, CodingKey {
+        case downloadDirectory, maxConcurrentConnections, maxConcurrentDownloads
+    }
 
     package var downloadDirectory: String
     package var maxConcurrentConnections: Int
+    package var maxConcurrentDownloads: Int
 
     package init(
         downloadDirectory: String = ("~/Downloads" as NSString).expandingTildeInPath,
-        maxConcurrentConnections: Int = 16
+        maxConcurrentConnections: Int = 16,
+        maxConcurrentDownloads: Int = 2
     ) {
         self.downloadDirectory = downloadDirectory
         self.maxConcurrentConnections = maxConcurrentConnections
+        self.maxConcurrentDownloads = Self.clampedConcurrentDownloads(maxConcurrentDownloads)
     }
 
     package init(from decoder: Decoder) throws {
@@ -65,6 +70,12 @@ package struct DownloadSettings: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         downloadDirectory = try container.decodeIfPresent(String.self, forKey: .downloadDirectory) ?? defaults.downloadDirectory
         maxConcurrentConnections = try container.decodeIfPresent(Int.self, forKey: .maxConcurrentConnections) ?? defaults.maxConcurrentConnections
+        let rawConcurrent = try container.decodeIfPresent(Int.self, forKey: .maxConcurrentDownloads) ?? defaults.maxConcurrentDownloads
+        maxConcurrentDownloads = Self.clampedConcurrentDownloads(rawConcurrent)
+    }
+
+    package static func clampedConcurrentDownloads(_ value: Int) -> Int {
+        min(4, max(1, value))
     }
 }
 
@@ -155,6 +166,11 @@ package struct AppSettings: Codable, Equatable, Sendable {
         set { download.maxConcurrentConnections = newValue }
     }
 
+    package var maxConcurrentDownloads: Int {
+        get { download.maxConcurrentDownloads }
+        set { download.maxConcurrentDownloads = DownloadSettings.clampedConcurrentDownloads(newValue) }
+    }
+
     package var deleteArchiveAfterUnpack: Bool {
         get { unpack.deleteArchiveAfterUnpack }
         set { unpack.deleteArchiveAfterUnpack = newValue }
@@ -205,6 +221,7 @@ package struct AppSettings: Codable, Equatable, Sendable {
         autoRelay: Bool,
         downloadDirectory: String,
         maxConcurrentConnections: Int,
+        maxConcurrentDownloads: Int = 2,
         deleteArchiveAfterUnpack: Bool,
         bottlesDirectory: String,
         defaultLanguage: SteamLanguageOption,
@@ -218,7 +235,11 @@ package struct AppSettings: Codable, Equatable, Sendable {
             selectedIconVariant: selectedIconVariant,
             accentColorMode: accentColorMode
         )
-        self.download = DownloadSettings(downloadDirectory: downloadDirectory, maxConcurrentConnections: maxConcurrentConnections)
+        self.download = DownloadSettings(
+            downloadDirectory: downloadDirectory,
+            maxConcurrentConnections: maxConcurrentConnections,
+            maxConcurrentDownloads: maxConcurrentDownloads
+        )
         self.unpack = UnpackSettings(autoRelay: autoRelay, deleteArchiveAfterUnpack: deleteArchiveAfterUnpack, passwords: passwords)
         self.patch = PatchSettings(bottlesDirectory: bottlesDirectory, defaultLanguage: defaultLanguage)
     }
@@ -242,6 +263,7 @@ package struct AppSettings: Codable, Equatable, Sendable {
             ?? decodedDownload?.downloadDirectory ?? defaults.downloadDirectory
         let maxConn = try container.decodeIfPresent(Int.self, forKey: .maxConcurrentConnections)
             ?? decodedDownload?.maxConcurrentConnections ?? defaults.maxConcurrentConnections
+        let maxDl = decodedDownload?.maxConcurrentDownloads ?? defaults.maxConcurrentDownloads
 
         let relay = try container.decodeIfPresent(Bool.self, forKey: .autoRelay)
             ?? decodedUnpack?.autoRelay ?? defaults.autoRelay
@@ -259,6 +281,7 @@ package struct AppSettings: Codable, Equatable, Sendable {
             autoRelay: relay,
             downloadDirectory: dlDir,
             maxConcurrentConnections: maxConn,
+            maxConcurrentDownloads: maxDl,
             deleteArchiveAfterUnpack: delArchive,
             bottlesDirectory: bottlesDir,
             defaultLanguage: lang,

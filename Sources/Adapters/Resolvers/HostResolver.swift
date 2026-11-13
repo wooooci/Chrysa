@@ -3,21 +3,93 @@ import ChrysaApplication
 import Foundation
 
 package protocol HostResolver: Sendable {
+    var id: String { get }
+    var bareDomains: [String] { get }
     func canHandle(host: String, url: URL) -> Bool
+    func matchesCDNHost(_ host: String) -> Bool
     func initialDownloadMessage(for url: URL) -> String?
     func resolve(input: String, url: URL, passwords: [String]) async -> [ResolvedDownload]
+    func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult
+    func refresh(item: ResolvedDownload, passwords: [String]) async -> ResolvedDownload
     func proxyNeeds() -> Bool
+    func proxyNeeds(for url: URL) -> Bool
     func maxThreads() -> Int
 }
 
 package extension HostResolver {
+    var id: String { String(describing: Self.self) }
+    var bareDomains: [String] { [] }
+    func matchesCDNHost(_ host: String) -> Bool { false }
     func initialDownloadMessage(for url: URL) -> String? { nil }
     func proxyNeeds() -> Bool { true }
+    func proxyNeeds(for url: URL) -> Bool { proxyNeeds() }
     func maxThreads() -> Int { 16 }
+
+    func resolve(input: String, url: URL, passwords: [String]) async -> [ResolvedDownload] {
+        await resolveDetailed(input: input, url: url, passwords: passwords).downloads
+    }
+
+    func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult {
+        let items = await resolve(input: input, url: url, passwords: passwords)
+        return HostResolutionResult(downloads: items, failureReason: items.isEmpty ? "无法获取直链" : nil)
+    }
+
+    func refresh(item: ResolvedDownload, passwords: [String]) async -> ResolvedDownload {
+        guard !item.originalURL.isEmpty,
+              let url = URL(string: item.originalURL) else {
+            return item
+        }
+        let refreshed = await resolveDetailed(input: item.originalURL, url: url, passwords: passwords).downloads
+        if let match = refreshed.first(where: { $0.suggestedFilename == item.suggestedFilename }) ?? refreshed.first {
+            return ResolvedDownload(
+                originalURL: item.originalURL,
+                finalURL: match.finalURL,
+                headers: match.headers,
+                suggestedFilename: item.suggestedFilename ?? match.suggestedFilename,
+                useChunkedRange: match.useChunkedRange,
+                totalSize: match.totalSize ?? item.totalSize,
+                subDirectory: item.subDirectory ?? match.subDirectory,
+                mailRuWeblink: match.mailRuWeblink ?? item.mailRuWeblink,
+                maxThreads: match.maxThreads ?? item.maxThreads,
+                needsProxy: match.needsProxy ?? item.needsProxy,
+                resolverID: match.resolverID ?? item.resolverID
+            )
+        }
+        return item
+    }
+}
+
+package struct UnsupportedHostResolver: HostResolver {
+    package let id = "unsupported"
+    private let blockedHosts: [(domain: String, reason: String)] = [
+        ("mega.nz", "不支持该网盘·需专用客户端"),
+        ("mega.co.nz", "不支持该网盘·需专用客户端"),
+        ("rapidgator.net", "不支持该网盘·含网页盾"),
+        ("nitroflare.com", "不支持该网盘·含网页盾"),
+        ("katfile.com", "不支持该网盘·含网页盾"),
+        ("turbobit.net", "不支持该网盘·含网页盾"),
+        ("ddownload.com", "不支持该网盘·含网页盾")
+    ]
+
+    package func canHandle(host: String, url: URL) -> Bool {
+        blockedHosts.contains { host == $0.domain || host.hasSuffix(".\($0.domain)") }
+    }
+
+    package func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult {
+        let host = url.host?.lowercased() ?? ""
+        let reason = blockedHosts.first { host == $0.domain || host.hasSuffix(".\($0.domain)") }?.reason
+            ?? "不支持该网盘"
+        return HostResolutionResult(downloads: [], failureReason: reason)
+    }
+
+    package func resolve(input: String, url: URL, passwords: [String]) async -> [ResolvedDownload] {
+        []
+    }
 }
 
 package enum HostResolverRegistry {
     private static let plugins: [any HostResolver] = [
+        UnsupportedHostResolver(),
         MailRuResolver(),
         GofileResolver(),
         MirrorUploadXResolver(),
@@ -26,54 +98,53 @@ package enum HostResolverRegistry {
         PixeldrainResolver(),
         BuzzheavierResolver(),
         MediaFireResolver(),
-        GoogleDriveResolver()
+        GoogleDriveResolver(),
+        FuckingFastResolver(),
+        OneFichierResolver()
     ]
+
+    package static var knownBareDomains: [String] {
+        plugins.flatMap(\.bareDomains)
+    }
 
     package static func initialDownloadMessage(for input: String) -> String? {
         guard let url = URL(string: input), let host = url.host?.lowercased() else { return nil }
         return plugins.first(where: { $0.canHandle(host: host, url: url) })?.initialDownloadMessage(for: url)
     }
 
-    package static func maxThreads(for urlString: String, configuredMax: Int) -> Int {
+    package static func proxyNeeds(for urlString: String, resolvedNeeds: Bool? = nil) -> Bool {
+        if let resolvedNeeds { return resolvedNeeds }
+        guard let url = URL(string: urlString), let host = url.host?.lowercased() else {
+            return false
+        }
+        if let plugin = plugins.first(where: { $0.canHandle(host: host, url: url) || $0.matchesCDNHost(host) }) {
+            return plugin.proxyNeeds(for: url)
+        }
+        let lower = host
+        if lower == "github.com" || lower.hasSuffix(".github.com") || lower.hasSuffix("githubusercontent.com") {
+            return true
+        }
+        return false
+    }
+
+    package static func maxThreads(
+        for urlString: String,
+        resolvedMax: Int? = nil,
+        configuredMax: Int
+    ) -> Int {
         let clamped = max(1, min(16, configuredMax))
+        if let resolvedMax {
+            return min(max(1, resolvedMax), clamped)
+        }
         if let url = URL(string: urlString), let host = url.host?.lowercased(),
-           let plugin = plugins.first(where: { $0.canHandle(host: host, url: url) }) {
+           let plugin = plugins.first(where: { $0.canHandle(host: host, url: url) || $0.matchesCDNHost(host) }) {
             return min(plugin.maxThreads(), clamped)
         }
-        let lower = urlString.lowercased()
-        if lower.contains("fileditch") { return min(2, clamped) }
-        if lower.contains("pixeldrain.com") { return min(4, clamped) }
         return clamped
     }
+
     package static func normalizeDownloadInput(_ raw: String) -> String? {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") || trimmed.hasPrefix("magnet:") {
-            return trimmed
-        }
-        let lower = trimmed.lowercased()
-        let knownDomains = [
-            "gofile.io/", "www.gofile.io/",
-            "pixeldrain.com/", "www.pixeldrain.com/",
-            "buzzheavier.com/", "www.buzzheavier.com/",
-            "vikingfile.com/", "www.vikingfile.com/",
-            "itsfileditchfiles.st/", "fileditchfiles.st/", "fileditch.com/",
-            "mirroruploadx.com/", "www.mirroruploadx.com/",
-            "cloud.mail.ru/",
-            "mediafire.com/", "www.mediafire.com/",
-            "drive.google.com/",
-            "mega.nz/",
-            "1fichier.com/"
-        ]
-        if knownDomains.contains(where: { lower.hasPrefix($0) }) {
-            return "https://" + trimmed
-        }
-        if !trimmed.contains(" "),
-           let slashIdx = trimmed.firstIndex(of: "/"),
-           trimmed[..<slashIdx].contains(".") {
-            return "https://" + trimmed
-        }
-        return nil
+        DownloadInputParser.normalizeSingleURL(raw, knownBareDomains: knownBareDomains)
     }
 
     package static func decodeBase64FilenameIfPossible(_ raw: String) -> String? {
@@ -99,34 +170,127 @@ package enum HostResolverRegistry {
     }
 
     package static func resolveLinks(_ input: String, passwords: [String] = AppSettings.defaultPasswords) async -> [ResolvedDownload] {
+        await resolveLinksDetailed(input, passwords: passwords).downloads
+    }
+
+    package static func resolveLinksDetailed(
+        _ input: String,
+        passwords: [String] = AppSettings.defaultPasswords
+    ) async -> HostResolutionResult {
         guard let url = URL(string: input), let host = url.host?.lowercased() else {
-            return [ResolvedDownload(originalURL: input, finalURL: input, headers: [], suggestedFilename: nil)]
+            return HostResolutionResult(downloads: [], failureReason: "链接格式无效")
         }
 
         // Fast-path: JDownloader / FileDitch CDN Base64 token link
         if let decodedFilename = decodeBase64FilenameIfPossible(url.lastPathComponent) {
-            return [
+            let needsProxy = proxyNeeds(for: input)
+            let maxT = maxThreads(for: input, configuredMax: 16)
+            return HostResolutionResult(downloads: [
                 ResolvedDownload(
                     originalURL: input,
                     finalURL: input,
                     headers: [],
-                    suggestedFilename: decodedFilename
+                    suggestedFilename: decodedFilename,
+                    maxThreads: maxT,
+                    needsProxy: needsProxy,
+                    resolverID: "base64-direct"
                 )
-            ]
+            ])
         }
 
         for plugin in plugins where plugin.canHandle(host: host, url: url) {
-            return await plugin.resolve(input: input, url: url, passwords: passwords)
+            let res = await plugin.resolveDetailed(input: input, url: url, passwords: passwords)
+            let enriched = res.downloads.map { item in
+                ResolvedDownload(
+                    originalURL: item.originalURL,
+                    finalURL: item.finalURL,
+                    headers: item.headers,
+                    suggestedFilename: item.suggestedFilename,
+                    useChunkedRange: item.useChunkedRange,
+                    totalSize: item.totalSize,
+                    subDirectory: item.subDirectory,
+                    mailRuWeblink: item.mailRuWeblink,
+                    maxThreads: item.maxThreads ?? plugin.maxThreads(),
+                    needsProxy: item.needsProxy ?? plugin.proxyNeeds(for: url),
+                    resolverID: item.resolverID ?? plugin.id
+                )
+            }
+            return HostResolutionResult(
+                downloads: enriched,
+                failureReason: res.failureReason,
+                diagnostic: res.diagnostic
+            )
         }
 
-        return [
+        return await resolveBareDirectURL(input: input, url: url)
+    }
+
+    private static func resolveBareDirectURL(input: String, url: URL) async -> HostResolutionResult {
+        let lastComp = url.lastPathComponent
+        let hasValidExt = !lastComp.isEmpty && lastComp != "/" && ResolverHTTPHelper.hasKnownBinaryOrArchiveExtension(lastComp)
+        let needsProxy = proxyNeeds(for: input)
+
+        if hasValidExt {
+            return HostResolutionResult(downloads: [
+                ResolvedDownload(
+                    originalURL: input,
+                    finalURL: input,
+                    headers: [],
+                    suggestedFilename: lastComp,
+                    needsProxy: needsProxy,
+                    resolverID: "direct"
+                )
+            ])
+        }
+
+        // Bare CDN link without valid file extension in path -> HEAD / Range: bytes=0-0 probe
+        if let probe = await ResolverHTTPHelper.probeDirectURL(input, useProxy: needsProxy) {
+            if probe.statusCode >= 400 {
+                let reason = ResolverHTTPHelper.classifyFailure(
+                    statusCode: probe.statusCode,
+                    contentType: probe.contentType,
+                    body: probe.bodyString
+                ) ?? "链接已失效"
+                return HostResolutionResult(downloads: [], failureReason: reason)
+            }
+            if let ct = probe.contentType?.lowercased(),
+               ct.contains("text/html"),
+               probe.contentDispositionFilename == nil {
+                let reason = ResolverHTTPHelper.classifyFailure(
+                    statusCode: probe.statusCode,
+                    contentType: probe.contentType,
+                    body: probe.bodyString
+                ) ?? "含网页盾·请用浏览器下载"
+                return HostResolutionResult(downloads: [], failureReason: reason)
+            }
+            let finalURLObj = URL(string: probe.finalURL)
+            let finalPathName = finalURLObj?.lastPathComponent
+            let resolvedFilename = probe.contentDispositionFilename
+                ?? (finalPathName?.contains(".") == true ? finalPathName : nil)
+                ?? (lastComp.isEmpty || lastComp == "/" ? nil : lastComp)
+            return HostResolutionResult(downloads: [
+                ResolvedDownload(
+                    originalURL: input,
+                    finalURL: probe.finalURL,
+                    headers: [],
+                    suggestedFilename: resolvedFilename,
+                    totalSize: probe.contentLength,
+                    needsProxy: proxyNeeds(for: probe.finalURL),
+                    resolverID: "direct-probed"
+                )
+            ])
+        }
+
+        return HostResolutionResult(downloads: [
             ResolvedDownload(
                 originalURL: input,
                 finalURL: input,
                 headers: [],
-                suggestedFilename: url.lastPathComponent.isEmpty ? nil : url.lastPathComponent
+                suggestedFilename: lastComp.isEmpty || lastComp == "/" ? nil : lastComp,
+                needsProxy: needsProxy,
+                resolverID: "direct"
             )
-        ]
+        ])
     }
 
     package static func resolveSingleLink(_ input: String, passwords: [String] = AppSettings.defaultPasswords) async -> ResolvedDownload {
@@ -135,5 +299,21 @@ package enum HostResolverRegistry {
         }
         let fallbackName = URL(string: input)?.lastPathComponent
         return ResolvedDownload(originalURL: input, finalURL: input, headers: [], suggestedFilename: fallbackName)
+    }
+
+    package static func refreshDownload(
+        _ item: ResolvedDownload,
+        passwords: [String] = AppSettings.defaultPasswords
+    ) async -> ResolvedDownload {
+        if let resolverID = item.resolverID,
+           let plugin = plugins.first(where: { $0.id == resolverID }) {
+            return await plugin.refresh(item: item, passwords: passwords)
+        }
+        if let url = URL(string: item.originalURL),
+           let host = url.host?.lowercased(),
+           let plugin = plugins.first(where: { $0.canHandle(host: host, url: url) || $0.matchesCDNHost(host) }) {
+            return await plugin.refresh(item: item, passwords: passwords)
+        }
+        return item
     }
 }

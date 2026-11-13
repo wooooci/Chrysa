@@ -31,6 +31,23 @@ package struct DefaultWorkflowServices: WorkflowServices {
         DownloadStage(service: download, currentTitle: title, resolved: resolved, settings: settings)
     }
 
+    package func downloadStage(
+        title: String,
+        resolved: ResolvedDownload,
+        stagingJobID: UUID,
+        stagingSubkey: String?,
+        settings: AppSettings
+    ) -> any Stage {
+        DownloadStage(
+            service: download,
+            currentTitle: title,
+            resolved: resolved,
+            stagingJobID: stagingJobID,
+            stagingSubkey: stagingSubkey,
+            settings: settings
+        )
+    }
+
     package func unpackStage(passwords: [String], deleteArchive: Bool) -> any Stage {
         UnpackStage(service: unpack, candidatePasswords: passwords, deleteArchiveAfterUnpack: deleteArchive)
     }
@@ -61,11 +78,18 @@ package struct DefaultWorkflowServices: WorkflowServices {
         HostResolverRegistry.normalizeDownloadInput(input)
     }
 
+    package func knownBareHostDomains() -> [String] {
+        HostResolverRegistry.knownBareDomains
+    }
+
     package func initialDownloadMessage(for input: String) -> String? {
         HostResolverRegistry.initialDownloadMessage(for: input)
     }
 
     package func suggestedDownloadName(_ input: String) -> String? {
+        if let inferred = DownloadInputParser.inferFilenameFromURL(input) {
+            return HostResolverRegistry.decodeBase64FilenameIfPossible(inferred) ?? inferred
+        }
         let last = URL(string: input)?.lastPathComponent ?? ""
         return HostResolverRegistry.decodeBase64FilenameIfPossible(last) ?? (last.isEmpty ? nil : last)
     }
@@ -74,10 +98,17 @@ package struct DefaultWorkflowServices: WorkflowServices {
         await HostResolverRegistry.resolveLinks(input, passwords: passwords)
     }
 
-    package func refreshDownload(_ item: ResolvedDownload) async -> ResolvedDownload {
-        await MailRuResolver.refreshURLIfNeeded(item)
+    package func resolveDownloadsDetailed(_ input: String, passwords: [String]) async -> HostResolutionResult {
+        await HostResolverRegistry.resolveLinksDetailed(input, passwords: passwords)
     }
 
+    package func refreshDownload(_ item: ResolvedDownload) async -> ResolvedDownload {
+        await HostResolverRegistry.refreshDownload(item)
+    }
+
+    package func refreshDownload(_ item: ResolvedDownload, passwords: [String]) async -> ResolvedDownload {
+        await HostResolverRegistry.refreshDownload(item, passwords: passwords)
+    }
     package func isArchiveFile(_ path: String) -> Bool { UnpackService.isArchiveFile(path) }
     package func normalizeArchivePath(_ path: String) -> String { UnpackService.normalizeMultipartArchivePath(path) }
     package func fileSize(_ path: String) -> Int64? {
@@ -405,7 +436,9 @@ package struct DefaultWorkflowServices: WorkflowServices {
 
     package func cancel(taskID: UUID) async { await supervisor.cancel(taskID: taskID) }
     package func clearCancellation(taskID: UUID) async { await supervisor.clearCancellation(for: taskID) }
-
+    package func cleanupStaging(for jobID: UUID, downloadDirectory: String) {
+        DownloadService.cleanupStaging(for: jobID, downloadDirectory: downloadDirectory)
+    }
     package func deleteDownloadedFile(_ path: String, downloadDirectory: String) throws -> Bool {
         guard let target = safeDownloadedFile(path, directory: downloadDirectory) else { return false }
         try FileManager.default.removeItem(at: target)

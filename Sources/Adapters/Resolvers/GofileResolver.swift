@@ -5,20 +5,28 @@ import JavaScriptCore
 import CryptoKit
 
 package struct GofileResolver: HostResolver {
+    package let id = "gofile"
+    package let bareDomains = ["gofile.io/", "www.gofile.io/"]
+
     package func canHandle(host: String, url: URL) -> Bool {
         let parts = url.pathComponents.filter { $0 != "/" }
         return host.contains("gofile.io") && parts.count >= 2 && parts[0] == "d"
     }
 
-    package func resolve(input: String, url: URL, passwords: [String]) async -> [ResolvedDownload] {
+    package func matchesCDNHost(_ host: String) -> Bool {
+        host.contains("gofile.io")
+    }
+
+    package func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult {
         let parts = url.pathComponents.filter { $0 != "/" }
-        guard parts.count >= 2 && parts[0] == "d" else { return [] }
-        return await Self.resolveGofileList(contentId: parts[1], passwords: passwords)
+        guard parts.count >= 2 && parts[0] == "d" else {
+            return HostResolutionResult(downloads: [], failureReason: "链接格式无效")
+        }
+        return await Self.resolveGofileDetailed(contentId: parts[1], passwords: passwords)
     }
 
     package func proxyNeeds() -> Bool { true }
     package func maxThreads() -> Int { 16 }
-
     private static func sha256HexString(_ input: String) -> String {
         let digest = SHA256.hash(data: Data(input.utf8))
         return digest.map { String(format: "%02x", $0) }.joined()
@@ -96,8 +104,12 @@ package struct GofileResolver: HostResolver {
     }
 
     package static func resolveGofileList(contentId: String, passwords: [String], depth: Int = 0) async -> [ResolvedDownload] {
-        guard depth <= 2 else { return [] }
-        let ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        await resolveGofileDetailed(contentId: contentId, passwords: passwords, depth: depth).downloads
+    }
+
+    package static func resolveGofileDetailed(contentId: String, passwords: [String], depth: Int = 0) async -> HostResolutionResult {
+        guard depth <= 2 else { return HostResolutionResult(downloads: [], failureReason: "目录层级过深") }
+        let ua = ResolverHTTPHelper.browserUserAgent
         let lang = "en-US"
 
         var token = UserDefaults.standard.string(forKey: "sf_gofile_guest_token") ?? "qmMkk3QlGAVUbei1YkhSfPaCAUqLKgsm"
@@ -113,26 +125,41 @@ package struct GofileResolver: HostResolver {
             }
         }
 
-        guard var cRoot = cJson?["data"] as? [String: Any] else { return [] }
+        let finalAPIStatus = (cJson?["status"] as? String)?.lowercased() ?? ""
+        if finalAPIStatus.contains("notfound") || httpCode == 404 {
+            return HostResolutionResult(downloads: [], failureReason: "链接已失效")
+        }
+        if finalAPIStatus.contains("overlimit") || httpCode == 429 {
+            return HostResolutionResult(downloads: [], failureReason: "今日额度已满")
+        }
+
+        guard var cRoot = cJson?["data"] as? [String: Any] else {
+            return HostResolutionResult(downloads: [], failureReason: "链接已失效")
+        }
 
         // Automatically unlock password-protected Gofile shares using user's live password dictionary
         if (cRoot["canAccess"] as? Bool) == false || (cRoot["passwordStatus"] as? String) == "passwordRequired" {
+            var unlocked = false
             for candidate in passwords where !candidate.isEmpty {
                 let pwHash = sha256HexString(candidate)
                 let (_, pwJson) = await fetchContentsJSON(contentId: contentId, token: token, wt: wt, ua: ua, lang: lang, passwordHash: pwHash)
                 if let unlockedRoot = pwJson?["data"] as? [String: Any],
                    (unlockedRoot["canAccess"] as? Bool) == true,
-                   unlockedRoot["children"] != nil {
+                   (unlockedRoot["children"] != nil || (unlockedRoot["type"] as? String) == "file") {
                     cRoot = unlockedRoot
+                    unlocked = true
                     break
                 }
+            }
+            if !unlocked {
+                return HostResolutionResult(downloads: [], failureReason: "需访问密码")
             }
         }
 
         if (cRoot["type"] as? String) == "file", let directLink = cRoot["link"] as? String {
             let name = cRoot["name"] as? String
             let sz = (cRoot["size"] as? NSNumber)?.int64Value
-            return [
+            return HostResolutionResult(downloads: [
                 ResolvedDownload(
                     originalURL: "https://gofile.io/d/\(contentId)",
                     finalURL: directLink,
@@ -140,12 +167,17 @@ package struct GofileResolver: HostResolver {
                     suggestedFilename: name,
                     useChunkedRange: false,
                     totalSize: sz,
-                    subDirectory: nil
+                    subDirectory: nil,
+                    maxThreads: 16,
+                    needsProxy: true,
+                    resolverID: "gofile"
                 )
-            ]
+            ])
         }
 
-        guard let children = cRoot["children"] as? [String: Any] else { return [] }
+        guard let children = cRoot["children"] as? [String: Any] else {
+            return HostResolutionResult(downloads: [], failureReason: "分享内容为空")
+        }
         let folderName = cRoot["name"] as? String
         var list: [ResolvedDownload] = []
         for (_, rawVal) in children {
@@ -168,7 +200,10 @@ package struct GofileResolver: HostResolver {
                     suggestedFilename: name,
                     useChunkedRange: false,
                     totalSize: sz,
-                    subDirectory: nil
+                    subDirectory: nil,
+                    maxThreads: 16,
+                    needsProxy: true,
+                    resolverID: "gofile"
                 )
             )
         }
@@ -182,7 +217,10 @@ package struct GofileResolver: HostResolver {
                     suggestedFilename: item.suggestedFilename,
                     useChunkedRange: item.useChunkedRange,
                     totalSize: item.totalSize,
-                    subDirectory: item.subDirectory ?? folderName
+                    subDirectory: item.subDirectory ?? folderName,
+                    maxThreads: item.maxThreads,
+                    needsProxy: item.needsProxy,
+                    resolverID: item.resolverID
                 )
             }
         }
@@ -194,6 +232,6 @@ package struct GofileResolver: HostResolver {
             if aIsMainSetup != bIsMainSetup { return aIsMainSetup }
             return na < nb
         }
-        return list
+        return HostResolutionResult(downloads: list, failureReason: list.isEmpty ? "分享目录无文件" : nil)
     }
 }

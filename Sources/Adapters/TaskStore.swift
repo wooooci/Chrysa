@@ -133,7 +133,7 @@ package actor TaskStore: LegacyTaskLoading {
         case .running, .locked, .queued:
             copy.status = .failed
             copy.pill = "已中断"
-        case .done, .failed:
+        case .paused, .done, .failed:
             break
         }
         return copy

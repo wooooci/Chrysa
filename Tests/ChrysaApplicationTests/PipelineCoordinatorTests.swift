@@ -33,7 +33,7 @@ struct PipelineCoordinatorTests {
 
     @MainActor
     @Test
-    func testFolderDownloadRelaysPrimaryArchiveJobIntoUnpackAndPatch() async throws {
+    func testFolderDownloadAggregatesIntoSingleJobWithoutZombieRows() async throws {
         let trace = WorkflowTrace()
         let services = StubWorkflowServices(trace: trace)
         let store = MemoryRepository()
@@ -56,9 +56,10 @@ struct PipelineCoordinatorTests {
         #expect(downstreamCalls.map(\.0) == ["unpack", "patch"])
         #expect(downstreamCalls.allSatisfy { $0.2 == primaryJob.id })
         let jobs = await store.all()
-        #expect(jobs.count == 2)
-        #expect(jobs.contains { $0.id == primaryJob.id && $0.kind == .patch && $0.status == .succeeded })
-        #expect(jobs.filter { $0.id != primaryJob.id }.allSatisfy { $0.kind == .download && $0.status == .succeeded })
+        #expect(jobs.count == 1)
+        #expect(jobs[0].id == primaryJob.id)
+        #expect(jobs[0].kind == .patch && jobs[0].status == .succeeded)
+        #expect(jobs[0].downloadParts?.count == 2)
     }
 
     @MainActor
@@ -83,41 +84,71 @@ struct PipelineCoordinatorTests {
 
         let calls = await trace.calls
         #expect(calls.map(\.0) == ["download", "download", "unpack", "patch"])
+        let jobs = await store.all()
+        #expect(jobs.count == 1)
+        #expect(jobs[0].kind == .patch && jobs[0].status == .succeeded)
     }
+
     @MainActor
     @Test
-    func testStoppingFolderPrimaryDoesNotStopRemainingFiles() async throws {
+    func testPauseAndResumePreservesJobIdentityAndCompletes() async throws {
         let gate = StageGate()
         let trace = WorkflowTrace()
-        let folderURL = "https://example.test/share"
-        let services = StubWorkflowServices(
-            trace: trace,
-            gate: gate,
-            resolvedDownloads: [
-                ResolvedDownload(originalURL: folderURL, finalURL: "https://cdn.example.test/game.7z", headers: [], suggestedFilename: "game.7z"),
-                ResolvedDownload(originalURL: "https://cdn.example.test/readme.txt", finalURL: "https://cdn.example.test/readme.txt", headers: [], suggestedFilename: "readme.txt")
-            ]
-        )
+        let services = StubWorkflowServices(trace: trace, gate: gate)
         let store = MemoryRepository()
         let coordinator = PipelineCoordinator(services: services, jobStore: store)
-        coordinator.startDownload(urlString: folderURL, settings: .default)
+        let job = Job(
+            kind: .download,
+            title: "game.7z",
+            status: .running,
+            source: ArtifactRef(kind: .remoteURL, value: "https://example.test/game.7z")
+        )
+        await coordinator.addJob(job)
+
+        let runTask = Task {
+            await coordinator.runDownloadTask(taskID: job.id, resolved: services.resolved, settings: .default)
+        }
         try await waitUntil { await gate.started }
-
-        let jobs = await store.all()
-        try #require(jobs.count == 2)
-        let primary = try #require(jobs.first(where: { $0.sourceURL == folderURL }))
-        let remaining = try #require(jobs.first(where: { $0.title == "readme.txt" }))
-        await coordinator.cancelTask(primary.id)
+        await coordinator.pauseTask(job.id)
         await gate.release()
-        try await waitUntil { await store.job(for: remaining.id)?.status == .succeeded }
+        await runTask.value
 
-        #expect(await store.job(for: primary.id)?.status == .cancelled)
-        #expect(await store.job(for: remaining.id)?.status == .succeeded)
-        let calls = await trace.calls
-        #expect(calls.map(\.0) == ["download", "download"])
-        #expect(calls.last?.2 == remaining.id)
+        let paused = await store.job(for: job.id)
+        #expect(paused?.status == .paused)
+        #expect(paused?.message == "已暂停")
+
+        // Resume on the same job ID
+        let unGatedServices = StubWorkflowServices(trace: trace)
+        let resumedCoordinator = PipelineCoordinator(services: unGatedServices, jobStore: store)
+        resumedCoordinator.resumeDownloadJob(job.id, settings: .default)
+        try await waitUntil {
+            let current = await store.job(for: job.id)
+            return current?.kind == .patch && current?.status == .succeeded
+        }
+        let finalJobs = await store.all()
+        #expect(finalJobs[0].id == job.id)
     }
 
+    @MainActor
+    @Test
+    func testMultilineInputBindsExtractedPasswordFirst() async throws {
+        let trace = WorkflowTrace()
+        let services = StubWorkflowServices(trace: trace)
+        let store = MemoryRepository()
+        let coordinator = PipelineCoordinator(services: services, jobStore: store)
+        coordinator.startDownloads(
+            rawInput: """
+            解压密码：top_secret_pw
+            https://example.test/game.7z
+            """,
+            settings: .default
+        )
+        try await waitUntil {
+            await store.all().contains { $0.kind == .patch && $0.status == .succeeded }
+        }
+        let capturedPasswords = await trace.unpackPasswords
+        #expect(capturedPasswords.first == "top_secret_pw")
+    }
     @MainActor
     @Test
     func testFailedAndCancelledDownloadBlockDownstreamStages() async {
@@ -205,7 +236,13 @@ struct PipelineCoordinatorTests {
 
 private actor WorkflowTrace {
     var calls: [(String, ArtifactRef?, UUID)] = []
-    func record(_ id: String, input: ArtifactRef?, jobID: UUID) { calls.append((id, input, jobID)) }
+    var unpackPasswords: [String] = []
+    func record(_ id: String, input: ArtifactRef?, jobID: UUID, passwords: [String]? = nil) {
+        calls.append((id, input, jobID))
+        if let passwords {
+            unpackPasswords = passwords
+        }
+    }
 }
 
 private actor StageGate {
@@ -233,9 +270,10 @@ private struct StubStage: Stage {
     let trace: WorkflowTrace
     let result: StageResult
     var gate: StageGate?
+    var passwords: [String]? = nil
 
     func execute(context: StageContext) async -> StageResult {
-        await trace.record(id.rawValue, input: context.input, jobID: context.jobID)
+        await trace.record(id.rawValue, input: context.input, jobID: context.jobID, passwords: passwords)
         await gate?.pause()
         await context.reportProgress(StageProgress(fraction: 0.8, message: "progress"))
         await context.log(StageLog("stage completed"))
@@ -254,7 +292,12 @@ private struct StubWorkflowServices: WorkflowServices {
         StubStage(id: StageID("download"), trace: trace, result: downloadResult, gate: gate)
     }
     func unpackStage(passwords: [String], deleteArchive: Bool) -> any Stage {
-        StubStage(id: StageID("unpack"), trace: trace, result: .success(StageOutput(artifact: ArtifactRef(kind: .directory, value: "/published/game"))))
+        StubStage(
+            id: StageID("unpack"),
+            trace: trace,
+            result: .success(StageOutput(artifact: ArtifactRef(kind: .directory, value: "/published/game"))),
+            passwords: passwords
+        )
     }
     func patchStage(title: String, settings: AppSettings) -> any Stage {
         StubStage(id: StageID("patch"), trace: trace, result: .success(StageOutput(artifact: ArtifactRef(kind: .file, value: "/published/game/game.exe"))))
@@ -310,6 +353,21 @@ private actor MemoryRepository: JobRepository {
         return job
     }
     func remove(id: UUID) { jobs[id] = nil }
+    func updateDownloadMetadata(id: UUID, passwordHint: String?, downloadParts: [DownloadPart]?) -> Job? {
+        guard var job = jobs[id] else { return nil }
+        if let passwordHint { job.passwordHint = passwordHint }
+        if let downloadParts { job.downloadParts = downloadParts }
+        jobs[id] = job
+        return job
+    }
+    func reopenForResume(id: UUID, status: JobStatus, message: String?, rightText: String?) -> Job? {
+        guard var job = jobs[id] else { return nil }
+        job.status = status
+        job.message = message
+        if let rightText { job.rightText = rightText }
+        jobs[id] = job
+        return job
+    }
     func update(
         id: UUID, kind: JobKind?, status: JobStatus?, progress: Double?, title: String?, source: ArtifactRef?, input: ArtifactRef?, output: ArtifactRef?,
         message: String?, clearMessage: Bool, rightText: String?, appID: String?, checklist: [CheckItem]?,

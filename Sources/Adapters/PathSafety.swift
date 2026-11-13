@@ -59,9 +59,15 @@ package enum PathSafety {
         throw CocoaError(.fileWriteFileExists)
     }
 
-    package static func publishFile(from temporaryURL: URL, toDirectory directory: URL, filename: String) throws -> (url: URL, name: String) {
+    package static func publishFile(
+        from temporaryURL: URL,
+        toDirectory directory: URL,
+        filename: String,
+        allowedSourceRoot: URL? = nil
+    ) throws -> (url: URL, name: String) {
+        let sourceRoot = allowedSourceRoot ?? directory
         guard let safeName = safeFilename(filename),
-              containedURL(temporaryURL, in: directory) != nil else {
+              containedURL(temporaryURL, in: sourceRoot) != nil else {
             throw CocoaError(.fileWriteInvalidFileName)
         }
         for attempt in 0..<8 {

@@ -46,11 +46,27 @@ package struct StageProgress: Sendable, Equatable {
     package let fraction: Double?
     package let message: String?
     package let detail: String?
+    package let downloadedBytes: Int64?
+    package let totalBytes: Int64?
+    package let speedBytesPerSec: Double?
+    package let resolvedTitle: String?
 
-    package init(fraction: Double?, message: String? = nil, detail: String? = nil) {
+    package init(
+        fraction: Double?,
+        message: String? = nil,
+        detail: String? = nil,
+        downloadedBytes: Int64? = nil,
+        totalBytes: Int64? = nil,
+        speedBytesPerSec: Double? = nil,
+        resolvedTitle: String? = nil
+    ) {
         self.fraction = fraction.map(Job.clampedProgress)
         self.message = message
         self.detail = detail
+        self.downloadedBytes = downloadedBytes
+        self.totalBytes = totalBytes
+        self.speedBytesPerSec = speedBytesPerSec
+        self.resolvedTitle = resolvedTitle
     }
 }
 

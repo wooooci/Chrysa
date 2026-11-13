@@ -4,6 +4,7 @@ package enum TaskStatus: Equatable, Codable, Sendable {
     case queued
     case running(Double)
     case locked(Double)
+    case paused(Double)
     case done
     case failed
 }

@@ -9,17 +9,23 @@ package struct DownloadStage: Stage {
     private let service: DownloadService
     private let currentTitle: String
     private let resolved: ResolvedDownload
+    private let stagingJobID: UUID?
+    private let stagingSubkey: String?
     private let settings: AppSettings
 
     package init(
         service: DownloadService,
         currentTitle: String,
         resolved: ResolvedDownload,
+        stagingJobID: UUID? = nil,
+        stagingSubkey: String? = nil,
         settings: AppSettings
     ) {
         self.service = service
         self.currentTitle = currentTitle
         self.resolved = resolved
+        self.stagingJobID = stagingJobID
+        self.stagingSubkey = stagingSubkey
         self.settings = settings
     }
 
@@ -34,9 +40,19 @@ package struct DownloadStage: Stage {
             currentTitle: currentTitle,
             resolved: resolved,
             settings: settings,
+            stagingJobID: stagingJobID ?? context.jobID,
+            stagingSubkey: stagingSubkey,
             isCancelled: context.isCancelled,
             onProgress: { update in
-                await context.reportProgress(StageProgress(fraction: update.progress, message: update.pill, detail: update.rightText))
+                await context.reportProgress(StageProgress(
+                    fraction: update.progress,
+                    message: update.pill,
+                    detail: update.rightText,
+                    downloadedBytes: update.downloadedBytes,
+                    totalBytes: update.totalBytes,
+                    speedBytesPerSec: update.speedBytesPerSec,
+                    resolvedTitle: update.resolvedTitle
+                ))
             },
             onLog: { message, highlight in
                 await context.log(StageLog(message, highlight: highlight))

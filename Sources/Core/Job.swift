@@ -10,9 +10,99 @@ package enum JobKind: String, Codable, Sendable {
 package enum JobStatus: String, Codable, Sendable {
     case queued
     case running
+    case paused
     case succeeded
     case failed
     case cancelled
+}
+
+package struct DownloadPart: Identifiable, Codable, Equatable, Sendable {
+    private enum CodingKeys: String, CodingKey {
+        case id, filename, originalURL, resolvedURL, headers, status, progress
+        case downloadedBytes, totalBytes, speedBytesPerSec, message, localPath
+        case subDirectory, useChunkedRange, mailRuWeblink, maxThreads, needsProxy, resolverID
+    }
+
+    package let id: UUID
+    package var filename: String
+    package var originalURL: String
+    package var resolvedURL: String
+    package var headers: [String]
+    package var status: JobStatus
+    package var progress: Double
+    package var downloadedBytes: Int64
+    package var totalBytes: Int64?
+    package var speedBytesPerSec: Double
+    package var message: String?
+    package var localPath: String?
+    package var subDirectory: String?
+    package var useChunkedRange: Bool
+    package var mailRuWeblink: String?
+    package var maxThreads: Int?
+    package var needsProxy: Bool?
+    package var resolverID: String?
+
+    package init(
+        id: UUID = UUID(),
+        filename: String,
+        originalURL: String,
+        resolvedURL: String,
+        headers: [String] = [],
+        status: JobStatus = .queued,
+        progress: Double = 0,
+        downloadedBytes: Int64 = 0,
+        totalBytes: Int64? = nil,
+        speedBytesPerSec: Double = 0,
+        message: String? = nil,
+        localPath: String? = nil,
+        subDirectory: String? = nil,
+        useChunkedRange: Bool = false,
+        mailRuWeblink: String? = nil,
+        maxThreads: Int? = nil,
+        needsProxy: Bool? = nil,
+        resolverID: String? = nil
+    ) {
+        self.id = id
+        self.filename = filename
+        self.originalURL = originalURL
+        self.resolvedURL = resolvedURL
+        self.headers = headers
+        self.status = status
+        self.progress = Job.clampedProgress(progress)
+        self.downloadedBytes = max(0, downloadedBytes)
+        self.totalBytes = totalBytes
+        self.speedBytesPerSec = max(0, speedBytesPerSec)
+        self.message = message
+        self.localPath = localPath
+        self.subDirectory = subDirectory
+        self.useChunkedRange = useChunkedRange
+        self.mailRuWeblink = mailRuWeblink
+        self.maxThreads = maxThreads
+        self.needsProxy = needsProxy
+        self.resolverID = resolverID
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        filename = try container.decodeIfPresent(String.self, forKey: .filename) ?? "part"
+        originalURL = try container.decodeIfPresent(String.self, forKey: .originalURL) ?? ""
+        resolvedURL = try container.decodeIfPresent(String.self, forKey: .resolvedURL) ?? originalURL
+        headers = try container.decodeIfPresent([String].self, forKey: .headers) ?? []
+        status = try container.decodeIfPresent(JobStatus.self, forKey: .status) ?? .queued
+        progress = Job.clampedProgress(try container.decodeIfPresent(Double.self, forKey: .progress) ?? 0)
+        downloadedBytes = try container.decodeIfPresent(Int64.self, forKey: .downloadedBytes) ?? 0
+        totalBytes = try container.decodeIfPresent(Int64.self, forKey: .totalBytes)
+        speedBytesPerSec = try container.decodeIfPresent(Double.self, forKey: .speedBytesPerSec) ?? 0
+        message = try container.decodeIfPresent(String.self, forKey: .message)
+        localPath = try container.decodeIfPresent(String.self, forKey: .localPath)
+        subDirectory = try container.decodeIfPresent(String.self, forKey: .subDirectory)
+        useChunkedRange = try container.decodeIfPresent(Bool.self, forKey: .useChunkedRange) ?? false
+        mailRuWeblink = try container.decodeIfPresent(String.self, forKey: .mailRuWeblink)
+        maxThreads = try container.decodeIfPresent(Int.self, forKey: .maxThreads)
+        needsProxy = try container.decodeIfPresent(Bool.self, forKey: .needsProxy)
+        resolverID = try container.decodeIfPresent(String.self, forKey: .resolverID)
+    }
 }
 
 package enum ArtifactKind: String, Codable, Sendable {
@@ -38,6 +128,7 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, kind, title, status, progress, source, input, output, message, pill
         case rightText, appID, isArchived, expanded, checklist, logs, listPosition, createdAt, updatedAt
+        case passwordHint, downloadParts
     }
     package let id: UUID
     package var kind: JobKind
@@ -66,6 +157,8 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
     package var listPosition: Int
     package let createdAt: Date
     package var updatedAt: Date
+    package var passwordHint: String?
+    package var downloadParts: [DownloadPart]?
     package init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
@@ -88,7 +181,9 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
             logs: try container.decodeIfPresent([LogEntry].self, forKey: .logs) ?? [],
             listPosition: try container.decodeIfPresent(Int.self, forKey: .listPosition) ?? 0,
             createdAt: createdAt,
-            updatedAt: try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
+            updatedAt: try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt,
+            passwordHint: try container.decodeIfPresent(String.self, forKey: .passwordHint),
+            downloadParts: try container.decodeIfPresent([DownloadPart].self, forKey: .downloadParts)
         )
     }
 
@@ -114,6 +209,8 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
         try container.encode(listPosition, forKey: .listPosition)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encodeIfPresent(passwordHint, forKey: .passwordHint)
+        try container.encodeIfPresent(downloadParts, forKey: .downloadParts)
     }
     package init(
         id: UUID = UUID(),
@@ -134,7 +231,9 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
         logs: [LogEntry] = [],
         listPosition: Int = 0,
         createdAt: Date = Date(),
-        updatedAt: Date? = nil
+        updatedAt: Date? = nil,
+        passwordHint: String? = nil,
+        downloadParts: [DownloadPart]? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -154,6 +253,8 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
         self.listPosition = listPosition
         self.createdAt = createdAt
         self.updatedAt = updatedAt ?? createdAt
+        self.passwordHint = passwordHint
+        self.downloadParts = downloadParts
     }
 
     package mutating func appendBoundedLog(_ entry: LogEntry) {
@@ -172,6 +273,9 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
             progress = 0
         case .running(let value), .locked(let value):
             status = .running
+            progress = value
+        case .paused(let value):
+            status = .paused
             progress = value
         case .done:
             status = .succeeded
@@ -224,6 +328,8 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
             legacyStatus = .queued
         case .running:
             legacyStatus = kind == .unpack ? .locked(progress) : .running(progress)
+        case .paused:
+            legacyStatus = .paused(progress)
         case .succeeded:
             legacyStatus = .done
         case .failed, .cancelled:
@@ -267,13 +373,14 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
             return .queued
         case .running:
             return kind == .unpack ? .locked(progress) : .running(progress)
+        case .paused:
+            return .paused(progress)
         case .succeeded:
             return .done
         case .failed, .cancelled:
             return .failed
         }
     }
-
 
     package var sourceURL: String? {
         source?.kind == .remoteURL ? source?.value : nil

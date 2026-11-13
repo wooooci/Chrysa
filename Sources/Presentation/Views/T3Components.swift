@@ -130,6 +130,14 @@ struct T3StatusBox: View {
             T3PieRing(progress: pct, size: 15, color: theme.accent)
         case .locked(let pct):
             T3PieRing(progress: pct, size: 15, color: .t3Amber)
+        case .paused(let pct):
+            ZStack {
+                T3PieRing(progress: max(0.02, pct), size: 15, color: .t3TextMuted)
+                    .opacity(0.45)
+                Image(systemName: "pause.fill")
+                    .font(.system(size: 6.5, weight: .bold))
+                    .foregroundColor(.t3TextSub)
+            }
         case .done:
             ZStack {
                 RoundedRectangle(cornerRadius: 3.8, style: .continuous)

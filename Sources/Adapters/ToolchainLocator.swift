@@ -114,27 +114,6 @@ package enum ToolchainLocator {
     }
 
     package static func hostNeedsProxy(_ urlString: String) -> Bool {
-        let lower = urlString.lowercased()
-        // VikingFile, Buzzheavier, and Mail.ru CDNs are fast via direct connection
-        if lower.contains("vikingfile.com") || lower.contains("buzzheavier.com") || lower.contains("mail.ru") {
-            return false
-        }
-        let proxyHosts = [
-            "gofile.io",
-            "itsfileditchfiles.st",
-            "fileditchfiles.st",
-            "fileditch.com",
-            "mirroruploadx.com",
-            "drive.google.com",
-            "drive.usercontent.google.com",
-            "googleusercontent.com",
-            "pixeldrain.com",
-            "mediafire.com",
-            "mega.nz",
-            "1fichier.com",
-            "github.com",
-            "githubusercontent.com"
-        ]
-        return proxyHosts.contains { lower.contains($0) }
+        HostResolverRegistry.proxyNeeds(for: urlString)
     }
 }

@@ -3,7 +3,14 @@ import ChrysaApplication
 import Foundation
 
 package struct FileDitchResolver: HostResolver {
+    package let id = "fileditch"
+    package let bareDomains = ["itsfileditchfiles.st/", "fileditchfiles.st/", "fileditch.com/"]
+
     package func canHandle(host: String, url: URL) -> Bool {
+        host.contains("fileditch")
+    }
+
+    package func matchesCDNHost(_ host: String) -> Bool {
         host.contains("fileditch")
     }
 
@@ -12,20 +19,24 @@ package struct FileDitchResolver: HostResolver {
     }
 
     package func maxThreads() -> Int { 2 }
-    package func resolve(input: String, url: URL, passwords: [String]) async -> [ResolvedDownload] {
+
+    package func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult {
         let filename = url.lastPathComponent
         if let decoded = HostResolverRegistry.decodeBase64FilenameIfPossible(filename) {
-            return [
+            return HostResolutionResult(downloads: [
                 ResolvedDownload(
                     originalURL: input,
                     finalURL: input,
                     headers: [],
-                    suggestedFilename: decoded
+                    suggestedFilename: decoded,
+                    maxThreads: maxThreads(),
+                    needsProxy: proxyNeeds(),
+                    resolverID: id
                 )
-            ]
+            ])
         }
 
         // Resolution is limited to information in the supplied URL. Never inspect browser history.
-        return []
+        return HostResolutionResult(downloads: [], failureReason: "无法提取 FileDitch 直链")
     }
 }

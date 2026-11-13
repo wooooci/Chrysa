@@ -17,11 +17,16 @@ package final class PipelineCoordinator {
     package let jobStore: any JobRepository
     package let gameLibrary: any LaunchGameRepository
     package let events: AsyncStream<PipelineEvent>
-
     private let eventContinuation: AsyncStream<PipelineEvent>.Continuation
     private var cancelledTaskIDs: Set<UUID> = []
+    private var pausedTaskIDs: Set<UUID> = []
     private var workers: [UUID: Task<Void, Never>] = [:]
-    private var folderQueueOwners: Set<UUID> = []
+    private var activePartTokensByJob: [UUID: Set<UUID>] = [:]
+    private var livePartsByJob: [UUID: [DownloadPart]] = [:]
+    private var activeDownloadTokens: Set<UUID> = []
+    private var downloadWaiters: [(token: UUID, ownerJobID: UUID, continuation: CheckedContinuation<Bool, Never>)] = []
+    private var maxConcurrentDownloads: Int = 2
+    private var lastDownloadDirectory: String?
     private var bottleScanID: UUID?
 
     package init(
@@ -36,7 +41,6 @@ package final class PipelineCoordinator {
         self.events = stream.stream
         self.eventContinuation = stream.continuation
     }
-
     package func loadJobs(migratingLegacyStore: any LegacyTaskLoading) async -> JobStoreLoadResult {
         await jobStore.load(migratingLegacyStore: migratingLegacyStore)
     }
@@ -187,29 +191,101 @@ package final class PipelineCoordinator {
         return job
     }
 
-    package func removeJob(_ id: UUID) async {
+    package func updateMaxConcurrentDownloads(_ limit: Int) {
+        maxConcurrentDownloads = DownloadSettings.clampedConcurrentDownloads(limit)
+        drainDownloadWaiters()
+    }
+
+    package func removeJob(_ id: UUID, downloadDirectory: String? = nil) async {
         workers[id]?.cancel()
         cancelledTaskIDs.insert(id)
+        pausedTaskIDs.remove(id)
+        cancelDownloadWaiters(ownerJobID: id)
+        livePartsByJob.removeValue(forKey: id)
+        if let partTokens = activePartTokensByJob.removeValue(forKey: id) {
+            for token in partTokens {
+                await services.cancel(taskID: token)
+                releaseDownloadSlot(token: token)
+            }
+        }
         await services.cancel(taskID: id)
+        releaseDownloadSlot(token: id)
+        if let dir = downloadDirectory ?? lastDownloadDirectory {
+            services.cleanupStaging(for: id, downloadDirectory: dir)
+        }
         await jobStore.remove(id: id)
         workers[id] = nil
         eventContinuation.yield(.jobRemoved(id))
     }
 
-    package func cancelTask(_ id: UUID) async {
-        cancelledTaskIDs.insert(id)
-        // The folder owner Task is the queue scheduler. Cancel only this file's
-        // service work so remaining files in the same share can continue.
-        if !folderQueueOwners.contains(id) {
-            workers[id]?.cancel()
+    package func pauseTask(_ id: UUID) async {
+        guard let job = await jobStore.job(for: id), job.kind == .download else {
+            await cancelTask(id)
+            return
+        }
+        pausedTaskIDs.insert(id)
+        workers[id]?.cancel()
+        cancelDownloadWaiters(ownerJobID: id)
+        if let partTokens = activePartTokensByJob[id] {
+            for token in partTokens {
+                await services.cancel(taskID: token)
+                releaseDownloadSlot(token: token)
+            }
         }
         await services.cancel(taskID: id)
-        await updateJob(id, status: .cancelled, message: "已停止", rightText: "已停止")
+        releaseDownloadSlot(token: id)
+
+        if var parts = livePartsByJob[id] ?? job.downloadParts, !parts.isEmpty {
+            for idx in parts.indices where parts[idx].status == .running || parts[idx].status == .queued {
+                parts[idx].status = .paused
+                parts[idx].speedBytesPerSec = 0
+                parts[idx].message = "已暂停"
+            }
+            livePartsByJob[id] = parts
+            _ = await jobStore.updateDownloadMetadata(id: id, passwordHint: job.passwordHint, downloadParts: parts)
+            let doneCount = parts.filter { $0.status == .succeeded }.count
+            await updateJob(
+                id,
+                status: .paused,
+                message: "已暂停 · \(doneCount)/\(parts.count)",
+                rightText: Self.formatAggregatedRightText(parts: parts)
+            )
+        } else {
+            await updateJob(id, status: .paused, message: "已暂停")
+        }
     }
 
-    package func clearJobs(_ ids: [UUID]) async {
+    package func cancelTask(_ id: UUID, downloadDirectory: String? = nil) async {
+        cancelledTaskIDs.insert(id)
+        pausedTaskIDs.remove(id)
+        workers[id]?.cancel()
+        cancelDownloadWaiters(ownerJobID: id)
+        if let partTokens = activePartTokensByJob.removeValue(forKey: id) {
+            for token in partTokens {
+                await services.cancel(taskID: token)
+                releaseDownloadSlot(token: token)
+            }
+        }
+        await services.cancel(taskID: id)
+        releaseDownloadSlot(token: id)
+        if let dir = downloadDirectory ?? lastDownloadDirectory {
+            services.cleanupStaging(for: id, downloadDirectory: dir)
+        }
+        if let job = await jobStore.job(for: id), var parts = livePartsByJob[id] ?? job.downloadParts, !parts.isEmpty {
+            for idx in parts.indices where parts[idx].status != .succeeded {
+                parts[idx].status = .cancelled
+                parts[idx].speedBytesPerSec = 0
+                parts[idx].message = "已停止"
+            }
+            livePartsByJob[id] = parts
+            _ = await jobStore.updateDownloadMetadata(id: id, passwordHint: job.passwordHint, downloadParts: parts)
+        }
+        livePartsByJob.removeValue(forKey: id)
+        await updateJob(id, status: .cancelled, message: "已停止", rightText: "已停止")
+    }
+    package func clearJobs(_ ids: [UUID], downloadDirectory: String? = nil) async {
         for id in ids {
-            await removeJob(id)
+            await removeJob(id, downloadDirectory: downloadDirectory)
         }
     }
 
@@ -226,15 +302,53 @@ package final class PipelineCoordinator {
         services.normalizeDownloadInput(input)
     }
 
+    package func containsValidDownloadURL(_ raw: String) -> Bool {
+        let parsed = DownloadInputParser.parse(raw, knownBareDomains: services.knownBareHostDomains())
+        return !parsed.urls.isEmpty || services.normalizeDownloadInput(raw) != nil
+    }
+
     package func deleteDownloadedFile(_ path: String, downloadDirectory: String) throws -> Bool {
         try services.deleteDownloadedFile(path, downloadDirectory: downloadDirectory)
     }
 
     package func startDownload(urlString: String, settings: AppSettings) {
-        let cleanURL = services.normalizeDownloadInput(urlString)
-            ?? urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanURL.isEmpty else { return }
+        startDownloads(rawInput: urlString, settings: settings)
+    }
 
+    package func startDownloads(rawInput: String, settings: AppSettings) {
+        lastDownloadDirectory = settings.download.downloadDirectory
+        updateMaxConcurrentDownloads(settings.download.maxConcurrentDownloads)
+
+        let bareDomains = services.knownBareHostDomains()
+        let parsed = DownloadInputParser.parse(rawInput, knownBareDomains: bareDomains)
+        let passwordHint = parsed.primaryPassword
+
+        let urls: [String]
+        if !parsed.urls.isEmpty {
+            urls = parsed.urls
+        } else if let single = services.normalizeDownloadInput(rawInput) {
+            urls = [single]
+        } else {
+            let trimmed = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            let lower = trimmed.lowercased()
+            if lower.hasPrefix("magnet:") || lower.hasSuffix(".torrent") {
+                Task {
+                    await recordLog(taskID: nil, module: .download, level: .warning, message: "unsupported ▸ 不支持 .torrent 种子或 magnet: 磁力链接")
+                }
+            }
+            return
+        }
+
+        if urls.count == 1 {
+            launchSingleInputURL(urls[0], passwordHint: passwordHint, settings: settings)
+            return
+        }
+
+        launchMultiInputURLs(urls, passwordHint: passwordHint, settings: settings)
+    }
+
+    private func launchSingleInputURL(_ cleanURL: String, passwordHint: String?, settings: AppSettings) {
         let guessedName = services.suggestedDownloadName(cleanURL)
             ?? "Download_\(Int(Date().timeIntervalSince1970)).7z"
         let initialMessage = services.initialDownloadMessage(for: cleanURL) ?? "嗅探中"
@@ -248,148 +362,834 @@ package final class PipelineCoordinator {
             source: ArtifactRef(kind: .remoteURL, value: cleanURL),
             input: ArtifactRef(kind: .remoteURL, value: cleanURL),
             message: initialMessage,
-            rightText: "准备中"
+            rightText: "准备中",
+            passwordHint: passwordHint
         )
         cancelledTaskIDs.remove(taskID)
+        pausedTaskIDs.remove(taskID)
 
         workers[taskID] = Task { [weak self] in
             guard let self else { return }
             defer { self.workers[taskID] = nil }
+            await self.services.clearCancellation(taskID: taskID)
             await self.addJob(job)
+            if let passwordHint, !passwordHint.isEmpty {
+                await self.recordLog(taskID: taskID, module: .download, level: .info, message: "pw ▸ 已提取文本解压密码并优先绑定")
+            }
             await self.recordLog(taskID: taskID, module: .download, level: .info, message: "sniff ▸ 开始解析链接: \(cleanURL)")
-            let resolvedList = await self.services.resolveDownloads(cleanURL, passwords: settings.passwords)
-            guard self.acceptsProgress(for: taskID) else { return }
-            guard let first = resolvedList.first else {
-                await self.updateJob(taskID, status: .failed, message: "解析失败", rightText: "无法获取直链")
-                await self.recordLog(taskID: taskID, module: .download, level: .error, message: "无法从分享页解析出有效文件直链: \(cleanURL)")
+            let passwords = Self.candidatePasswords(hint: passwordHint, settings: settings)
+            let resolution = await self.services.resolveDownloadsDetailed(cleanURL, passwords: passwords)
+            guard self.acceptsProgress(for: taskID), !self.pausedTaskIDs.contains(taskID) else { return }
+
+            guard let first = resolution.downloads.first else {
+                let reason = resolution.failureReason ?? "无法获取直链"
+                await self.updateJob(taskID, status: .failed, message: reason, rightText: "解析失败")
+                await self.recordLog(
+                    taskID: taskID,
+                    module: .download,
+                    level: .error,
+                    message: "无法从分享页解析出有效文件直链 (\(reason)): \(cleanURL)",
+                    rawOutput: resolution.diagnostic
+                )
                 return
             }
 
-            if resolvedList.count == 1 {
-                await self.updateJob(taskID, title: first.suggestedFilename, message: "连接中")
+            if resolution.downloads.count == 1 {
+                let displayName = first.suggestedFilename ?? guessedName
+                await self.updateJob(taskID, title: displayName, message: "排队中")
                 await self.recordLog(taskID: taskID, module: .download, level: .info, message: "dl ▸ 启动高速下载: \(first.suggestedFilename ?? first.finalURL)")
                 await self.runDownloadTask(taskID: taskID, resolved: first, settings: settings)
             } else {
-                await self.runFolderDownloadPipeline(firstTaskID: taskID, guessedName: guessedName, items: resolvedList, settings: settings)
+                await self.runFolderDownloadPipeline(firstTaskID: taskID, guessedName: guessedName, items: resolution.downloads, settings: settings)
+            }
+        }
+    }
+
+    private func launchMultiInputURLs(_ urls: [String], passwordHint: String?, settings: AppSettings) {
+        let taskID = UUID()
+        let initialJob = Job(
+            id: taskID,
+            kind: .download,
+            title: "正在解析 \(urls.count) 个链接...",
+            status: .running,
+            progress: 0.02,
+            source: ArtifactRef(kind: .remoteURL, value: urls[0]),
+            input: ArtifactRef(kind: .remoteURL, value: urls[0]),
+            message: "嗅探 0/\(urls.count)",
+            rightText: "准备中",
+            passwordHint: passwordHint
+        )
+        cancelledTaskIDs.remove(taskID)
+        pausedTaskIDs.remove(taskID)
+
+        workers[taskID] = Task { [weak self] in
+            guard let self else { return }
+            defer { self.workers[taskID] = nil }
+            await self.services.clearCancellation(taskID: taskID)
+            await self.addJob(initialJob)
+            if let passwordHint, !passwordHint.isEmpty {
+                await self.recordLog(taskID: taskID, module: .download, level: .info, message: "pw ▸ 已从粘贴文本提取解压密码并优先绑定")
+            }
+            await self.recordLog(taskID: taskID, module: .download, level: .info, message: "batch ▸ 开始批量嗅探 \(urls.count) 条链接...")
+
+            let passwords = Self.candidatePasswords(hint: passwordHint, settings: settings)
+            var resolvedByIndex: [(Int, HostResolutionResult)] = []
+            await withTaskGroup(of: (Int, HostResolutionResult).self) { group in
+                for (idx, url) in urls.enumerated() {
+                    group.addTask {
+                        let res = await self.services.resolveDownloadsDetailed(url, passwords: passwords)
+                        return (idx, res)
+                    }
+                }
+                var completed = 0
+                for await pair in group {
+                    resolvedByIndex.append(pair)
+                    completed += 1
+                    if self.acceptsProgress(for: taskID), !self.pausedTaskIDs.contains(taskID) {
+                        await self.updateJob(taskID, message: "嗅探 \(completed)/\(urls.count)")
+                    }
+                }
+            }
+            guard self.acceptsProgress(for: taskID), !self.pausedTaskIDs.contains(taskID) else { return }
+
+            resolvedByIndex.sort { $0.0 < $1.0 }
+            var allDownloads: [ResolvedDownload] = []
+            var failures: [String] = []
+            for (_, res) in resolvedByIndex {
+                if res.downloads.isEmpty {
+                    if let reason = res.failureReason { failures.append(reason) }
+                } else {
+                    allDownloads.append(contentsOf: res.downloads)
+                }
+            }
+
+            guard !allDownloads.isEmpty else {
+                let reason = failures.first ?? "解析失败"
+                await self.updateJob(taskID, status: .failed, message: reason, rightText: "解析失败")
+                return
+            }
+
+            let groupInputs = allDownloads.map { item in
+                MultipartGroupItem(
+                    url: item.originalURL,
+                    filename: item.suggestedFilename ?? DownloadInputParser.inferFilenameFromURL(item.finalURL),
+                    subDirectory: item.subDirectory
+                )
+            }
+            let groups = DownloadInputParser.groupMultipartItems(groupInputs)
+            var resolvedLookup: [String: [ResolvedDownload]] = [:]
+            for dl in allDownloads {
+                resolvedLookup[dl.originalURL, default: []].append(dl)
+            }
+
+            var groupedResolved: [(title: String, items: [ResolvedDownload])] = []
+            for group in groups {
+                var groupItems: [ResolvedDownload] = []
+                for gi in group.items {
+                    if var arr = resolvedLookup[gi.url], !arr.isEmpty {
+                        groupItems.append(arr.removeFirst())
+                        resolvedLookup[gi.url] = arr
+                    }
+                }
+                if !groupItems.isEmpty {
+                    groupedResolved.append((title: group.title, items: groupItems))
+                }
+            }
+
+            guard let firstGroup = groupedResolved.first else { return }
+
+            for extraGroup in groupedResolved.dropFirst() {
+                let extraID = UUID()
+                let firstExtra = extraGroup.items[0]
+                if extraGroup.items.count == 1 {
+                    let extraJob = Job(
+                        id: extraID,
+                        kind: .download,
+                        title: firstExtra.suggestedFilename ?? extraGroup.title,
+                        status: .queued,
+                        progress: 0.02,
+                        source: ArtifactRef(kind: .remoteURL, value: firstExtra.originalURL),
+                        input: ArtifactRef(kind: .remoteURL, value: firstExtra.finalURL),
+                        message: "排队中",
+                        rightText: firstExtra.totalSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "待下载",
+                        passwordHint: passwordHint
+                    )
+                    await self.addJob(extraJob)
+                    self.workers[extraID] = Task { [weak self] in
+                        guard let self else { return }
+                        defer { self.workers[extraID] = nil }
+                        await self.runDownloadTask(taskID: extraID, resolved: firstExtra, settings: settings)
+                    }
+                } else {
+                    let parts = Self.makeDownloadParts(from: extraGroup.items)
+                    let extraJob = Job(
+                        id: extraID,
+                        kind: .download,
+                        title: extraGroup.title,
+                        status: .queued,
+                        progress: 0.02,
+                        source: ArtifactRef(kind: .remoteURL, value: firstExtra.originalURL),
+                        input: ArtifactRef(kind: .remoteURL, value: firstExtra.finalURL),
+                        message: "分卷 0/\(parts.count)",
+                        rightText: Self.formatAggregatedRightText(parts: parts),
+                        passwordHint: passwordHint,
+                        downloadParts: parts
+                    )
+                    await self.addJob(extraJob)
+                    self.workers[extraID] = Task { [weak self] in
+                        guard let self else { return }
+                        defer { self.workers[extraID] = nil }
+                        await self.runAggregatedDownloadPipeline(jobID: extraID, settings: settings)
+                    }
+                }
+            }
+
+            if firstGroup.items.count == 1 {
+                let item = firstGroup.items[0]
+                await self.updateJob(
+                    taskID,
+                    title: item.suggestedFilename ?? firstGroup.title,
+                    source: ArtifactRef(kind: .remoteURL, value: item.originalURL),
+                    input: ArtifactRef(kind: .remoteURL, value: item.finalURL),
+                    message: "排队中"
+                )
+                await self.runDownloadTask(taskID: taskID, resolved: item, settings: settings)
+            } else {
+                let parts = Self.makeDownloadParts(from: firstGroup.items)
+                _ = await self.jobStore.updateDownloadMetadata(id: taskID, passwordHint: passwordHint, downloadParts: parts)
+                await self.updateJob(
+                    taskID,
+                    title: firstGroup.title,
+                    message: "分卷 0/\(parts.count)",
+                    rightText: Self.formatAggregatedRightText(parts: parts)
+                )
+                await self.runAggregatedDownloadPipeline(jobID: taskID, settings: settings)
+            }
+        }
+    }
+
+    package func resumeDownloadJob(_ id: UUID, settings: AppSettings) {
+        retryOrResumeDownloadJob(id, isResume: true, settings: settings)
+    }
+
+    package func retryDownloadJob(_ id: UUID, settings: AppSettings) {
+        retryOrResumeDownloadJob(id, isResume: false, settings: settings)
+    }
+
+    private func retryOrResumeDownloadJob(_ id: UUID, isResume: Bool, settings: AppSettings) {
+        lastDownloadDirectory = settings.download.downloadDirectory
+        updateMaxConcurrentDownloads(settings.download.maxConcurrentDownloads)
+        workers[id]?.cancel()
+        cancelledTaskIDs.remove(id)
+        pausedTaskIDs.remove(id)
+
+        workers[id] = Task { [weak self] in
+            guard let self else { return }
+            defer { self.workers[id] = nil }
+            guard let job = await self.jobStore.job(for: id), job.kind == .download else { return }
+            await self.services.clearCancellation(taskID: id)
+
+            if var parts = job.downloadParts, !parts.isEmpty {
+                for idx in parts.indices where parts[idx].status != .succeeded {
+                    parts[idx].status = .queued
+                    parts[idx].speedBytesPerSec = 0
+                    parts[idx].message = "排队中"
+                    await self.services.clearCancellation(taskID: parts[idx].id)
+                }
+                _ = await self.jobStore.updateDownloadMetadata(id: id, passwordHint: job.passwordHint, downloadParts: parts)
+                _ = await self.jobStore.reopenForResume(
+                    id: id,
+                    status: .running,
+                    message: isResume ? "续传中" : "重试中",
+                    rightText: Self.formatAggregatedRightText(parts: parts)
+                )
+                if let updated = await self.jobStore.job(for: id) {
+                    self.eventContinuation.yield(.jobUpdated(updated))
+                }
+                await self.runAggregatedDownloadPipeline(jobID: id, settings: settings)
+                return
+            }
+
+            let originURL = job.sourceURL ?? job.input?.value ?? ""
+            guard !originURL.isEmpty else { return }
+            _ = await self.jobStore.reopenForResume(
+                id: id,
+                status: .running,
+                message: isResume ? "刷新直链续传..." : "重新解析...",
+                rightText: job.rightText
+            )
+            if let updated = await self.jobStore.job(for: id) {
+                self.eventContinuation.yield(.jobUpdated(updated))
+            }
+            await self.recordLog(
+                taskID: id,
+                module: .download,
+                level: .info,
+                message: isResume ? "resume ▸ 刷新直链并断点续传: \(originURL)" : "retry ▸ 重新解析下载链接: \(originURL)"
+            )
+
+            let passwords = Self.candidatePasswords(hint: job.passwordHint, settings: settings)
+            let resolution = await self.services.resolveDownloadsDetailed(originURL, passwords: passwords)
+            guard self.acceptsProgress(for: id), !self.pausedTaskIDs.contains(id) else { return }
+
+            guard let first = resolution.downloads.first else {
+                let reason = resolution.failureReason ?? "解析失败"
+                await self.updateJob(id, status: .failed, message: reason, rightText: "无法获取直链")
+                return
+            }
+
+            if resolution.downloads.count == 1 {
+                let preservedName: String? = {
+                    if let s = first.suggestedFilename, !s.isEmpty { return s }
+                    if !job.title.isEmpty, !job.title.hasPrefix("正在解析") { return job.title }
+                    return nil
+                }()
+                let resolvedItem = ResolvedDownload(
+                    originalURL: first.originalURL,
+                    finalURL: first.finalURL,
+                    headers: first.headers,
+                    suggestedFilename: preservedName,
+                    useChunkedRange: first.useChunkedRange,
+                    totalSize: first.totalSize,
+                    subDirectory: first.subDirectory,
+                    mailRuWeblink: first.mailRuWeblink,
+                    maxThreads: first.maxThreads,
+                    needsProxy: first.needsProxy,
+                    resolverID: first.resolverID
+                )
+                await self.runDownloadTask(taskID: id, resolved: resolvedItem, settings: settings)
+            } else {
+                await self.runFolderDownloadPipeline(firstTaskID: id, guessedName: job.title, items: resolution.downloads, settings: settings)
+            }
+        }
+    }
+
+    package func retryDownloadPart(jobID: UUID, partID: UUID, settings: AppSettings) {
+        lastDownloadDirectory = settings.download.downloadDirectory
+        updateMaxConcurrentDownloads(settings.download.maxConcurrentDownloads)
+        cancelledTaskIDs.remove(jobID)
+        pausedTaskIDs.remove(jobID)
+
+        Task { @MainActor [weak self] in
+            guard let self, let job = await self.jobStore.job(for: jobID),
+                  var parts = self.livePartsByJob[jobID] ?? job.downloadParts,
+                  let pIdx = parts.firstIndex(where: { $0.id == partID }) else { return }
+            parts[pIdx].status = .queued
+            parts[pIdx].speedBytesPerSec = 0
+            parts[pIdx].message = "排队中"
+            self.livePartsByJob[jobID] = parts
+            await self.services.clearCancellation(taskID: partID)
+            await self.services.clearCancellation(taskID: jobID)
+            _ = await self.jobStore.updateDownloadMetadata(id: jobID, passwordHint: job.passwordHint, downloadParts: parts)
+
+            if self.workers[jobID] == nil {
+                _ = await self.jobStore.reopenForResume(
+                    id: jobID,
+                    status: .running,
+                    message: "分卷续传中",
+                    rightText: Self.formatAggregatedRightText(parts: parts)
+                )
+                if let updated = await self.jobStore.job(for: jobID) {
+                    self.eventContinuation.yield(.jobUpdated(updated))
+                }
+                self.workers[jobID] = Task { [weak self] in
+                    guard let self else { return }
+                    defer { self.workers[jobID] = nil }
+                    await self.runAggregatedDownloadPipeline(jobID: jobID, settings: settings)
+                }
+            } else if let updated = await self.jobStore.job(for: jobID) {
+                self.eventContinuation.yield(.jobUpdated(updated))
             }
         }
     }
 
     package func runFolderDownloadPipeline(firstTaskID: UUID, guessedName: String, items: [ResolvedDownload], settings: AppSettings) async {
-        guard let first = items.first, acceptsProgress(for: firstTaskID) else { return }
-        folderQueueOwners.insert(firstTaskID)
-        defer { folderQueueOwners.remove(firstTaskID) }
+        guard let first = items.first, acceptsProgress(for: firstTaskID), !pausedTaskIDs.contains(firstTaskID) else { return }
+        lastDownloadDirectory = settings.download.downloadDirectory
+        updateMaxConcurrentDownloads(settings.download.maxConcurrentDownloads)
 
-        let taskPairs = [(firstTaskID, first)] + items.dropFirst().map { (UUID(), $0) }
-        let folderTitle = first.subDirectory ?? "多文件目录"
-        await updateJob(firstTaskID, title: first.suggestedFilename ?? guessedName, message: "队列 1/\(taskPairs.count)")
-        for (offset, pair) in taskPairs.dropFirst().enumerated() {
-            let job = Job(
-                id: pair.0,
-                kind: .download,
-                title: pair.1.suggestedFilename ?? "分卷文件",
-                status: .queued,
-                source: ArtifactRef(kind: .remoteURL, value: pair.1.originalURL),
-                input: ArtifactRef(kind: .remoteURL, value: pair.1.finalURL),
-                message: "队列 \(offset + 2)/\(taskPairs.count)",
-                rightText: pair.1.totalSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "待下载",
-                listPosition: offset + 1
-            )
-            cancelledTaskIDs.remove(pair.0)
-            await addJob(job)
-        }
-        await recordLog(taskID: firstTaskID, module: .download, level: .info, message: "folder ▸ 检测到分享文件夹 [\(folderTitle)]，共 \(taskPairs.count) 个文件")
-        let names = taskPairs.compactMap { $0.1.suggestedFilename }
+        let existingJob = await jobStore.job(for: firstTaskID)
+        let parts = Self.makeDownloadParts(from: items)
+        let folderRawTitle = first.subDirectory ?? first.suggestedFilename ?? guessedName
+        let cleanTitle = DownloadInputParser.cleanDisplayTitle(fromRawName: folderRawTitle)
+        let displayTitle = cleanTitle.isEmpty ? folderRawTitle : cleanTitle
+
+        _ = await jobStore.updateDownloadMetadata(
+            id: firstTaskID,
+            passwordHint: existingJob?.passwordHint,
+            downloadParts: parts
+        )
+        await updateJob(
+            firstTaskID,
+            title: displayTitle,
+            message: "分卷 0/\(parts.count)",
+            rightText: Self.formatAggregatedRightText(parts: parts)
+        )
+        await recordLog(
+            taskID: firstTaskID,
+            module: .download,
+            level: .info,
+            message: "folder ▸ 聚合多文件任务 [\(displayTitle)]，共 \(parts.count) 个分卷/文件"
+        )
+        await runAggregatedDownloadPipeline(jobID: firstTaskID, settings: settings)
+    }
+
+    private func runAggregatedDownloadPipeline(jobID: UUID, settings: AppSettings) async {
+        guard let initialJob = await jobStore.job(for: jobID),
+              let initialParts = initialJob.downloadParts,
+              !initialParts.isEmpty else { return }
+        livePartsByJob[jobID] = initialParts
+
+        let names = initialParts.map(\.filename)
         let primaryFile = Self.selectPrimaryArchive(from: names, isArchiveFile: services.isArchiveFile)
         let requiredBinSlices = Self.requiredCompanionVolumes(for: primaryFile, in: names)
-        let primaryTaskID = primaryFile.flatMap { filename in
-            taskPairs.first(where: { $0.1.suggestedFilename == filename })?.0
-        }
-        var completedPaths: [String: String] = [:]
+        let requiredSet = Set([primaryFile].compactMap { $0 }).union(requiredBinSlices)
+
         var baseUnpackTriggered = false
         var relayTask: Task<Void, Never>?
-        var pendingDLCInstallers: [(taskID: UUID, filename: String, path: String)] = []
+        var pendingDLCInstallers: [(partID: UUID, filename: String, path: String)] = []
+        let passwords = Self.candidatePasswords(hint: initialJob.passwordHint, settings: settings)
 
-        for (taskID, rawItem) in taskPairs {
-            guard acceptsProgress(for: taskID) else { continue }
-            let item = await services.refreshDownload(rawItem)
-            let holdsForRelay = settings.autoRelay && taskID == primaryTaskID
-            await runDownloadTask(
-                taskID: taskID,
-                resolved: item,
-                settings: settings,
-                suppressAutoRelay: true,
-                holdForFolderRelay: holdsForRelay,
-                progressRange: holdsForRelay ? (0.0...1.0 / 3.0) : nil
+        func checkAndTriggerRelayIfReady() async {
+            guard !baseUnpackTriggered,
+                  settings.autoRelay,
+                  let primaryFile else { return }
+            let currentJob = await jobStore.job(for: jobID)
+            guard let parts = livePartsByJob[jobID] ?? currentJob?.downloadParts else { return }
+            let completedByName: [String: String] = Dictionary(
+                uniqueKeysWithValues: parts.compactMap { part in
+                    guard part.status == .succeeded,
+                          let local = part.localPath,
+                          services.fileExists(local) else { return nil }
+                    return (part.filename, local)
+                }
             )
-            guard acceptsProgress(for: taskID) else { continue }
-            guard let filename = item.suggestedFilename,
-                  let job = await jobStore.job(for: taskID),
-                  job.status == .succeeded || (holdsForRelay && job.status == .running),
-                  let output = job.output?.value, services.fileExists(output),
-                  acceptsProgress(for: taskID) else { continue }
-            completedPaths[filename] = output
+            guard let primaryPath = completedByName[primaryFile],
+                  requiredBinSlices.isSubset(of: Set(completedByName.keys)) else { return }
 
-            if !baseUnpackTriggered,
-               let primaryFile,
-               let primaryPath = completedPaths[primaryFile],
-               requiredBinSlices.isSubset(of: Set(completedPaths.keys)) {
-                baseUnpackTriggered = true
-                let hasRemainingDLCs = completedPaths.count < taskPairs.count
-                if settings.autoRelay {
-                    let detail = hasRemainingDLCs ? " (DLC 继续下载)" : ""
-                    await recordLog(taskID: primaryTaskID ?? firstTaskID, module: .unpack, level: .info, message: "relay ▸ 主文件与分卷已就绪，自动流转至解压: \(primaryFile)\(detail)")
-                    guard let primaryTaskID,
-                          await prepareUnpackStage(taskID: primaryTaskID, archivePath: primaryPath, progress: 1.0 / 3.0) else {
-                        continue
-                    }
-                    let relayID = primaryTaskID
-                    relayTask = Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        await self.runUnpackTask(
-                            taskID: relayID,
-                            archivePath: primaryPath,
-                            candidatePasswords: [""] + settings.passwords,
-                            settings: settings,
-                            progressRange: (1.0 / 3.0...2.0 / 3.0)
+            let hasRemaining = parts.contains { $0.status != .succeeded }
+            let hasRemainingDLC = parts.contains {
+                $0.status != .succeeded
+                    && $0.filename.lowercased().hasPrefix("setup_")
+                    && $0.filename.lowercased().hasSuffix(".exe")
+            }
+            if hasRemaining && !hasRemainingDLC && !requiredSet.isSubset(of: Set(completedByName.keys)) {
+                return
+            }
+
+            baseUnpackTriggered = true
+            let detail = hasRemaining ? " (附属文件继续下载)" : ""
+            await recordLog(taskID: jobID, module: .unpack, level: .info, message: "relay ▸ 主文件与分卷已就绪，自动流转至解压: \(primaryFile)\(detail)")
+            guard await prepareUnpackStage(taskID: jobID, archivePath: primaryPath, progress: 1.0 / 3.0) else { return }
+
+            relayTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.runUnpackTask(
+                    taskID: jobID,
+                    archivePath: primaryPath,
+                    candidatePasswords: passwords,
+                    settings: settings,
+                    progressRange: (1.0 / 3.0...2.0 / 3.0)
+                )
+            }
+        }
+
+        let pendingParts = initialParts.filter { $0.status != .succeeded }
+        if pendingParts.isEmpty {
+            await checkAndTriggerRelayIfReady()
+        } else {
+            await withTaskGroup(of: (UUID, String, String?).self) { group in
+                for part in pendingParts {
+                    group.addTask { @MainActor in
+                        let acquired = await self.acquireDownloadSlot(token: part.id, ownerJobID: jobID, limit: settings.download.maxConcurrentDownloads)
+                        guard acquired else { return (part.id, part.filename, nil) }
+                        defer { self.releaseDownloadSlot(token: part.id) }
+                        guard self.acceptsProgress(for: jobID), !self.pausedTaskIDs.contains(jobID) else {
+                            return (part.id, part.filename, nil)
+                        }
+
+                        let rawResolved = ResolvedDownload(
+                            originalURL: part.originalURL,
+                            finalURL: part.resolvedURL,
+                            headers: part.headers,
+                            suggestedFilename: part.filename,
+                            useChunkedRange: part.useChunkedRange,
+                            totalSize: part.totalBytes,
+                            subDirectory: part.subDirectory,
+                            mailRuWeblink: part.mailRuWeblink,
+                            maxThreads: part.maxThreads,
+                            needsProxy: part.needsProxy,
+                            resolverID: part.resolverID
                         )
+                        let refreshed = await self.refreshItemForResume(rawResolved, passwords: passwords)
+                        guard self.acceptsProgress(for: jobID), !self.pausedTaskIDs.contains(jobID) else {
+                            return (part.id, part.filename, nil)
+                        }
+
+                        await self.updatePartState(jobID: jobID, partID: part.id) { p in
+                            p.status = .running
+                            p.resolvedURL = refreshed.finalURL
+                            p.headers = refreshed.headers
+                            p.message = "连接中"
+                            if let total = refreshed.totalSize, p.totalBytes == nil {
+                                p.totalBytes = total
+                            }
+                        }
+
+                        var tokens = self.activePartTokensByJob[jobID] ?? []
+                        tokens.insert(part.id)
+                        self.activePartTokensByJob[jobID] = tokens
+                        defer {
+                            self.activePartTokensByJob[jobID]?.remove(part.id)
+                        }
+
+                        let stage = self.services.downloadStage(
+                            title: part.filename,
+                            resolved: refreshed,
+                            stagingJobID: jobID,
+                            stagingSubkey: part.id.uuidString,
+                            settings: settings
+                        )
+                        let context = StageContext(
+                            jobID: part.id,
+                            input: ArtifactRef(kind: .remoteURL, value: refreshed.finalURL),
+                            reportProgress: { [weak self] stageProg in
+                                await self?.handlePartProgress(jobID: jobID, partID: part.id, progress: stageProg, settings: settings)
+                            },
+                            log: { [weak self] stageLog in
+                                await self?.recordLog(
+                                    taskID: jobID,
+                                    module: .download,
+                                    level: stageLog.level,
+                                    message: "[\(part.filename)] \(stageLog.message)",
+                                    rawOutput: stageLog.rawOutput
+                                )
+                            },
+                            isCancelled: { [weak self] in
+                                await self?.isCancelledOrPaused(jobID: jobID) ?? true
+                            }
+                        )
+                        let result = await stage.execute(context: context)
+                        if self.pausedTaskIDs.contains(jobID) {
+                            await self.updatePartState(jobID: jobID, partID: part.id) { p in
+                                p.status = .paused
+                                p.speedBytesPerSec = 0
+                                p.message = "已暂停"
+                            }
+                            return (part.id, part.filename, nil)
+                        }
+                        if !self.acceptsProgress(for: jobID) {
+                            return (part.id, part.filename, nil)
+                        }
+
+                        switch result {
+                        case .success(let output):
+                            let outPath = output.artifact?.value
+                            let finalSize = outPath.flatMap { self.services.fileSize($0) } ?? part.totalBytes
+                            await self.updatePartState(jobID: jobID, partID: part.id) { p in
+                                p.status = .succeeded
+                                p.progress = 1
+                                p.speedBytesPerSec = 0
+                                p.localPath = outPath
+                                p.message = nil
+                                if let sz = finalSize {
+                                    p.totalBytes = sz
+                                    p.downloadedBytes = sz
+                                }
+                            }
+                            await self.refreshAggregatedJobSummary(jobID: jobID, settings: settings)
+                            return (part.id, part.filename, outPath)
+                        case .cancelled:
+                            await self.updatePartState(jobID: jobID, partID: part.id) { p in
+                                p.status = self.pausedTaskIDs.contains(jobID) ? .paused : .cancelled
+                                p.speedBytesPerSec = 0
+                                p.message = self.pausedTaskIDs.contains(jobID) ? "已暂停" : "已停止"
+                            }
+                            return (part.id, part.filename, nil)
+                        case .failure(let failure):
+                            await self.updatePartState(jobID: jobID, partID: part.id) { p in
+                                p.status = .failed
+                                p.speedBytesPerSec = 0
+                                p.message = failure.message
+                            }
+                            await self.refreshAggregatedJobSummary(jobID: jobID, settings: settings)
+                            return (part.id, part.filename, nil)
+                        }
                     }
                 }
-            } else if baseUnpackTriggered,
-                      filename.lowercased().hasPrefix("setup_"), filename.lowercased().hasSuffix(".exe") {
-                pendingDLCInstallers.append((taskID: taskID, filename: filename, path: output))
+
+                for await (finishedPartID, finishedFilename, finishedPath) in group {
+                    if let finishedPath {
+                        if baseUnpackTriggered,
+                           finishedFilename.lowercased().hasPrefix("setup_"),
+                           finishedFilename.lowercased().hasSuffix(".exe") {
+                            pendingDLCInstallers.append((partID: finishedPartID, filename: finishedFilename, path: finishedPath))
+                        }
+                        await checkAndTriggerRelayIfReady()
+                    }
+                }
             }
         }
 
         if let relayTask {
             await relayTask.value
-        } else if settings.autoRelay, let primaryTaskID,
-                  let primaryJob = await jobStore.job(for: primaryTaskID),
-                  primaryJob.kind == .download, primaryJob.status == .running,
-                  primaryJob.output != nil, acceptsProgress(for: primaryTaskID) {
-            await updateJob(primaryTaskID, status: .succeeded, progress: 1, clearMessage: true)
         }
 
+        guard acceptsProgress(for: jobID), !pausedTaskIDs.contains(jobID) else { return }
+        guard let finalJob = await jobStore.job(for: jobID),
+              let finalParts = livePartsByJob[jobID] ?? finalJob.downloadParts else { return }
         if !pendingDLCInstallers.isEmpty,
            let primaryFile,
-           let primaryPath = completedPaths[primaryFile] {
-            let primaryJob = primaryTaskID != nil ? await jobStore.job(for: primaryTaskID!) : nil
+           let primaryPath = finalParts.first(where: { $0.filename == primaryFile })?.localPath {
             let unpackedDir: String = {
-                if let input = primaryJob?.input, input.kind == .directory { return input.value }
-                if let output = primaryJob?.output, output.kind == .directory { return output.value }
+                if let input = finalJob.input, input.kind == .directory { return input.value }
+                if let output = finalJob.output, output.kind == .directory { return output.value }
                 var rawBase = ((primaryPath as NSString).lastPathComponent as NSString).deletingPathExtension
                 if rawBase.lowercased().hasPrefix("setup_") { rawBase = String(rawBase.dropFirst("setup_".count)) }
                 return ((primaryPath as NSString).deletingLastPathComponent as NSString)
                     .appendingPathComponent(GameTitle.cleanGameTitle(from: rawBase))
             }()
-            for dlc in pendingDLCInstallers where acceptsProgress(for: dlc.taskID) {
-                await recordLog(taskID: primaryTaskID ?? dlc.taskID, module: .unpack, level: .info, message: "innoextract ▸ 正在合并 DLC: \(dlc.filename)")
-                let merged = await services.mergeDLC(installer: dlc.path, directory: unpackedDir, taskID: dlc.taskID)
+            for dlc in pendingDLCInstallers where acceptsProgress(for: jobID) {
+                await recordLog(taskID: jobID, module: .unpack, level: .info, message: "innoextract ▸ 正在合并 DLC: \(dlc.filename)")
+                let merged = await services.mergeDLC(installer: dlc.path, directory: unpackedDir, taskID: dlc.partID)
                 if merged {
-                    await recordLog(taskID: primaryTaskID ?? dlc.taskID, module: .unpack, level: .info, message: "innoextract ▸ DLC 合并完成: \(dlc.filename)")
+                    await recordLog(taskID: jobID, module: .unpack, level: .info, message: "innoextract ▸ DLC 合并完成: \(dlc.filename)")
                 }
             }
         }
+
+        // Finalize download state if autoRelay did not transition the job out of `.download`
+        if finalJob.kind == .download {
+            let failedParts = finalParts.filter { $0.status == .failed }
+            let allSucceeded = finalParts.allSatisfy { $0.status == .succeeded }
+            if allSucceeded {
+                let primaryPath = primaryFile.flatMap { name in finalParts.first(where: { $0.filename == name })?.localPath }
+                    ?? finalParts.first?.localPath
+                await updateJob(
+                    jobID,
+                    status: .succeeded,
+                    progress: 1,
+                    output: primaryPath.map { ArtifactRef(kind: .file, value: $0) },
+                    clearMessage: true,
+                    rightText: Self.formatAggregatedRightText(parts: finalParts)
+                )
+            } else if !failedParts.isEmpty {
+                let pill = failedParts.count == 1
+                    ? (failedParts[0].message ?? "分卷失败")
+                    : "分卷失败 (\(failedParts.count)/\(finalParts.count))"
+                await updateJob(
+                    jobID,
+                    status: .failed,
+                    message: pill,
+                    rightText: Self.formatAggregatedRightText(parts: finalParts)
+                )
+            }
+        }
+    }
+
+    private static func makeDownloadParts(from items: [ResolvedDownload]) -> [DownloadPart] {
+        items.enumerated().map { idx, item in
+            let fallbackName = DownloadInputParser.inferFilenameFromURL(item.finalURL)
+                ?? DownloadInputParser.inferFilenameFromURL(item.originalURL)
+                ?? "part_\(idx + 1)"
+            return DownloadPart(
+                filename: item.suggestedFilename ?? fallbackName,
+                originalURL: item.originalURL,
+                resolvedURL: item.finalURL,
+                headers: item.headers,
+                status: .queued,
+                progress: 0,
+                downloadedBytes: 0,
+                totalBytes: item.totalSize,
+                speedBytesPerSec: 0,
+                message: "排队中",
+                subDirectory: item.subDirectory,
+                useChunkedRange: item.useChunkedRange,
+                mailRuWeblink: item.mailRuWeblink,
+                maxThreads: item.maxThreads,
+                needsProxy: item.needsProxy,
+                resolverID: item.resolverID
+            )
+        }
+    }
+
+    private static func candidatePasswords(hint: String?, settings: AppSettings) -> [String] {
+        var list: [String] = []
+        var seen: Set<String> = []
+        func add(_ pw: String) {
+            if !seen.contains(pw) {
+                seen.insert(pw)
+                list.append(pw)
+            }
+        }
+        if let hint, !hint.isEmpty {
+            add(hint)
+        }
+        add("")
+        for pw in settings.passwords where !pw.isEmpty {
+            add(pw)
+        }
+        return list
+    }
+
+    private func refreshItemForResume(_ item: ResolvedDownload, passwords: [String]) async -> ResolvedDownload {
+        if item.mailRuWeblink != nil {
+            return await services.refreshDownload(item, passwords: passwords)
+        }
+        guard !item.originalURL.isEmpty, item.originalURL != item.finalURL else {
+            return item
+        }
+        let resolved = await services.resolveDownloadsDetailed(item.originalURL, passwords: passwords)
+        if let match = resolved.downloads.first(where: { $0.suggestedFilename == item.suggestedFilename }) ?? resolved.downloads.first {
+            return ResolvedDownload(
+                originalURL: item.originalURL,
+                finalURL: match.finalURL,
+                headers: match.headers,
+                suggestedFilename: item.suggestedFilename ?? match.suggestedFilename,
+                useChunkedRange: match.useChunkedRange,
+                totalSize: match.totalSize ?? item.totalSize,
+                subDirectory: item.subDirectory ?? match.subDirectory,
+                mailRuWeblink: match.mailRuWeblink ?? item.mailRuWeblink,
+                maxThreads: match.maxThreads ?? item.maxThreads,
+                needsProxy: match.needsProxy ?? item.needsProxy,
+                resolverID: match.resolverID ?? item.resolverID
+            )
+        }
+        return await services.refreshDownload(item, passwords: passwords)
+    }
+
+    private func handlePartProgress(
+        jobID: UUID,
+        partID: UUID,
+        progress: StageProgress,
+        settings: AppSettings
+    ) async {
+        guard acceptsProgress(for: jobID), !pausedTaskIDs.contains(jobID) else { return }
+        await updatePartState(jobID: jobID, partID: partID) { part in
+            if let f = progress.fraction { part.progress = f }
+            if let dl = progress.downloadedBytes { part.downloadedBytes = dl }
+            if let tot = progress.totalBytes { part.totalBytes = tot }
+            if let spd = progress.speedBytesPerSec { part.speedBytesPerSec = spd }
+            if let msg = progress.message { part.message = msg }
+        }
+        await refreshAggregatedJobSummary(jobID: jobID, settings: settings)
+    }
+
+    private func updatePartState(jobID: UUID, partID: UUID, mutate: (inout DownloadPart) -> Void) async {
+        if var parts = livePartsByJob[jobID],
+           let idx = parts.firstIndex(where: { $0.id == partID }) {
+            mutate(&parts[idx])
+            livePartsByJob[jobID] = parts
+            _ = await jobStore.updateDownloadMetadata(id: jobID, passwordHint: nil, downloadParts: parts)
+            return
+        }
+        guard let job = await jobStore.job(for: jobID), var parts = job.downloadParts,
+              let idx = parts.firstIndex(where: { $0.id == partID }) else { return }
+        mutate(&parts[idx])
+        livePartsByJob[jobID] = parts
+        _ = await jobStore.updateDownloadMetadata(id: jobID, passwordHint: job.passwordHint, downloadParts: parts)
+    }
+
+    private func refreshAggregatedJobSummary(jobID: UUID, settings: AppSettings) async {
+        guard let job = await jobStore.job(for: jobID),
+              job.kind == .download,
+              let parts = livePartsByJob[jobID] ?? job.downloadParts, !parts.isEmpty else { return }
+        guard acceptsProgress(for: jobID), !pausedTaskIDs.contains(jobID) else { return }
+        let doneCount = parts.filter { $0.status == .succeeded }.count
+        let totalCount = parts.count
+        let totalSpeed = parts.reduce(0.0) { $0 + ($1.status == .running ? $1.speedBytesPerSec : 0) }
+        let speedText = Self.formatSpeed(bytesPerSec: totalSpeed)
+        let pill = speedText != nil ? "分卷 \(doneCount)/\(totalCount) · \(speedText!)" : "分卷 \(doneCount)/\(totalCount)"
+
+        let totalKnownBytes = parts.reduce(Int64(0)) { $0 + ($1.totalBytes ?? 0) }
+        let rawFraction: Double
+        if totalKnownBytes > 0 {
+            let doneBytes = parts.reduce(Int64(0)) { acc, part in
+                if part.status == .succeeded { return acc + (part.totalBytes ?? part.downloadedBytes) }
+                return acc + part.downloadedBytes
+            }
+            rawFraction = Double(doneBytes) / Double(totalKnownBytes)
+        } else {
+            rawFraction = parts.reduce(0.0) { $0 + ($1.status == .succeeded ? 1.0 : $1.progress) } / Double(totalCount)
+        }
+        let mappedProgress = settings.autoRelay ? (rawFraction / 3.0) : rawFraction
+        let rightText = Self.formatAggregatedRightText(parts: parts)
+        await updateJob(jobID, status: .running, progress: mappedProgress, message: pill, rightText: rightText)
+    }
+
+    private static func formatSpeed(bytesPerSec: Double) -> String? {
+        guard bytesPerSec > 1024 else { return nil }
+        let mb = bytesPerSec / (1024.0 * 1024.0)
+        if mb >= 1.0 {
+            return String(format: "%.1f MB/s", mb)
+        }
+        let kb = bytesPerSec / 1024.0
+        return String(format: "%.0f KB/s", kb)
+    }
+
+    private static func formatAggregatedRightText(parts: [DownloadPart]) -> String {
+        let downloaded = parts.reduce(Int64(0)) { acc, part in
+            if part.status == .succeeded {
+                return acc + max(part.downloadedBytes, part.totalBytes ?? 0)
+            }
+            return acc + part.downloadedBytes
+        }
+        let totalKnown = parts.reduce(Int64(0)) { $0 + ($1.totalBytes ?? 0) }
+        let allHaveTotal = parts.allSatisfy { ($0.totalBytes ?? 0) > 0 }
+        if totalKnown > 0 && allHaveTotal {
+            let doneStr = ByteCountFormatter.string(fromByteCount: downloaded, countStyle: .file)
+            let totStr = ByteCountFormatter.string(fromByteCount: totalKnown, countStyle: .file)
+            return "\(doneStr) / \(totStr)"
+        }
+        if downloaded > 0 {
+            return ByteCountFormatter.string(fromByteCount: downloaded, countStyle: .file)
+        }
+        if totalKnown > 0 {
+            return ByteCountFormatter.string(fromByteCount: totalKnown, countStyle: .file)
+        }
+        return "待下载"
+    }
+
+    private func acquireDownloadSlot(token: UUID, ownerJobID: UUID, limit: Int) async -> Bool {
+        maxConcurrentDownloads = DownloadSettings.clampedConcurrentDownloads(limit)
+        if isCancelledOrPaused(jobID: ownerJobID) { return false }
+        if activeDownloadTokens.contains(token) { return true }
+        if activeDownloadTokens.count < maxConcurrentDownloads {
+            activeDownloadTokens.insert(token)
+            return true
+        }
+        return await withCheckedContinuation { continuation in
+            downloadWaiters.append((token: token, ownerJobID: ownerJobID, continuation: continuation))
+        }
+    }
+
+    private func releaseDownloadSlot(token: UUID) {
+        activeDownloadTokens.remove(token)
+        drainDownloadWaiters()
+    }
+
+    private func drainDownloadWaiters() {
+        while activeDownloadTokens.count < maxConcurrentDownloads, !downloadWaiters.isEmpty {
+            let waiter = downloadWaiters.removeFirst()
+            if isCancelledOrPaused(jobID: waiter.ownerJobID) {
+                waiter.continuation.resume(returning: false)
+                continue
+            }
+            activeDownloadTokens.insert(waiter.token)
+            waiter.continuation.resume(returning: true)
+        }
+    }
+
+    private func cancelDownloadWaiters(ownerJobID: UUID) {
+        var remaining: [(token: UUID, ownerJobID: UUID, continuation: CheckedContinuation<Bool, Never>)] = []
+        for waiter in downloadWaiters {
+            if waiter.ownerJobID == ownerJobID {
+                waiter.continuation.resume(returning: false)
+            } else {
+                remaining.append(waiter)
+            }
+        }
+        downloadWaiters = remaining
     }
 
     private static func selectPrimaryArchive(from names: [String], isArchiveFile: (String) -> Bool) -> String? {
@@ -448,9 +1248,17 @@ package final class PipelineCoordinator {
         holdForFolderRelay: Bool = false,
         progressRange: ClosedRange<Double>? = nil
     ) async {
+        lastDownloadDirectory = settings.download.downloadDirectory
+        updateMaxConcurrentDownloads(settings.download.maxConcurrentDownloads)
         guard let job = await jobStore.job(for: taskID), job.kind == .download,
-              job.status == .queued || job.status == .running,
-              acceptsProgress(for: taskID) else { return }
+              job.status == .queued || job.status == .running || job.status == .paused,
+              acceptsProgress(for: taskID), !pausedTaskIDs.contains(taskID) else { return }
+
+        let acquired = await acquireDownloadSlot(token: taskID, ownerJobID: taskID, limit: settings.download.maxConcurrentDownloads)
+        guard acquired else { return }
+        defer { releaseDownloadSlot(token: taskID) }
+
+        guard acceptsProgress(for: taskID), !pausedTaskIDs.contains(taskID) else { return }
         let currentTitle = job.title.isEmpty ? (resolved.suggestedFilename ?? "Download") : job.title
         await updateJob(
             taskID,
@@ -458,7 +1266,13 @@ package final class PipelineCoordinator {
             title: currentTitle,
             input: ArtifactRef(kind: .remoteURL, value: resolved.finalURL)
         )
-        let stage = services.downloadStage(title: currentTitle, resolved: resolved, settings: settings)
+        let stage = services.downloadStage(
+            title: currentTitle,
+            resolved: resolved,
+            stagingJobID: taskID,
+            stagingSubkey: nil,
+            settings: settings
+        )
         let result = await execute(
             registry: StageRegistry(stages: [stage]),
             stageID: stage.id,
@@ -467,6 +1281,7 @@ package final class PipelineCoordinator {
             input: ArtifactRef(kind: .remoteURL, value: resolved.finalURL),
             progressRange: progressRange ?? (settings.autoRelay && !suppressAutoRelay ? (0.0...1.0 / 3.0) : nil)
         )
+        if pausedTaskIDs.contains(taskID) { return }
         guard acceptsProgress(for: taskID) else { return }
 
         switch result {
@@ -491,10 +1306,11 @@ package final class PipelineCoordinator {
                         .map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? rightText ?? ""
                 ), transitioned.status == .running, acceptsProgress(for: taskID) else { return }
                 await recordLog(taskID: taskID, module: .unpack, level: .info, message: "relay ▸ 自动流转至解压: \(finalTitle)")
+                let passwords = Self.candidatePasswords(hint: job.passwordHint, settings: settings)
                 await runUnpackTask(
                     taskID: taskID,
                     archivePath: outputPath,
-                    candidatePasswords: [""] + settings.passwords,
+                    candidatePasswords: passwords,
                     settings: settings,
                     progressRange: (1.0 / 3.0...2.0 / 3.0)
                 )
@@ -524,7 +1340,9 @@ package final class PipelineCoordinator {
             )
             guard completed?.status == .succeeded, acceptsProgress(for: taskID) else { return }
         case .cancelled:
-            await updateJob(taskID, status: .cancelled, message: "已停止", rightText: "已停止")
+            if !pausedTaskIDs.contains(taskID) {
+                await updateJob(taskID, status: .cancelled, message: "已停止", rightText: "已停止")
+            }
         case .failure(let failure):
             await updateJob(taskID, status: .failed, message: failure.message)
         }
@@ -845,7 +1663,7 @@ package final class PipelineCoordinator {
     }
 
     private func report(_ progress: StageProgress, for id: UUID, progressRange: ClosedRange<Double>?) async {
-        guard acceptsProgress(for: id) else { return }
+        guard acceptsProgress(for: id), !pausedTaskIDs.contains(id) else { return }
         let fraction = progress.fraction.map { stageFraction in
             progressRange.map { range in
                 range.lowerBound + (range.upperBound - range.lowerBound) * stageFraction
@@ -855,13 +1673,16 @@ package final class PipelineCoordinator {
     }
 
     private func isCancelled(_ id: UUID) -> Bool {
-        cancelledTaskIDs.contains(id) || Task.isCancelled
+        cancelledTaskIDs.contains(id) || pausedTaskIDs.contains(id) || Task.isCancelled
+    }
+
+    private func isCancelledOrPaused(jobID: UUID) -> Bool {
+        cancelledTaskIDs.contains(jobID) || pausedTaskIDs.contains(jobID) || Task.isCancelled
     }
 
     private func acceptsProgress(for id: UUID) -> Bool {
         !cancelledTaskIDs.contains(id)
     }
-
     private func recordLog(
         taskID: UUID?,
         module: LogModule,

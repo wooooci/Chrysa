@@ -10,6 +10,9 @@ package struct ResolvedDownload: Sendable, Equatable {
     package let totalSize: Int64?
     package let subDirectory: String?
     package let mailRuWeblink: String?
+    package let maxThreads: Int?
+    package let needsProxy: Bool?
+    package let resolverID: String?
 
     package init(
         originalURL: String = "",
@@ -19,7 +22,10 @@ package struct ResolvedDownload: Sendable, Equatable {
         useChunkedRange: Bool = false,
         totalSize: Int64? = nil,
         subDirectory: String? = nil,
-        mailRuWeblink: String? = nil
+        mailRuWeblink: String? = nil,
+        maxThreads: Int? = nil,
+        needsProxy: Bool? = nil,
+        resolverID: String? = nil
     ) {
         self.originalURL = originalURL.isEmpty ? finalURL : originalURL
         self.finalURL = finalURL
@@ -29,6 +35,25 @@ package struct ResolvedDownload: Sendable, Equatable {
         self.totalSize = totalSize
         self.subDirectory = subDirectory
         self.mailRuWeblink = mailRuWeblink
+        self.maxThreads = maxThreads
+        self.needsProxy = needsProxy
+        self.resolverID = resolverID
+    }
+}
+
+package struct HostResolutionResult: Sendable, Equatable {
+    package let downloads: [ResolvedDownload]
+    package let failureReason: String?
+    package let diagnostic: String?
+
+    package init(
+        downloads: [ResolvedDownload],
+        failureReason: String? = nil,
+        diagnostic: String? = nil
+    ) {
+        self.downloads = downloads
+        self.failureReason = failureReason
+        self.diagnostic = diagnostic
     }
 }
 

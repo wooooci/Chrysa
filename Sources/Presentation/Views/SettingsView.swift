@@ -166,6 +166,7 @@ struct SettingsView: View {
     private var settingsDownloadView: some View {
         let dirLabel = vm.settingsStore.settings.displayDownloadDirectory
         let connCount = vm.settingsStore.settings.maxConcurrentConnections
+        let maxJobsCount = vm.settingsStore.settings.maxConcurrentDownloads
 
         return VStack(alignment: .leading, spacing: 0) {
             t3SettingRow(title: "下载目录") {
@@ -185,6 +186,29 @@ struct SettingsView: View {
                         }
                     } label: {
                         T3OutlinedPill(text: dirLabel, icon: "folder")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
+            }
+
+            t3SettingRow(title: "同时下载") {
+                if isSnapshotMode {
+                    T3OutlinedPill(text: "\(maxJobsCount) 个")
+                } else {
+                    Menu {
+                        ForEach([1, 2, 3, 4], id: \.self) { n in
+                            Button(action: { vm.setMaxConcurrentDownloads(n) }) {
+                                HStack {
+                                    Text("\(n) 个任务")
+                                    if maxJobsCount == n {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        T3OutlinedPill(text: "\(maxJobsCount) 个")
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
@@ -215,7 +239,6 @@ struct SettingsView: View {
             }
         }
     }
-
     // MARK: 3. Unpack Settings (Auto Cleanup + Password Dictionary)
     private var settingsUnpackView: some View {
         VStack(alignment: .leading, spacing: 12) {

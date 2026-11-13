@@ -3,7 +3,21 @@ import ChrysaApplication
 import Foundation
 
 package struct MirrorUploadXResolver: HostResolver {
+    package let id = "mirroruploadx"
+    package let bareDomains = ["mirroruploadx.com/", "www.mirroruploadx.com/"]
+
+    package static let preferredProviders = [
+        "gofile",
+        "fuckingfast",
+        "buzzheavier",
+        "pixeldrain",
+        "vikingfile"
+    ]
+
     package func canHandle(host: String, url: URL) -> Bool {
+        host.contains("mirroruploadx.com")
+    }
+    package func matchesCDNHost(_ host: String) -> Bool {
         host.contains("mirroruploadx.com")
     }
 
@@ -11,22 +25,29 @@ package struct MirrorUploadXResolver: HostResolver {
         "优选分流 (约10s)"
     }
 
-    package func resolve(input: String, url: URL, passwords: [String]) async -> [ResolvedDownload] {
+    package func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult {
         await Self.resolveMirrorUploadX(urlString: input, passwords: passwords)
     }
 
-    package static func resolveMirrorUploadX(urlString: String, passwords: [String]) async -> [ResolvedDownload] {
+    package static func resolveMirrorUploadX(urlString: String, passwords: [String]) async -> HostResolutionResult {
         let ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:150.0) Gecko/20100101 Firefox/150.0"
-        guard let res = try? await ProcessSupervisor.shared.run(
-            executable: "/usr/bin/curl",
-            arguments: ["-sL", "-A", ua, urlString],
-            captureOutput: true
-        ) else {
-            return []
+        guard let pageResp = await ResolverHTTPHelper.fetch(
+            urlString: urlString,
+            headers: ["User-Agent": ua],
+            useProxy: true,
+            timeoutSeconds: 20
+        ), let rawHTML = pageResp.bodyString, !rawHTML.isEmpty else {
+            return HostResolutionResult(downloads: [], failureReason: "无法连接 MirrorUploadX")
         }
 
-        let rawHTML = res.outputString
-        guard !rawHTML.isEmpty else { return [] }
+        if let failure = ResolverHTTPHelper.classifyFailure(
+            statusCode: pageResp.statusCode,
+            contentType: pageResp.contentType,
+            body: rawHTML
+        ) {
+            return HostResolutionResult(downloads: [], failureReason: failure)
+        }
+
         let cleanHTML = rawHTML.replacingOccurrences(of: "\\\"", with: "\"")
 
         var delaySec: Double = 10.0
@@ -36,55 +57,75 @@ package struct MirrorUploadXResolver: HostResolver {
             delaySec = min(max(val, 1.0), 15.0)
         }
 
-        var preferredClickURLs: [(String, String)] = []
-        let pattern = #""provider"\s*:\s*"([^"]+)"[\s\S]{1,600}?"clickUrl"\s*:\s*"([^"]+)""#
-        if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
-            let matches = regex.matches(in: cleanHTML, range: NSRange(cleanHTML.startIndex..., in: cleanHTML))
-            var byProvider: [String: String] = [:]
-            for m in matches {
-                if let rProv = Range(m.range(at: 1), in: cleanHTML),
-                   let rClick = Range(m.range(at: 2), in: cleanHTML) {
-                    let prov = String(cleanHTML[rProv]).lowercased()
-                    let rawClick = String(cleanHTML[rClick])
-                    let fullClick = rawClick.hasPrefix("http") ? rawClick : "https://mirroruploadx.com\(rawClick)"
-                    byProvider[prov] = fullClick
-                }
-            }
-            for hostKey in ["gofile", "vikingfile"] {
-                if let c = byProvider[hostKey] {
-                    preferredClickURLs.append((hostKey, c))
-                }
-            }
+        let preferredClickURLs = extractOrderedProviders(from: cleanHTML)
+        guard !preferredClickURLs.isEmpty else {
+            return HostResolutionResult(downloads: [], failureReason: "未找到可用分流节点")
         }
 
-        guard !preferredClickURLs.isEmpty else { return [] }
         try? await Task.sleep(nanoseconds: UInt64((delaySec + 0.8) * 1_000_000_000))
 
+        var lastFailure: String? = nil
         for (_, clickURL) in preferredClickURLs {
-            guard let hdrRes = try? await ProcessSupervisor.shared.run(
-                executable: "/usr/bin/curl",
-                arguments: ["-sI", "-A", ua, "-e", urlString, clickURL],
-                captureOutput: true
+            guard let hdrResp = await ResolverHTTPHelper.fetch(
+                urlString: clickURL,
+                method: "HEAD",
+                headers: ["User-Agent": ua, "Referer": urlString],
+                useProxy: true,
+                followRedirects: false,
+                timeoutSeconds: 15
             ) else { continue }
 
-            var locationURL: String? = nil
-            for line in hdrRes.outputString.components(separatedBy: .newlines) {
-                if line.lowercased().hasPrefix("location:") {
-                    let loc = line.dropFirst("location:".count).trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !loc.isEmpty && !loc.contains("mirroruploadx.com") {
-                        locationURL = loc
-                        break
-                    }
-                }
-            }
-
-            if let targetURL = locationURL {
-                let resolved = await HostResolverRegistry.resolveLinks(targetURL, passwords: passwords)
-                if !resolved.isEmpty {
+            if let loc = hdrResp.headers["location"],
+               !loc.isEmpty,
+               !loc.contains("mirroruploadx.com") {
+                let resolved = await HostResolverRegistry.resolveLinksDetailed(loc, passwords: passwords)
+                if !resolved.downloads.isEmpty {
                     return resolved
                 }
+                lastFailure = resolved.failureReason ?? lastFailure
             }
         }
-        return []
+        return HostResolutionResult(downloads: [], failureReason: lastFailure ?? "下游分流全部失效")
+    }
+
+    package static func extractOrderedProviders(from cleanHTML: String) -> [(String, String)] {
+        let pattern = #""provider"\s*:\s*"([^"]+)"[\s\S]{1,600}?"clickUrl"\s*:\s*"([^"]+)""#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
+            return []
+        }
+        let matches = regex.matches(in: cleanHTML, range: NSRange(cleanHTML.startIndex..., in: cleanHTML))
+        var byProvider: [String: String] = [:]
+        var orderedKeys: [String] = []
+        for m in matches {
+            if let rProv = Range(m.range(at: 1), in: cleanHTML),
+               let rClick = Range(m.range(at: 2), in: cleanHTML) {
+                let prov = String(cleanHTML[rProv]).lowercased()
+                let rawClick = String(cleanHTML[rClick])
+                let fullClick = rawClick.hasPrefix("http") ? rawClick : "https://mirroruploadx.com\(rawClick)"
+                if byProvider[prov] == nil {
+                    orderedKeys.append(prov)
+                }
+                byProvider[prov] = fullClick
+            }
+        }
+
+        var result: [(String, String)] = []
+        var used: Set<String> = []
+        for hostKey in preferredProviders {
+            if let c = byProvider[hostKey] {
+                result.append((hostKey, c))
+                used.insert(hostKey)
+            } else if let matchedKey = orderedKeys.first(where: { $0.contains(hostKey) && !used.contains($0) }),
+                      let c = byProvider[matchedKey] {
+                result.append((matchedKey, c))
+                used.insert(matchedKey)
+            }
+        }
+        for key in orderedKeys where !used.contains(key) {
+            if let c = byProvider[key] {
+                result.append((key, c))
+            }
+        }
+        return result
     }
 }

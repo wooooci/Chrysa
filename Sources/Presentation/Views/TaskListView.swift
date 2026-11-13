@@ -159,7 +159,8 @@ struct TaskListSectionView: View {
     private var topDropZone: some View {
         HStack(spacing: 10) {
             if vm.activeTab == .download && !isSnapshotMode {
-                TextField("粘贴 Gofile / MirrorUploadX / FileDitch / Pixeldrain / 直链，或拖入种子...", text: $vm.urlInput)
+                TextField("粘贴网盘 / 直链 / 多行分卷文本，或拖入 .txt 链接列表...", text: $vm.urlInput, axis: .vertical)
+                    .lineLimit(1...3)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12.5))
                     .foregroundColor(.t3TextMain)
@@ -194,7 +195,8 @@ struct TaskListSectionView: View {
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 12)
-        .frame(height: 36)
+        .padding(.vertical, 8)
+        .frame(minHeight: 36)
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(Color.t3TopBoxBg)
@@ -203,12 +205,11 @@ struct TaskListSectionView: View {
 
     private var activeTabPlaceholder: String {
         switch vm.activeTab {
-        case .download: return "粘贴下载链接，或将种子文件拖入此处..."
+        case .download: return "粘贴下载链接，或将 .txt 链接列表拖入此处..."
         case .unpack:   return "拖入 .7z / .rar / .zip 压缩包，或点击选择文件..."
         case .patch, .launch, .settings: return "拖入游戏文件夹 / .exe，或点击选择本地目录..."
         }
     }
-
     private var activeTabActionTitle: String {
         switch vm.activeTab {
         case .download: return "+ 新建"
@@ -272,14 +273,49 @@ struct TaskListSectionView: View {
                                 )
                             }
                             .buttonStyle(.plain)
-                        } else if case .running = row.status {
-                            Button(action: { vm.stopTask(row) }) {
-                                Image(systemName: "stop.circle")
-                                    .font(.system(size: 13))
-                                    .foregroundColor(.t3TextMuted)
+                        } else if case .paused = row.status {
+                            Button(action: { vm.resumeTask(row) }) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "play.fill")
+                                        .font(.system(size: 9, weight: .semibold))
+                                    Text("继续")
+                                        .font(.system(size: 11, weight: .semibold))
+                                }
+                                .foregroundColor(theme.accent)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2)
+                                .background(
+                                    Capsule().fill(theme.accent.opacity(0.10))
+                                )
                             }
                             .buttonStyle(.plain)
-                            .help("停止任务")
+                        } else if case .running = row.status {
+                            if vm.activeTab == .download {
+                                Button(action: { vm.pauseTask(row) }) {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: "pause.fill")
+                                            .font(.system(size: 9, weight: .semibold))
+                                        Text("暂停")
+                                            .font(.system(size: 11, weight: .semibold))
+                                    }
+                                    .foregroundColor(.t3TextSub)
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 2)
+                                    .background(
+                                        Capsule().fill(Color.t3TopBoxBg)
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .help("暂停下载并保留续传进度")
+                            } else {
+                                Button(action: { vm.stopTask(row) }) {
+                                    Image(systemName: "stop.circle")
+                                        .font(.system(size: 13))
+                                        .foregroundColor(.t3TextMuted)
+                                }
+                                .buttonStyle(.plain)
+                                .help("停止任务")
+                            }
                         } else if case .locked = row.status {
                             Button(action: { vm.stopTask(row) }) {
                                 Image(systemName: "stop.circle")
@@ -362,15 +398,30 @@ struct TaskListSectionView: View {
         }
 
         if case .running = row.status {
+            if vm.activeTab == .download {
+                Button(action: { vm.pauseTask(row) }) {
+                    Label("暂停下载", systemImage: "pause.circle")
+                }
+            }
             Button(action: { vm.stopTask(row) }) {
-                Label("停止当前任务", systemImage: "stop.circle")
+                Label("取消并清理暂存", systemImage: "stop.circle")
+            }
+        } else if case .paused = row.status {
+            Button(action: { vm.resumeTask(row) }) {
+                Label("继续下载", systemImage: "play.circle")
+            }
+            Button(action: { vm.stopTask(row) }) {
+                Label("取消并清理暂存", systemImage: "stop.circle")
+            }
+        } else if case .queued = row.status {
+            Button(action: { vm.stopTask(row) }) {
+                Label("取消排队", systemImage: "stop.circle")
             }
         } else if case .locked = row.status {
             Button(action: { vm.stopTask(row) }) {
                 Label("停止当前任务", systemImage: "stop.circle")
             }
         }
-
         Button(action: { vm.archiveTask(row) }) {
             Label(row.isArchived ? "取消归档" : "归档项目", systemImage: "archivebox")
         }
@@ -426,11 +477,13 @@ struct TaskExpandedDetailView: View {
     }
 
     var body: some View {
+        let parts = vm.downloadParts(for: row.id)
+        let hasParts = !parts.isEmpty
         let hasChecklist = !row.checklist.isEmpty
         let hasLogs = !taskLogs.isEmpty
         let hasRaw = (rawErrorText != nil)
 
-        if hasChecklist || hasLogs || hasRaw {
+        if hasParts || hasChecklist || hasLogs || hasRaw {
             Rectangle()
                 .fill(Color.t3Divider)
                 .frame(height: 1)
@@ -439,7 +492,56 @@ struct TaskExpandedDetailView: View {
                 .padding(.vertical, 6)
 
             VStack(alignment: .leading, spacing: 8) {
+                if hasParts {
+                    VStack(alignment: .leading, spacing: 5) {
+                        ForEach(parts) { part in
+                            HStack(alignment: .center, spacing: 8) {
+                                partStatusIcon(part)
+                                    .frame(width: 13, height: 13, alignment: .center)
+
+                                Text(part.filename)
+                                    .font(.system(size: 11.5))
+                                    .foregroundColor(part.status == .succeeded ? .t3TextMuted : .t3TextMain)
+                                    .lineLimit(1)
+
+                                if let msg = part.message, !msg.isEmpty {
+                                    T3OutlinedPill(text: msg)
+                                }
+
+                                Spacer(minLength: 6)
+
+                                if part.status == .failed || part.status == .cancelled {
+                                    Button(action: {
+                                        vm.retryDownloadPart(jobID: row.id, partID: part.id)
+                                    }) {
+                                        HStack(spacing: 2.5) {
+                                            Image(systemName: "arrow.clockwise")
+                                                .font(.system(size: 9, weight: .semibold))
+                                            Text("重试")
+                                                .font(.system(size: 10.5, weight: .semibold))
+                                        }
+                                        .foregroundColor(theme.accent)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 1.5)
+                                        .background(Capsule().fill(theme.accent.opacity(0.10)))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+
+                                Text(partRightText(part))
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(.t3TextMuted)
+                            }
+                        }
+                    }
+                }
+
                 if hasChecklist {
+                    if hasParts {
+                        Rectangle()
+                            .fill(Color.t3Divider.opacity(0.75))
+                            .frame(height: 1)
+                    }
                     VStack(alignment: .leading, spacing: 7) {
                         ForEach(row.checklist) { item in
                             HStack(alignment: .center, spacing: 8) {
@@ -470,7 +572,7 @@ struct TaskExpandedDetailView: View {
                 }
 
                 if hasLogs || hasRaw {
-                    if hasChecklist {
+                    if hasParts || hasChecklist {
                         Rectangle()
                             .fill(Color.t3Divider.opacity(0.75))
                             .frame(height: 1)
@@ -590,6 +692,49 @@ struct TaskExpandedDetailView: View {
         case .warning: return Color(red: 0.72, green: 0.48, blue: 0.06)
         case .error:   return Color.red.opacity(0.88)
         }
+    }
+
+    @ViewBuilder
+    private func partStatusIcon(_ part: DownloadPart) -> some View {
+        switch part.status {
+        case .queued:
+            T3StatusBox(status: .queued)
+                .scaleEffect(0.85)
+        case .running:
+            T3PieRing(progress: max(0.03, part.progress), size: 12.5, color: theme.accent)
+        case .paused:
+            T3StatusBox(status: .paused(part.progress))
+                .scaleEffect(0.85)
+        case .succeeded:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 11.5))
+                .foregroundColor(theme.accent)
+        case .failed, .cancelled:
+            Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 11.5))
+                .foregroundColor(Color.red.opacity(0.85))
+        }
+    }
+
+    private func partRightText(_ part: DownloadPart) -> String {
+        if part.status == .succeeded {
+            if let tot = part.totalBytes, tot > 0 {
+                return ByteCountFormatter.string(fromByteCount: tot, countStyle: .file)
+            }
+            return "已完成"
+        }
+        if let tot = part.totalBytes, tot > 0 {
+            if part.downloadedBytes > 0 {
+                let d = ByteCountFormatter.string(fromByteCount: part.downloadedBytes, countStyle: .file)
+                let t = ByteCountFormatter.string(fromByteCount: tot, countStyle: .file)
+                return "\(d) / \(t)"
+            }
+            return ByteCountFormatter.string(fromByteCount: tot, countStyle: .file)
+        }
+        if part.downloadedBytes > 0 {
+            return ByteCountFormatter.string(fromByteCount: part.downloadedBytes, countStyle: .file)
+        }
+        return part.status == .paused ? "已暂停" : "待下载"
     }
 }
 

@@ -213,6 +213,38 @@ package actor JobStore: JobRepository {
     }
 
     @discardableResult
+    package func updateDownloadMetadata(
+        id: UUID,
+        passwordHint: String?,
+        downloadParts: [DownloadPart]?
+    ) -> Job? {
+        guard var job = jobs[id] else { return nil }
+        if let passwordHint { job.passwordHint = passwordHint }
+        if let downloadParts { job.downloadParts = downloadParts }
+        job.updatedAt = Date()
+        jobs[id] = job
+        persist()
+        return job
+    }
+
+    @discardableResult
+    package func reopenForResume(
+        id: UUID,
+        status: JobStatus,
+        message: String?,
+        rightText: String?
+    ) -> Job? {
+        guard var job = jobs[id] else { return nil }
+        job.status = status
+        job.message = message
+        if let rightText { job.rightText = rightText }
+        job.updatedAt = Date()
+        jobs[id] = job
+        persist()
+        return job
+    }
+
+    @discardableResult
     package func appendLog(_ entry: LogEntry, to id: UUID) -> Job? {
         guard var job = jobs[id] else { return nil }
         job.appendBoundedLog(entry)
@@ -221,7 +253,6 @@ package actor JobStore: JobRepository {
         persist()
         return job
     }
-
     package func remove(id: UUID) {
         guard jobs.removeValue(forKey: id) != nil else { return }
         persist()
@@ -331,7 +362,24 @@ package actor JobStore: JobRepository {
             case .queued, .running:
                 job.status = .failed
                 job.message = "已中断"
+                if var parts = job.downloadParts {
+                    for idx in parts.indices where parts[idx].status == .running || parts[idx].status == .queued {
+                        parts[idx].status = .paused
+                        parts[idx].speedBytesPerSec = 0
+                        parts[idx].message = "已中断"
+                    }
+                    job.downloadParts = parts
+                }
                 job.updatedAt = Date()
+            case .paused:
+                if var parts = job.downloadParts {
+                    for idx in parts.indices where parts[idx].status == .running || parts[idx].status == .queued {
+                        parts[idx].status = .paused
+                        parts[idx].speedBytesPerSec = 0
+                        parts[idx].message = "已暂停"
+                    }
+                    job.downloadParts = parts
+                }
             case .succeeded, .failed, .cancelled:
                 break
             }
@@ -345,7 +393,7 @@ private extension JobStatus {
     var isTerminal: Bool {
         switch self {
         case .succeeded, .failed, .cancelled: return true
-        case .queued, .running: return false
+        case .queued, .running, .paused: return false
         }
     }
 }

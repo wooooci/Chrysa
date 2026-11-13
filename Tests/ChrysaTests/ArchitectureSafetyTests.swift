@@ -645,4 +645,156 @@ struct ArchitectureSafetyTests {
         return buf as Data
     }
 
+    @Test
+    func testResolverRegistryNormalizationThreadCapsAndUnsupportedHosts() async {
+        #expect(HostResolverRegistry.normalizeDownloadInput("magnet:?xt=urn:btih:123") == nil)
+        #expect(HostResolverRegistry.normalizeDownloadInput("https://example.test/game.torrent") == nil)
+        #expect(HostResolverRegistry.normalizeDownloadInput("mega.nz/file/abc123") == nil)
+        #expect(HostResolverRegistry.normalizeDownloadInput("bzzhr.co/abcd1234") == "https://bzzhr.co/abcd1234")
+        #expect(HostResolverRegistry.normalizeDownloadInput("fuckingfast.co/xyz#Game.rar") == "https://fuckingfast.co/xyz#Game.rar")
+        #expect(HostResolverRegistry.normalizeDownloadInput("1fichier.com/?xyz123") == "https://1fichier.com/?xyz123")
+
+        #expect(HostResolverRegistry.maxThreads(for: "https://a-10.1fichier.com/c123", configuredMax: 16) == 1)
+        #expect(HostResolverRegistry.maxThreads(for: "https://pixeldrain.com/api/file/abc", configuredMax: 16) == 4)
+        #expect(HostResolverRegistry.maxThreads(for: "https://fileditchfiles.st/f/abc", configuredMax: 16) == 2)
+        #expect(HostResolverRegistry.proxyNeeds(for: "https://bzzhr.co/abcd") == false)
+        #expect(HostResolverRegistry.proxyNeeds(for: "https://fuckingfast.co/dl/xyz") == true)
+
+        let megaResult = await HostResolverRegistry.resolveLinksDetailed("https://mega.nz/file/abc#key")
+        #expect(megaResult.downloads.isEmpty)
+        #expect(megaResult.failureReason == "不支持该网盘·需专用客户端")
+    }
+
+    @Test
+    func testResolverHTMLAndJSONParsers() throws {
+        // 1. Pixeldrain /l/ list JSON
+        let listJSON = Data("""
+        {
+          "success": true,
+          "title": "Cool Game Pack",
+          "files": [
+            {"id": "f1", "name": "Cool.part1.rar", "size": 1000},
+            {"id": "f2", "name": "Cool.part2.rar", "size": 500}
+          ]
+        }
+        """.utf8)
+        let pdList = PixeldrainResolver.parseListJSON(listJSON, listID: "list1", originalInput: "https://pixeldrain.com/l/list1")
+        #expect(pdList.downloads.count == 2)
+        #expect(pdList.downloads[0].subDirectory == "Cool Game Pack")
+        #expect(pdList.downloads[0].finalURL == "https://pixeldrain.com/api/file/f1?download")
+        #expect(pdList.downloads[1].originalURL == "https://pixeldrain.com/u/f2")
+
+        // 2. Buzzheavier filename extraction
+        let buzzHTML = "<html><head><title>Hollow_Knight_v1.5.7z - Buzzheavier</title></head><body></body></html>"
+        #expect(BuzzheavierResolver.extractFilenameFromHTML(buzzHTML) == "Hollow_Knight_v1.5.7z")
+
+        // 3. Google Drive 100MB+ virus scan form extraction
+        let gdriveHTML = """
+        <html><body>
+        <span class="uc-name-size"><a href="/open?id=FILE123">Big_Game_Build.7z</a> (4.2G)</span>
+        <form id="download-form" action="https://drive.usercontent.google.com/download" method="get">
+          <input type="hidden" name="id" value="FILE123">
+          <input type="hidden" name="export" value="download">
+          <input type="hidden" name="confirm" value="t">
+          <input type="hidden" name="uuid" value="uuid-999-abc">
+        </form>
+        </body></html>
+        """
+        let gParsed = try #require(GoogleDriveResolver.parseVirusScanForm(html: gdriveHTML, fallbackID: "FILE123"))
+        #expect(gParsed.filename == "Big_Game_Build.7z")
+        #expect(gParsed.finalURL.contains("uuid=uuid-999-abc"))
+        #expect(gParsed.finalURL.contains("confirm=t"))
+        #expect(gParsed.finalURL.contains("id=FILE123"))
+
+        // 4. MirrorUploadX provider preference order
+        let mirrorHTML = """
+        {"provider":"vikingfile","clickUrl":"/go/vf"},
+        {"provider":"buzzheavier","clickUrl":"/go/bh"},
+        {"provider":"fuckingfast","clickUrl":"/go/ff"},
+        {"provider":"pixeldrain","clickUrl":"/go/pd"},
+        {"provider":"gofile","clickUrl":"/go/gf"}
+        """
+        let ordered = MirrorUploadXResolver.extractOrderedProviders(from: mirrorHTML)
+        #expect(ordered.map(\.0) == ["gofile", "fuckingfast", "buzzheavier", "pixeldrain", "vikingfile"])
+
+        // 5. FuckingFast JS + fragment parsing
+        let ffHTML = "<script>window.open('https://fuckingfast.co/dl/AbC_123');</script>"
+        let ffParsed = try #require(FuckingFastResolver.parsePage(html: ffHTML, originalURL: "https://fuckingfast.co/xyz#TestGame.rar"))
+        #expect(ffParsed.directURL == "https://fuckingfast.co/dl/AbC_123")
+        #expect(ffParsed.filename == "TestGame.rar")
+
+        // 6. 1fichier form & download link parsing
+        let ofInitial = """
+        <form method="post" action="https://1fichier.com/?xyz999">
+          <input type="hidden" name="adz" value="123.456">
+        </form>
+        """
+        let ofForm = try #require(OneFichierResolver.parseInitialForm(html: ofInitial, baseURL: "https://1fichier.com/?xyz999"))
+        #expect(ofForm.formBody.contains("adz=123.456"))
+        let ofFinalHTML = """
+        <table><tr><td>Filename :</td><td>Archive_Game.zip</td></tr></table>
+        <a href="https://a-12.1fichier.com/c888999" class="ok">Click here to download</a>
+        """
+        let ofDirect = try #require(OneFichierResolver.parseDownloadPage(html: ofFinalHTML))
+        #expect(ofDirect.directURL == "https://a-12.1fichier.com/c888999")
+        #expect(ofDirect.filename == "Archive_Game.zip")
+    }
+
+    @Test
+    func testFakePayloadGuardAndDeterministicStagingLifecycle() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chrysa-guard-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let cfFile = tmpDir.appendingPathComponent("fake_cf.7z")
+        try Data("<!DOCTYPE html><html><title>Just a moment...</title></html>".utf8).write(to: cfFile)
+        #expect(ResolverHTTPHelper.validateStagedPayload(at: cfFile, expectedFilename: "game.7z") == "含网页盾·请用浏览器下载")
+
+        let quotaFile = tmpDir.appendingPathComponent("fake_quota.rar")
+        try Data("<html><body>Download quota exceeded for this file</body></html>".utf8).write(to: quotaFile)
+        #expect(ResolverHTTPHelper.validateStagedPayload(at: quotaFile, expectedFilename: "game.rar") == "今日额度已满")
+
+        let validBinary = tmpDir.appendingPathComponent("real.7z")
+        try Data([0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00, 0x04]).write(to: validBinary)
+        #expect(ResolverHTTPHelper.validateStagedPayload(at: validBinary, expectedFilename: "real.7z") == nil)
+
+        let jobID = UUID()
+        let stageDir = try DownloadService.stagingDirectoryURL(downloadDirectory: tmpDir.path, jobID: jobID)
+        try FileManager.default.createDirectory(at: stageDir, withIntermediateDirectories: true)
+        let partialFile = stageDir.appendingPathComponent("game.7z")
+        try Data("partial".utf8).write(to: partialFile)
+        #expect(stageDir.path.contains("/.chrysa-staging/\(jobID.uuidString)"))
+        #expect(FileManager.default.fileExists(atPath: partialFile.path))
+
+        DownloadService.cleanupStaging(for: jobID, downloadDirectory: tmpDir.path)
+        #expect(!FileManager.default.fileExists(atPath: stageDir.path))
+    }
+
+    @Test
+    func testJobStorePreservesPausedJobsAcrossRestart() async throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chrysa-paused-store-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let jobsURL = tmpDir.appendingPathComponent("jobs.json")
+        let store = JobStore(customFileURL: jobsURL)
+        let pausedJob = Job(
+            kind: .download,
+            title: "PausedGame.7z",
+            status: .paused,
+            progress: 0.42,
+            source: ArtifactRef(kind: .remoteURL, value: "https://example.test/PausedGame.7z"),
+            message: "已暂停"
+        )
+        await store.upsert(pausedJob)
+
+        let reloaded = JobStore(customFileURL: jobsURL)
+        _ = await reloaded.load()
+        let loadedJob = try #require(await reloaded.job(for: pausedJob.id))
+        #expect(loadedJob.status == .paused)
+        #expect(loadedJob.progress == 0.42)
+        #expect(loadedJob.message == "已暂停")
+    }
 }

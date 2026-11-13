@@ -3,15 +3,25 @@ import ChrysaApplication
 import Foundation
 
 package struct MailRuResolver: HostResolver {
+    package let id = "mailru"
+    package let bareDomains = ["cloud.mail.ru/"]
+
     package func canHandle(host: String, url: URL) -> Bool {
         host.contains("cloud.mail.ru")
     }
+    package func matchesCDNHost(_ host: String) -> Bool {
+        host.contains("mail.ru") || host.contains("cldmail.ru")
+    }
     package func proxyNeeds() -> Bool { false }
 
-    package func resolve(input: String, url: URL, passwords: [String]) async -> [ResolvedDownload] {
-        await Self.resolveMailRu(input: input, url: url)
+    package func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult {
+        let items = await Self.resolveMailRu(input: input, url: url)
+        return HostResolutionResult(downloads: items, failureReason: items.isEmpty ? "链接已失效" : nil)
     }
 
+    package func refresh(item: ResolvedDownload, passwords: [String]) async -> ResolvedDownload {
+        await Self.refreshURLIfNeeded(item)
+    }
     package static func resolveMailRu(input: String, url: URL) async -> [ResolvedDownload] {
         let comps = url.pathComponents.filter { $0 != "/" }
         guard let pubIdx = comps.firstIndex(of: "public"), comps.count > pubIdx + 1 else {

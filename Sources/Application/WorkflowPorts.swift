@@ -29,10 +29,56 @@ package protocol JobRepository: Sendable {
         expanded: Bool?,
         listPosition: Int?
     ) async -> Job?
+    @discardableResult func updateDownloadMetadata(
+        id: UUID,
+        passwordHint: String?,
+        downloadParts: [DownloadPart]?
+    ) async -> Job?
+    @discardableResult func reopenForResume(
+        id: UUID,
+        status: JobStatus,
+        message: String?,
+        rightText: String?
+    ) async -> Job?
     @discardableResult func appendLog(_ entry: LogEntry, to id: UUID) async -> Job?
     func remove(id: UUID) async
 }
 
+package extension JobRepository {
+    @discardableResult func updateDownloadMetadata(
+        id: UUID,
+        passwordHint: String?,
+        downloadParts: [DownloadPart]?
+    ) async -> Job? {
+        await job(for: id)
+    }
+
+    @discardableResult func reopenForResume(
+        id: UUID,
+        status: JobStatus,
+        message: String?,
+        rightText: String?
+    ) async -> Job? {
+        await update(
+            id: id,
+            kind: nil,
+            status: status,
+            progress: nil,
+            title: nil,
+            source: nil,
+            input: nil,
+            output: nil,
+            message: message,
+            clearMessage: message == nil,
+            rightText: rightText,
+            appID: nil,
+            checklist: nil,
+            isArchived: nil,
+            expanded: nil,
+            listPosition: nil
+        )
+    }
+}
 package protocol LaunchGameRepository: Sendable {
     func load() async -> LaunchGameStoreLoadResult
     func all() async -> [LaunchGame]
@@ -124,6 +170,13 @@ package actor InMemoryLaunchGameRepository: LaunchGameRepository {
 /// Creates the registered operations and provides the platform queries used by the workflow.
 package protocol WorkflowServices: Sendable {
     func downloadStage(title: String, resolved: ResolvedDownload, settings: AppSettings) -> any Stage
+    func downloadStage(
+        title: String,
+        resolved: ResolvedDownload,
+        stagingJobID: UUID,
+        stagingSubkey: String?,
+        settings: AppSettings
+    ) -> any Stage
     func unpackStage(passwords: [String], deleteArchive: Bool) -> any Stage
     func patchStage(title: String, settings: AppSettings) -> any Stage
     func launchStage(request: GameLaunchRequest) -> any Stage
@@ -132,10 +185,13 @@ package protocol WorkflowServices: Sendable {
     func allStages(for kind: JobKind, job: Job, settings: AppSettings) -> [any Stage]
 
     func normalizeDownloadInput(_ input: String) -> String?
+    func knownBareHostDomains() -> [String]
     func initialDownloadMessage(for input: String) -> String?
     func suggestedDownloadName(_ input: String) -> String?
     func resolveDownloads(_ input: String, passwords: [String]) async -> [ResolvedDownload]
+    func resolveDownloadsDetailed(_ input: String, passwords: [String]) async -> HostResolutionResult
     func refreshDownload(_ item: ResolvedDownload) async -> ResolvedDownload
+    func refreshDownload(_ item: ResolvedDownload, passwords: [String]) async -> ResolvedDownload
     func isArchiveFile(_ path: String) -> Bool
     func normalizeArchivePath(_ path: String) -> String
     func fileSize(_ path: String) -> Int64?
@@ -151,5 +207,33 @@ package protocol WorkflowServices: Sendable {
     func mergeDLC(installer: String, directory: String, taskID: UUID) async -> Bool
     func cancel(taskID: UUID) async
     func clearCancellation(taskID: UUID) async
+    func cleanupStaging(for jobID: UUID, downloadDirectory: String)
     func deleteDownloadedFile(_ path: String, downloadDirectory: String) throws -> Bool
+}
+
+package extension WorkflowServices {
+    func downloadStage(
+        title: String,
+        resolved: ResolvedDownload,
+        stagingJobID: UUID,
+        stagingSubkey: String?,
+        settings: AppSettings
+    ) -> any Stage {
+        downloadStage(title: title, resolved: resolved, settings: settings)
+    }
+
+    func knownBareHostDomains() -> [String] {
+        DownloadInputParser.defaultKnownBareDomains
+    }
+
+    func resolveDownloadsDetailed(_ input: String, passwords: [String]) async -> HostResolutionResult {
+        let items = await resolveDownloads(input, passwords: passwords)
+        return HostResolutionResult(downloads: items, failureReason: items.isEmpty ? "无法获取直链" : nil)
+    }
+
+    func refreshDownload(_ item: ResolvedDownload, passwords: [String]) async -> ResolvedDownload {
+        await refreshDownload(item)
+    }
+
+    func cleanupStaging(for jobID: UUID, downloadDirectory: String) {}
 }
