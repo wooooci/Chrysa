@@ -14,8 +14,18 @@ package struct FuckingFastResolver: HostResolver {
     }
     package func maxThreads() -> Int { 8 }
 
-    package func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult {
-        guard let resp = await ResolverHTTPHelper.fetch(urlString: input, useProxy: proxyNeeds(), timeoutSeconds: 20),
+    package func resolveDetailed(
+        input: String,
+        url: URL,
+        passwords: [String],
+        settings: DownloadSettings
+    ) async -> HostResolutionResult {
+        guard let resp = await ResolverHTTPHelper.fetchWithPolicy(
+            urlString: input,
+            policy: settings.proxyPolicy,
+            preferDirect: false,
+            timeoutSeconds: 20
+        ),
               let html = resp.bodyString else {
             return HostResolutionResult(downloads: [], failureReason: "无法连接 FuckingFast")
         }
@@ -28,10 +38,11 @@ package struct FuckingFastResolver: HostResolver {
             return HostResolutionResult(downloads: [], failureReason: "无法提取 FuckingFast 直链")
         }
 
+        let useProxy = ResolverHTTPHelper.effectiveUseProxy(policy: settings.proxyPolicy, defaultNeedsProxy: proxyNeeds())
         let probe = await ResolverHTTPHelper.probeDirectURL(
             parsed.directURL,
             headers: ["Referer": input],
-            useProxy: proxyNeeds()
+            useProxy: useProxy
         )
         let finalFilename = probe?.contentDispositionFilename
             ?? parsed.filename

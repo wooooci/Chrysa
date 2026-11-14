@@ -4,6 +4,7 @@ import ChrysaCore
 package struct ResolvedDownload: Sendable, Equatable {
     package let originalURL: String
     package let finalURL: String
+    package let mirrorURLs: [String]
     package let headers: [String]
     package let suggestedFilename: String?
     package let useChunkedRange: Bool
@@ -13,10 +14,12 @@ package struct ResolvedDownload: Sendable, Equatable {
     package let maxThreads: Int?
     package let needsProxy: Bool?
     package let resolverID: String?
+    package let rateLimitNote: String?
 
     package init(
         originalURL: String = "",
         finalURL: String,
+        mirrorURLs: [String] = [],
         headers: [String],
         suggestedFilename: String?,
         useChunkedRange: Bool = false,
@@ -25,10 +28,12 @@ package struct ResolvedDownload: Sendable, Equatable {
         mailRuWeblink: String? = nil,
         maxThreads: Int? = nil,
         needsProxy: Bool? = nil,
-        resolverID: String? = nil
+        resolverID: String? = nil,
+        rateLimitNote: String? = nil
     ) {
         self.originalURL = originalURL.isEmpty ? finalURL : originalURL
         self.finalURL = finalURL
+        self.mirrorURLs = mirrorURLs
         self.headers = headers
         self.suggestedFilename = suggestedFilename
         self.useChunkedRange = useChunkedRange
@@ -38,6 +43,30 @@ package struct ResolvedDownload: Sendable, Equatable {
         self.maxThreads = maxThreads
         self.needsProxy = needsProxy
         self.resolverID = resolverID
+        self.rateLimitNote = rateLimitNote
+    }
+
+    package func appendingMirrors(_ extra: [String]) -> ResolvedDownload {
+        guard !extra.isEmpty else { return self }
+        var combined = mirrorURLs
+        for candidate in extra where candidate != originalURL && !combined.contains(candidate) {
+            combined.append(candidate)
+        }
+        return ResolvedDownload(
+            originalURL: originalURL,
+            finalURL: finalURL,
+            mirrorURLs: combined,
+            headers: headers,
+            suggestedFilename: suggestedFilename,
+            useChunkedRange: useChunkedRange,
+            totalSize: totalSize,
+            subDirectory: subDirectory,
+            mailRuWeblink: mailRuWeblink,
+            maxThreads: maxThreads,
+            needsProxy: needsProxy,
+            resolverID: resolverID,
+            rateLimitNote: rateLimitNote
+        )
     }
 }
 
@@ -121,6 +150,20 @@ package enum TaskStoreLoadResult: Sendable {
     }
 }
 
+
+package enum DiskSpacePreflight {
+    /// Computes required free disk bytes before starting a download (accounting for download + unpack headroom when autoRelay is enabled).
+    package static func requiredBytes(
+        totalBytes: Int64,
+        existingStagedBytes: Int64 = 0,
+        includeUnpackReserve: Bool
+    ) -> Int64 {
+        let clampedTotal = max(0, totalBytes)
+        let remainingDownload = max(0, clampedTotal - max(0, existingStagedBytes))
+        let unpackReserve = includeUnpackReserve ? clampedTotal : 0
+        return remainingDownload + unpackReserve
+    }
+}
 
 package enum LaunchGameStoreLoadResult: Sendable {
     case missing

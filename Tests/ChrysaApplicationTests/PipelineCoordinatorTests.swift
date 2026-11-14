@@ -225,12 +225,213 @@ struct PipelineCoordinatorTests {
         #expect(jobs.isEmpty)
     }
 
+    @MainActor
+    @Test
+    func testDiskSpacePreflightBlocksLowSpaceWithAndWithoutAutoRelay() async throws {
+        let trace = WorkflowTrace()
+        var settings = AppSettings.default
+        settings.downloadDirectory = "/tmp/chrysa-disk-test"
+        settings.autoRelay = true
+
+        // 1. Single download: 8 KB file fits on 10 KB disk alone, but needs ~16 KB + margin with autoRelay
+        let singleResolved = ResolvedDownload(
+            originalURL: "https://example.test/game.7z",
+            finalURL: "https://example.test/game.7z",
+            headers: [],
+            suggestedFilename: "game.7z",
+            totalSize: 8_000
+        )
+        let services = StubWorkflowServices(trace: trace, availableDiskBytes: 10_000)
+        let store = MemoryRepository()
+        let coordinator = PipelineCoordinator(services: services, jobStore: store)
+
+        let blockedJob = Job(kind: .download, title: "game.7z", status: .running, progress: 0.0)
+        await coordinator.addJob(blockedJob)
+        await coordinator.runDownloadTask(taskID: blockedJob.id, resolved: singleResolved, settings: settings)
+
+        let savedBlocked = await store.job(for: blockedJob.id)
+        #expect(savedBlocked?.status == .failed)
+        #expect(savedBlocked?.message == "空间不足")
+        #expect(savedBlocked?.logs.contains(where: { $0.level == .error && $0.message.contains("磁盘空间不足") && !$0.message.contains("▸") }) == true)
+        #expect(await trace.calls.isEmpty)
+
+        // 2. Disabling autoRelay lets the 8 KB download proceed on 10 KB disk
+        settings.autoRelay = false
+        let allowedJob = Job(kind: .download, title: "game.7z", status: .running, progress: 0.0)
+        await coordinator.addJob(allowedJob)
+        await coordinator.runDownloadTask(taskID: allowedJob.id, resolved: singleResolved, settings: settings)
+        let savedAllowed = await store.job(for: allowedJob.id)
+        #expect(savedAllowed?.status == .succeeded)
+        #expect(await trace.calls.count == 1)
+
+        // 3. Aggregated multipart download checks combined total before downloading any part
+        let multipartJob = Job(
+            kind: .download,
+            title: "Multipart Game",
+            status: .running,
+            downloadParts: [
+                DownloadPart(filename: "part1.rar", originalURL: "https://a/1", resolvedURL: "https://a/1", totalBytes: 4_000),
+                DownloadPart(filename: "part2.rar", originalURL: "https://a/2", resolvedURL: "https://a/2", totalBytes: 4_000),
+                DownloadPart(filename: "part3.rar", originalURL: "https://a/3", resolvedURL: "https://a/3", totalBytes: 4_000)
+            ]
+        )
+        let partCoordinator = PipelineCoordinator(
+            services: StubWorkflowServices(trace: WorkflowTrace(), availableDiskBytes: 10_000),
+            jobStore: store
+        )
+        await partCoordinator.addJob(multipartJob)
+        await partCoordinator.runFolderDownloadPipeline(
+            firstTaskID: multipartJob.id,
+            guessedName: "Multipart Game",
+            items: [
+                ResolvedDownload(finalURL: "https://a/1", headers: [], suggestedFilename: "part1.rar", totalSize: 4_000),
+                ResolvedDownload(finalURL: "https://a/2", headers: [], suggestedFilename: "part2.rar", totalSize: 4_000),
+                ResolvedDownload(finalURL: "https://a/3", headers: [], suggestedFilename: "part3.rar", totalSize: 4_000)
+            ],
+            settings: settings
+        )
+        let savedMultipart = await store.job(for: multipartJob.id)
+        #expect(savedMultipart?.status == .failed)
+        #expect(savedMultipart?.message == "空间不足")
+        #expect(savedMultipart?.downloadParts?.allSatisfy { $0.status == .failed && $0.message == "空间不足" } == true)
+    }
+
+    @MainActor
+    @Test
+    func testIdleSleepAssertionAcquiresAndReleasesOnPauseAndRelayToPatch() async throws {
+        let sleepRecorder = SleepStateRecorder()
+        let gate = StageGate()
+        let trace = WorkflowTrace()
+        let services = StubWorkflowServices(
+            trace: trace,
+            gate: gate,
+            sleepRecorder: sleepRecorder
+        )
+        let store = MemoryRepository()
+        let coordinator = PipelineCoordinator(services: services, jobStore: store)
+
+        // 1. Download acquires sleep lock and pauseTask releases immediately
+        let job = Job(kind: .download, title: "sleep-dl.7z", status: .running)
+        await coordinator.addJob(job)
+        let task = Task {
+            await coordinator.runDownloadTask(taskID: job.id, resolved: services.resolved, settings: .default)
+        }
+        try await waitUntil { await gate.started }
+        #expect(sleepRecorder.snapshot() == [true])
+
+        await coordinator.pauseTask(job.id)
+        await gate.release()
+        await task.value
+        #expect(sleepRecorder.snapshot() == [true, false])
+        #expect(sleepRecorder.current == false)
+
+        // 2. Unpack task relays into patch -> sleep lock releases when entering patch stage
+        var relaySettings = AppSettings.default
+        relaySettings.autoRelay = true
+        let unpackJob = Job(
+            kind: .unpack,
+            title: "sleep-unpack.7z",
+            status: .running,
+            source: ArtifactRef(kind: .file, value: "/tmp/sleep-unpack.7z"),
+            input: ArtifactRef(kind: .file, value: "/tmp/sleep-unpack.7z")
+        )
+        await coordinator.addJob(unpackJob)
+        await coordinator.runUnpackTask(
+            taskID: unpackJob.id,
+            archivePath: "/tmp/sleep-unpack.7z",
+            candidatePasswords: [""],
+            settings: relaySettings
+        )
+        #expect(sleepRecorder.snapshot() == [true, false, true, false])
+        #expect(sleepRecorder.current == false)
+    }
+
+    @MainActor
+    @Test
+    func testSameFilenameMultiHostCoalescesMirrorsPreferringUnthrottledPrimary() async throws {
+        let trace = WorkflowTrace()
+        let services = StubWorkflowServices(
+            trace: trace,
+            detailResolver: { input in
+                if input.contains("pixeldrain.com") {
+                    return HostResolutionResult(downloads: [
+                        ResolvedDownload(
+                            originalURL: input,
+                            finalURL: "https://pixeldrain.com/api/file/slow1?download",
+                            headers: [],
+                            suggestedFilename: "CoolGame_v1.0.7z",
+                            totalSize: 500_000,
+                            resolverID: "pixeldrain",
+                            rateLimitNote: "限速 1MB/s"
+                        )
+                    ])
+                }
+                return HostResolutionResult(downloads: [
+                    ResolvedDownload(
+                        originalURL: input,
+                        finalURL: "https://spyderrock.com/fast2.7z",
+                        headers: [],
+                        suggestedFilename: "CoolGame_v1.0.7z",
+                        totalSize: 500_000,
+                        resolverID: "qiwi"
+                    )
+                ])
+            }
+        )
+        let store = MemoryRepository()
+        let coordinator = PipelineCoordinator(services: services, jobStore: store)
+        var settings = AppSettings.default
+        settings.autoRelay = false
+
+        coordinator.startDownloads(
+            rawInput: "https://pixeldrain.com/u/slow1\nhttps://qiwi.gg/file/fast2",
+            settings: settings
+        )
+
+        try await waitUntil {
+            let jobs = await store.all()
+            return jobs.count == 1 && jobs.first?.status == .succeeded
+        }
+
+        let jobs = await store.all()
+        let finalJob = try #require(jobs.first)
+        #expect(finalJob.sourceURL == "https://qiwi.gg/file/fast2")
+        #expect(finalJob.mirrorURLs == ["https://pixeldrain.com/u/slow1"])
+        #expect(finalJob.title == "CoolGame_v1.0.7z")
+        #expect(finalJob.logs.contains(where: { $0.message.contains("备选镜像") && !$0.message.contains("▸") }))
+    }
+
     private func waitUntil(_ condition: () async -> Bool) async throws {
         let deadline = Date().addingTimeInterval(3)
         while !(await condition()) && Date() < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
         try #require(await condition(), "Timed out waiting for workflow")
+    }
+}
+
+private final class SleepStateRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var transitions: [Bool] = []
+    private var _current: Bool = false
+
+    var current: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _current
+    }
+
+    func snapshot() -> [Bool] {
+        lock.lock()
+        defer { lock.unlock() }
+        return transitions
+    }
+
+    func record(_ active: Bool) {
+        lock.lock()
+        _current = active
+        transitions.append(active)
+        lock.unlock()
     }
 }
 
@@ -286,6 +487,9 @@ private struct StubWorkflowServices: WorkflowServices {
     var downloadResult: StageResult = .success(StageOutput(artifact: ArtifactRef(kind: .file, value: "/published/game (2).7z")))
     var gate: StageGate?
     var resolvedDownloads: [ResolvedDownload]? = nil
+    var availableDiskBytes: Int64? = nil
+    var sleepRecorder: SleepStateRecorder? = nil
+    var detailResolver: (@Sendable (String) -> HostResolutionResult)? = nil
     let resolved = ResolvedDownload(finalURL: "https://example.test/game.7z", headers: [], suggestedFilename: "game.7z")
 
     func downloadStage(title: String, resolved: ResolvedDownload, settings: AppSettings) -> any Stage {
@@ -317,7 +521,17 @@ private struct StubWorkflowServices: WorkflowServices {
     func initialDownloadMessage(for input: String) -> String? { nil }
     func suggestedDownloadName(_ input: String) -> String? { "game.7z" }
     func resolveDownloads(_ input: String, passwords: [String]) async -> [ResolvedDownload] { resolvedDownloads ?? [resolved] }
+    func resolveDownloadsDetailed(_ input: String, passwords: [String], settings: AppSettings) async -> HostResolutionResult {
+        if let detailResolver {
+            return detailResolver(input)
+        }
+        return HostResolutionResult(downloads: resolvedDownloads ?? [resolved])
+    }
     func refreshDownload(_ item: ResolvedDownload) async -> ResolvedDownload { item }
+    func availableDiskSpace(atDirectory path: String) -> Int64? { availableDiskBytes }
+    func setPreventIdleSleep(_ active: Bool) {
+        sleepRecorder?.record(active)
+    }
     func isArchiveFile(_ path: String) -> Bool { path.hasSuffix(".7z") || path.hasSuffix(".rar") }
     func normalizeArchivePath(_ path: String) -> String { path }
     func fileSize(_ path: String) -> Int64? { nil }
@@ -354,9 +568,18 @@ private actor MemoryRepository: JobRepository {
     }
     func remove(id: UUID) { jobs[id] = nil }
     func updateDownloadMetadata(id: UUID, passwordHint: String?, downloadParts: [DownloadPart]?) -> Job? {
+        updateDownloadMetadata(id: id, passwordHint: passwordHint, downloadParts: downloadParts, mirrorURLs: nil)
+    }
+    func updateDownloadMetadata(
+        id: UUID,
+        passwordHint: String?,
+        downloadParts: [DownloadPart]?,
+        mirrorURLs: [String]?
+    ) -> Job? {
         guard var job = jobs[id] else { return nil }
         if let passwordHint { job.passwordHint = passwordHint }
         if let downloadParts { job.downloadParts = downloadParts }
+        if let mirrorURLs { job.mirrorURLs = mirrorURLs }
         jobs[id] = job
         return job
     }

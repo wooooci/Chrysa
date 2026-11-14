@@ -14,14 +14,21 @@ package struct OneFichierResolver: HostResolver {
     }
     package func maxThreads() -> Int { 1 }
 
-    package func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult {
+    package func resolveDetailed(
+        input: String,
+        url: URL,
+        passwords: [String],
+        settings: DownloadSettings
+    ) async -> HostResolutionResult {
         let cookieFile = FileManager.default.temporaryDirectory
             .appendingPathComponent("chrysa-1fichier-\(UUID().uuidString).cookies").path
         defer { try? FileManager.default.removeItem(atPath: cookieFile) }
 
-        guard let initialResp = await ResolverHTTPHelper.fetch(
+        let useProxy = ResolverHTTPHelper.effectiveUseProxy(policy: settings.proxyPolicy, defaultNeedsProxy: proxyNeeds())
+        guard let initialResp = await ResolverHTTPHelper.fetchWithPolicy(
             urlString: input,
-            useProxy: proxyNeeds(),
+            policy: settings.proxyPolicy,
+            preferDirect: false,
             cookieFilePath: cookieFile,
             timeoutSeconds: 20
         ), let html = initialResp.bodyString else {
@@ -69,7 +76,7 @@ package struct OneFichierResolver: HostResolver {
             return HostResolutionResult(downloads: [], failureReason: "含网页盾·请用浏览器下载")
         }
 
-        let postResp = await ResolverHTTPHelper.fetch(
+        let postResp = await ResolverHTTPHelper.fetchWithPolicy(
             urlString: form.actionURL,
             method: "POST",
             headers: [
@@ -78,7 +85,8 @@ package struct OneFichierResolver: HostResolver {
                 "Content-Type": "application/x-www-form-urlencoded"
             ],
             formBody: form.formBody,
-            useProxy: proxyNeeds(),
+            policy: settings.proxyPolicy,
+            preferDirect: false,
             cookieFilePath: cookieFile,
             timeoutSeconds: 20
         )
@@ -114,7 +122,7 @@ package struct OneFichierResolver: HostResolver {
         let probe = await ResolverHTTPHelper.probeDirectURL(
             direct.directURL,
             headers: ["Referer": input],
-            useProxy: proxyNeeds()
+            useProxy: useProxy
         )
         return HostResolutionResult(downloads: [
             ResolvedDownload(

@@ -20,7 +20,12 @@ package struct FileDitchResolver: HostResolver {
 
     package func maxThreads() -> Int { 2 }
 
-    package func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult {
+    package func resolveDetailed(
+        input: String,
+        url: URL,
+        passwords: [String],
+        settings: DownloadSettings
+    ) async -> HostResolutionResult {
         let filename = url.lastPathComponent
         if let decoded = HostResolverRegistry.decodeBase64FilenameIfPossible(filename) {
             return HostResolutionResult(downloads: [

@@ -98,8 +98,16 @@ package struct DefaultWorkflowServices: WorkflowServices {
         await HostResolverRegistry.resolveLinks(input, passwords: passwords)
     }
 
+    package func resolveDownloads(_ input: String, passwords: [String], settings: AppSettings) async -> [ResolvedDownload] {
+        await HostResolverRegistry.resolveLinks(input, passwords: passwords, settings: settings.download)
+    }
+
     package func resolveDownloadsDetailed(_ input: String, passwords: [String]) async -> HostResolutionResult {
         await HostResolverRegistry.resolveLinksDetailed(input, passwords: passwords)
+    }
+
+    package func resolveDownloadsDetailed(_ input: String, passwords: [String], settings: AppSettings) async -> HostResolutionResult {
+        await HostResolverRegistry.resolveLinksDetailed(input, passwords: passwords, settings: settings.download)
     }
 
     package func refreshDownload(_ item: ResolvedDownload) async -> ResolvedDownload {
@@ -108,6 +116,18 @@ package struct DefaultWorkflowServices: WorkflowServices {
 
     package func refreshDownload(_ item: ResolvedDownload, passwords: [String]) async -> ResolvedDownload {
         await HostResolverRegistry.refreshDownload(item, passwords: passwords)
+    }
+
+    package func refreshDownload(_ item: ResolvedDownload, passwords: [String], settings: AppSettings) async -> ResolvedDownload {
+        await HostResolverRegistry.refreshDownload(item, passwords: passwords, settings: settings.download)
+    }
+
+    package func availableDiskSpace(atDirectory path: String) -> Int64? {
+        DiskSpaceHelper.availableBytes(atDirectory: path)
+    }
+
+    package func setPreventIdleSleep(_ active: Bool) {
+        IdleSleepAssertionManager.shared.setActive(active)
     }
     package func isArchiveFile(_ path: String) -> Bool { UnpackService.isArchiveFile(path) }
     package func normalizeArchivePath(_ path: String) -> String { UnpackService.normalizeMultipartArchivePath(path) }
@@ -163,11 +183,6 @@ package struct DefaultWorkflowServices: WorkflowServices {
         }
 
         let bottlesRoot = (bottlesDirectory as NSString).expandingTildeInPath
-        let genericFolderNames: Set<String> = [
-            "downloads", "desktop", "documents", "applications", "drive_c",
-            "win64", "win32", "x64", "x86", "bin", "binaries",
-            "program files", "program files (x86)", "game", "release", "shipping", "retail", "windowsnoeditor"
-        ]
         let stopRootPaths: Set<String> = [
             "/",
             NSHomeDirectory(),
@@ -178,16 +193,6 @@ package struct DefaultWorkflowServices: WorkflowServices {
             "/Applications",
             bottlesRoot
         ]
-
-        func stripExecutableVariantSuffixes(_ raw: String) -> String {
-            var value = raw
-            for suffix in ["-Win64-Shipping", "-Win32-Shipping", "-Mac-Shipping", "_Win64", "_x64"] {
-                if value.lowercased().hasSuffix(suffix.lowercased()) {
-                    value = String(value.dropLast(suffix.count))
-                }
-            }
-            return value
-        }
 
         func detectBottleName(exeOrDirPath: String, title: String) -> String? {
             let canonicalTarget = LaunchGame.canonicalPath(exeOrDirPath) ?? exeOrDirPath
@@ -218,16 +223,12 @@ package struct DefaultWorkflowServices: WorkflowServices {
             for _ in 0..<4 {
                 let cursorPath = cursor.path
                 if stopRootPaths.contains(cursorPath) { break }
-                if cleanAppID == nil {
-                    let candidateAppIDPath = cursor.appendingPathComponent("steam_appid.txt").path
-                    if let txt = (try? String(contentsOfFile: candidateAppIDPath, encoding: .utf8))?
-                        .trimmingCharacters(in: .whitespacesAndNewlines),
-                       !txt.isEmpty {
-                        cleanAppID = txt
-                    }
+                if cleanAppID == nil,
+                   let directAppID = GameDirectoryInspector.findDirectAppID(inDirectory: cursorPath) {
+                    cleanAppID = directAppID
                 }
                 let name = cursor.lastPathComponent
-                if rawTitleSource == nil, !name.isEmpty, !genericFolderNames.contains(name.lowercased()) {
+                if rawTitleSource == nil, !name.isEmpty, !GameDirectoryInspector.genericFolderNames.contains(name.lowercased()) {
                     rawTitleSource = name
                 }
                 let next = cursor.deletingLastPathComponent()
@@ -235,7 +236,7 @@ package struct DefaultWorkflowServices: WorkflowServices {
                 cursor = next
             }
 
-            let fallbackEXEName = stripExecutableVariantSuffixes(standardized.deletingPathExtension().lastPathComponent)
+            let fallbackEXEName = GameDirectoryInspector.stripExecutableVariantSuffixes(standardized.deletingPathExtension().lastPathComponent)
             let finalRawTitle = rawTitleSource ?? fallbackEXEName
             let cleaned = GameTitle.cleanGameTitle(from: finalRawTitle)
             let title = cleaned.isEmpty ? finalRawTitle : cleaned
@@ -302,103 +303,11 @@ package struct DefaultWorkflowServices: WorkflowServices {
             )
         }
         // 3. Game directory import
-        var candidateEXEs: [String] = []
-        var unityDataDirs: [String] = []
-        var foundAppID: String? = nil
-        var discoveredTitle: String? = nil
-
-        let commonDir = standardized.appendingPathComponent("steamapps/common").path
-        if let items = try? fm.contentsOfDirectory(atPath: commonDir) {
-            for item in items where !item.hasPrefix(".") {
-                var subDir: ObjCBool = false
-                let fullSub = (commonDir as NSString).appendingPathComponent(item)
-                if fm.fileExists(atPath: fullSub, isDirectory: &subDir), subDir.boolValue {
-                    discoveredTitle = item
-                    break
-                }
-            }
-        }
-
-        if let enumerator = fm.enumerator(atPath: standardized.path) {
-            while let rel = enumerator.nextObject() as? String {
-                let relLower = rel.lowercased()
-                let lower = (rel as NSString).lastPathComponent.lowercased()
-                let full = (standardized.path as NSString).appendingPathComponent(rel)
-
-                if lower == "steam_appid.txt", foundAppID == nil {
-                    let txt = (try? String(contentsOfFile: full, encoding: .utf8))?
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    if let t = txt, !t.isEmpty { foundAppID = t }
-                } else if lower.hasPrefix("appmanifest_") && lower.hasSuffix(".acf") {
-                    if foundAppID == nil,
-                       let m = try? NSRegularExpression(pattern: #"appmanifest_([0-9]+)\.acf"#).firstMatch(
-                        in: lower, range: NSRange(lower.startIndex..., in: lower)
-                       ), let r = Range(m.range(at: 1), in: lower) {
-                        foundAppID = String(lower[r])
-                    }
-                    if let acfText = try? String(contentsOfFile: full, encoding: .utf8),
-                       let nmMatch = try? NSRegularExpression(pattern: #""name"\s+"([^"]+)""#).firstMatch(
-                        in: acfText, range: NSRange(acfText.startIndex..., in: acfText)
-                       ), let nr = Range(nmMatch.range(at: 1), in: acfText) {
-                        discoveredTitle = String(acfText[nr])
-                    }
-                } else if lower.hasSuffix("_data") {
-                    var subIsDir: ObjCBool = false
-                    if fm.fileExists(atPath: full, isDirectory: &subIsDir), subIsDir.boolValue {
-                        unityDataDirs.append(full)
-                    }
-                } else if lower.hasSuffix(".exe"),
-                          !relLower.contains("__redist"),
-                          !relLower.contains("/redist/"),
-                          !lower.contains("scriptinterpreter"),
-                          !lower.contains("unitycrashhandler"),
-                          !lower.contains("unins"),
-                          !lower.contains("vc_redist"),
-                          !lower.contains("dxsetup"),
-                          !lower.contains("crashreport"),
-                          !lower.contains("crs-handler"),
-                          !lower.contains("goggalaxy"),
-                          !lower.contains("dosbox"),
-                          !lower.hasPrefix("setup_") {
-                    candidateEXEs.append(full)
-                }
-            }
-        }
-
-        var matchedUnityEXE: String? = nil
-        for dataDir in unityDataDirs {
-            let dirName = (dataDir as NSString).lastPathComponent
-            if dirName.lowercased().hasSuffix("_data") {
-                let prefix = String(dirName.dropLast("_data".count))
-                let parent = (dataDir as NSString).deletingLastPathComponent
-                let expectedEXE = (parent as NSString).appendingPathComponent("\(prefix).exe")
-                if fm.fileExists(atPath: expectedEXE) {
-                    matchedUnityEXE = expectedEXE
-                    break
-                }
-                if let ciMatch = candidateEXEs.first(where: {
-                    (($0 as NSString).lastPathComponent as NSString).deletingPathExtension.caseInsensitiveCompare(prefix) == .orderedSame
-                }) {
-                    matchedUnityEXE = ciMatch
-                    break
-                }
-            }
-        }
-
-        let mainEXE = matchedUnityEXE ?? candidateEXEs.max { a, b in
-            let depthA = a.components(separatedBy: "/").count
-            let depthB = b.components(separatedBy: "/").count
-            if depthA != depthB {
-                return depthA > depthB
-            }
-            let sa = (try? fm.attributesOfItem(atPath: a)[.size] as? Int64) ?? 0
-            let sb = (try? fm.attributesOfItem(atPath: b)[.size] as? Int64) ?? 0
-            return sa < sb
-        }
-
-        let rawFolderTitle = discoveredTitle ?? standardized.lastPathComponent
-        let cleanedTitle = GameTitle.cleanGameTitle(from: rawFolderTitle)
-        let title = cleanedTitle.isEmpty ? rawFolderTitle : cleanedTitle
+        let inspection = GameDirectoryInspector.inspect(directory: standardized.path)
+        let mainEXE = inspection?.mainExecutable
+        let rawTitle = inspection?.resolvedTitle ?? standardized.lastPathComponent
+        let cleanedTitle = GameTitle.cleanGameTitle(from: rawTitle)
+        let title = cleanedTitle.isEmpty ? rawTitle : cleanedTitle
         let bottle = detectBottleName(exeOrDirPath: mainEXE ?? standardized.path, title: title)
 
         return LaunchGame(
@@ -406,7 +315,7 @@ package struct DefaultWorkflowServices: WorkflowServices {
             exePath: mainEXE,
             gameDirectory: standardized.path,
             bottleName: bottle,
-            appID: foundAppID,
+            appID: inspection?.existingAppID,
             source: .manualImport
         )
     }

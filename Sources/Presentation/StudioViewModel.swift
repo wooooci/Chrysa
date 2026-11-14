@@ -120,7 +120,7 @@ package final class StudioViewModel: ObservableObject {
         case .migrationPending(let jobs):
             restoredJobs = jobs
             canWriteJobs = true
-            appendLog(LogEntry(module: .patch, level: .warning, message: "persistence ▸ 旧任务迁移尚未完成，将在条件恢复后重试"))
+            appendLog(LogEntry(module: .patch, level: .warning, message: "旧任务迁移未完成，稍后重试"))
         case .missing, .corrupt:
             restoredJobs = []
             canWriteJobs = true
@@ -130,7 +130,7 @@ package final class StudioViewModel: ObservableObject {
             restoredJobs = legacy.downloadTasks.map { Job.fromLegacy($0, kind: .download) }
                 + legacy.unpackTasks.map { Job.fromLegacy($0, kind: .unpack) }
                 + legacy.patchTasks.map { Job.fromLegacy($0, kind: .patch) }
-            appendLog(LogEntry(module: .patch, level: .warning, message: "persistence ▸ 任务档案由较新版本创建，当前仅显示只读旧记录"))
+            appendLog(LogEntry(module: .patch, level: .warning, message: "任务档案来自较新版本，当前只读"))
         }
 
         if canWriteJobs {
@@ -268,6 +268,28 @@ package final class StudioViewModel: ObservableObject {
         settingsStore.settings.maxConcurrentDownloads = count
         coordinator.updateMaxConcurrentDownloads(settingsStore.settings.maxConcurrentDownloads)
     }
+
+    package func setProxyPolicy(_ policy: ProxyPolicy) {
+        settingsStore.settings.proxyPolicy = policy
+    }
+
+    package func accelerationCredential(for kind: AccelerationCredentialKind) -> String {
+        switch kind {
+        case .pixeldrain: return settingsStore.settings.pixeldrainAPIKey
+        case .realDebrid: return settingsStore.settings.realDebridToken
+        case .torBox: return settingsStore.settings.torBoxToken
+        }
+    }
+
+    package func setAccelerationCredential(_ value: String, for kind: AccelerationCredentialKind) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch kind {
+        case .pixeldrain: settingsStore.settings.pixeldrainAPIKey = trimmed
+        case .realDebrid: settingsStore.settings.realDebridToken = trimmed
+        case .torBox: settingsStore.settings.torBoxToken = trimmed
+        }
+    }
+
     package func setDefaultLanguage(_ lang: SteamLanguageOption) {
         settingsStore.settings.defaultLanguage = lang
     }
@@ -716,7 +738,7 @@ package final class StudioViewModel: ObservableObject {
                         taskID: task.id,
                         module: .download,
                         level: .error,
-                        message: "error ▸ 本地文件删除失败，已保留文件: \(error.localizedDescription)"
+                        message: "删除本地文件失败，已保留文件: \(error.localizedDescription)"
                     ))
                 }
             }
@@ -741,7 +763,12 @@ package final class StudioViewModel: ObservableObject {
         if let job = jobs.first(where: { $0.id == task.id }) {
             switch job.kind {
             case .download:
-                editPathOrURLInput = task.sourceURL ?? task.localPath ?? ""
+                let base = task.sourceURL ?? task.localPath ?? ""
+                if !job.mirrorURLs.isEmpty && !base.isEmpty {
+                    editPathOrURLInput = ([base] + job.mirrorURLs).joined(separator: " | ")
+                } else {
+                    editPathOrURLInput = base
+                }
             case .unpack, .patch:
                 editPathOrURLInput = task.localPath ?? task.sourceURL ?? ""
             }
@@ -760,19 +787,43 @@ package final class StudioViewModel: ObservableObject {
         let newTarget = editPathOrURLInput.trimmingCharacters(in: .whitespacesAndNewlines)
         if !newTitle.isEmpty { job.title = newTitle }
         if !newTarget.isEmpty {
-            let artifactKind: ArtifactKind = job.kind == .download ? .remoteURL : job.kind == .unpack ? .file : .directory
-            let updatedRef = ArtifactRef(kind: artifactKind, value: newTarget)
-            if job.kind == .download || job.source?.kind != .remoteURL {
-                job.source = updatedRef
-            }
-            job.input = updatedRef
-            if job.kind == .unpack && job.status == .succeeded {
-                job.output = ArtifactRef(kind: .directory, value: newTarget)
+            if job.kind == .download {
+                let parsed = DownloadInputParser.parse(newTarget)
+                if let primary = parsed.urls.first {
+                    let mirrors = parsed.mirrorGroups[primary] ?? Array(parsed.urls.dropFirst())
+                    let updatedRef = ArtifactRef(kind: .remoteURL, value: primary)
+                    job.source = updatedRef
+                    job.input = updatedRef
+                    job.mirrorURLs = mirrors
+                } else {
+                    let updatedRef = ArtifactRef(kind: .remoteURL, value: newTarget)
+                    job.source = updatedRef
+                    job.input = updatedRef
+                    job.mirrorURLs = []
+                }
+            } else {
+                let artifactKind: ArtifactKind = job.kind == .unpack ? .file : .directory
+                let updatedRef = ArtifactRef(kind: artifactKind, value: newTarget)
+                if job.source?.kind != .remoteURL {
+                    job.source = updatedRef
+                }
+                job.input = updatedRef
+                if job.kind == .unpack && job.status == .succeeded {
+                    job.output = ArtifactRef(kind: .directory, value: newTarget)
+                }
             }
         }
         editingTask = nil
         Task {
             await coordinator.updateJob(job.id, title: job.title, source: job.source, input: job.input, output: job.output)
+            if job.kind == .download {
+                _ = await coordinator.jobStore.updateDownloadMetadata(
+                    id: job.id,
+                    passwordHint: job.passwordHint,
+                    downloadParts: nil,
+                    mirrorURLs: job.mirrorURLs
+                )
+            }
             if andRetry {
                 await coordinator.removeJob(job.id, downloadDirectory: settingsStore.settings.downloadDirectory)
                 retry(job)
@@ -844,7 +895,9 @@ package final class StudioViewModel: ObservableObject {
     private func retry(_ job: Job) {
         switch job.kind {
         case .download:
-            startDownload(urlString: job.sourceURL ?? job.input?.value ?? job.title)
+            let base = job.sourceURL ?? job.input?.value ?? job.title
+            let combined = job.mirrorURLs.isEmpty ? base : ([base] + job.mirrorURLs).joined(separator: " | ")
+            startDownload(urlString: combined)
         case .unpack:
             let target = (job.input?.kind == .file ? job.input?.value : nil)
                 ?? (job.source?.kind == .file ? job.source?.value : nil)
@@ -887,9 +940,9 @@ package final class StudioViewModel: ObservableObject {
 
     package func appendLog(_ text: String, highlight: Bool = false) {
         let lower = text.lowercased()
-        let level: LogLevel = (lower.hasPrefix("error") || lower.contains("失败") || lower.contains("异常"))
+        let level: LogLevel = (lower.hasPrefix("error") || lower.contains("失败") || lower.contains("异常") || lower.contains("不足"))
             ? .error
-            : (lower.hasPrefix("warning") ? .warning : .info)
+            : (lower.hasPrefix("warning") || lower.contains("限速") ? .warning : .info)
         appendLog(LogEntry(module: .patch, level: level, message: text))
     }
 

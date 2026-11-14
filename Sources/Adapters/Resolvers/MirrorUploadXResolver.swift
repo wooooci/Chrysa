@@ -25,16 +25,27 @@ package struct MirrorUploadXResolver: HostResolver {
         "优选分流 (约10s)"
     }
 
-    package func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult {
-        await Self.resolveMirrorUploadX(urlString: input, passwords: passwords)
+    package func resolveDetailed(
+        input: String,
+        url: URL,
+        passwords: [String],
+        settings: DownloadSettings
+    ) async -> HostResolutionResult {
+        await Self.resolveMirrorUploadX(urlString: input, passwords: passwords, settings: settings)
     }
 
-    package static func resolveMirrorUploadX(urlString: String, passwords: [String]) async -> HostResolutionResult {
+    package static func resolveMirrorUploadX(
+        urlString: String,
+        passwords: [String],
+        settings: DownloadSettings = DownloadSettings()
+    ) async -> HostResolutionResult {
         let ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:150.0) Gecko/20100101 Firefox/150.0"
-        guard let pageResp = await ResolverHTTPHelper.fetch(
+        let useProxy = ResolverHTTPHelper.effectiveUseProxy(policy: settings.proxyPolicy, defaultNeedsProxy: true)
+        guard let pageResp = await ResolverHTTPHelper.fetchWithPolicy(
             urlString: urlString,
             headers: ["User-Agent": ua],
-            useProxy: true,
+            policy: settings.proxyPolicy,
+            preferDirect: false,
             timeoutSeconds: 20
         ), let rawHTML = pageResp.bodyString, !rawHTML.isEmpty else {
             return HostResolutionResult(downloads: [], failureReason: "无法连接 MirrorUploadX")
@@ -65,12 +76,15 @@ package struct MirrorUploadXResolver: HostResolver {
         try? await Task.sleep(nanoseconds: UInt64((delaySec + 0.8) * 1_000_000_000))
 
         var lastFailure: String? = nil
+        var primaryResult: HostResolutionResult? = nil
+        var backupMirrors: [String] = []
+
         for (_, clickURL) in preferredClickURLs {
             guard let hdrResp = await ResolverHTTPHelper.fetch(
                 urlString: clickURL,
                 method: "HEAD",
                 headers: ["User-Agent": ua, "Referer": urlString],
-                useProxy: true,
+                useProxy: useProxy,
                 followRedirects: false,
                 timeoutSeconds: 15
             ) else { continue }
@@ -78,12 +92,26 @@ package struct MirrorUploadXResolver: HostResolver {
             if let loc = hdrResp.headers["location"],
                !loc.isEmpty,
                !loc.contains("mirroruploadx.com") {
-                let resolved = await HostResolverRegistry.resolveLinksDetailed(loc, passwords: passwords)
-                if !resolved.downloads.isEmpty {
-                    return resolved
+                if let primary = primaryResult {
+                    if primary.downloads.contains(where: { $0.originalURL != loc }) && !backupMirrors.contains(loc) {
+                        backupMirrors.append(loc)
+                    }
+                    if backupMirrors.count >= 3 { break }
+                    continue
                 }
-                lastFailure = resolved.failureReason ?? lastFailure
+
+                let resolved = await HostResolverRegistry.resolveLinksDetailed(loc, passwords: passwords, settings: settings)
+                if !resolved.downloads.isEmpty {
+                    primaryResult = resolved
+                } else {
+                    lastFailure = resolved.failureReason ?? lastFailure
+                }
             }
+        }
+
+        if let primaryResult {
+            let enriched = primaryResult.downloads.map { $0.appendingMirrors(backupMirrors) }
+            return HostResolutionResult(downloads: enriched, failureReason: primaryResult.failureReason, diagnostic: primaryResult.diagnostic)
         }
         return HostResolutionResult(downloads: [], failureReason: lastFailure ?? "下游分流全部失效")
     }

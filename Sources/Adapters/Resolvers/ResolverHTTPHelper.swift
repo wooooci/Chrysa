@@ -1,4 +1,20 @@
+import ChrysaCore
 import Foundation
+
+package enum ProxyRouteDecision: Sendable, Equatable {
+    case direct
+    case proxy(String)
+
+    package var useProxy: Bool {
+        if case .proxy = self { return true }
+        return false
+    }
+
+    package var proxyAddress: String? {
+        if case .proxy(let addr) = self { return addr }
+        return nil
+    }
+}
 
 package struct HTTPProbeResponse: Sendable {
     package let statusCode: Int
@@ -34,22 +50,50 @@ package struct HTTPProbeResponse: Sendable {
 }
 
 package enum ResolverHTTPHelper {
+    package static let defaultTimeoutSeconds: Int = 20
     package static let browserUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+    /// Returns a child process environment with HTTP/HTTPS/ALL proxy variables stripped so direct connections never inherit shell proxies.
+    package static func cleanedDirectEnvironment() -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        for key in ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "no_proxy", "NO_PROXY"] {
+            env.removeValue(forKey: key)
+        }
+        return env
+    }
+
+    package static func effectiveUseProxy(
+        policy: ProxyPolicy,
+        defaultNeedsProxy: Bool
+    ) -> Bool {
+        switch policy {
+        case .directOnly:
+            return false
+        case .systemProxy:
+            return ToolchainLocator.detectSystemProxy() != nil
+        case .smart:
+            guard ToolchainLocator.detectSystemProxy() != nil else { return false }
+            return defaultNeedsProxy
+        }
+    }
 
     package static func fetch(
         urlString: String,
         method: String = "GET",
         headers: [String: String] = [:],
         formBody: String? = nil,
+        formFields: [(String, String)]? = nil,
         useProxy: Bool,
         followRedirects: Bool = true,
         rangeHeader: String? = nil,
         cookieFilePath: String? = nil,
-        timeoutSeconds: Int = 25
+        timeoutSeconds: Int = defaultTimeoutSeconds,
+        connectTimeoutSeconds: Int = 8
     ) async -> HTTPProbeResponse? {
         var args: [String] = [
             "-sS",
             "-D", "-",
+            "--connect-timeout", "\(max(2, min(connectTimeoutSeconds, timeoutSeconds)))",
             "--max-time", "\(timeoutSeconds)",
             "-A", headers["User-Agent"] ?? browserUserAgent
         ]
@@ -85,7 +129,12 @@ package enum ResolverHTTPHelper {
             args.append("-H")
             args.append("\(key): \(value)")
         }
-        if let formBody {
+        if let formFields {
+            for (k, v) in formFields {
+                args.append("-F")
+                args.append("\(k)=\(v)")
+            }
+        } else if let formBody {
             args.append("--data")
             args.append(formBody)
         }
@@ -96,6 +145,7 @@ package enum ResolverHTTPHelper {
         guard let res = try? await ProcessSupervisor.shared.run(
             executable: "/usr/bin/curl",
             arguments: args,
+            environment: useProxy ? nil : cleanedDirectEnvironment(),
             captureOutput: true
         ) else {
             return nil
@@ -104,20 +154,193 @@ package enum ResolverHTTPHelper {
         return parseCurlDumpedOutput(res.outputData, fallbackURL: urlString)
     }
 
+    /// Unified resolver HTTP entry point respecting ProxyPolicy and automatic direct-first fallback under `.smart`.
+    package static func fetchWithPolicy(
+        urlString: String,
+        method: String = "GET",
+        headers: [String: String] = [:],
+        formBody: String? = nil,
+        formFields: [(String, String)]? = nil,
+        policy: ProxyPolicy,
+        preferDirect: Bool,
+        followRedirects: Bool = true,
+        rangeHeader: String? = nil,
+        cookieFilePath: String? = nil,
+        timeoutSeconds: Int = defaultTimeoutSeconds
+    ) async -> HTTPProbeResponse? {
+        let hasProxy = ToolchainLocator.detectSystemProxy() != nil
+        switch policy {
+        case .directOnly:
+            return await fetch(
+                urlString: urlString,
+                method: method,
+                headers: headers,
+                formBody: formBody,
+                formFields: formFields,
+                useProxy: false,
+                followRedirects: followRedirects,
+                rangeHeader: rangeHeader,
+                cookieFilePath: cookieFilePath,
+                timeoutSeconds: timeoutSeconds
+            )
+        case .systemProxy:
+            return await fetch(
+                urlString: urlString,
+                method: method,
+                headers: headers,
+                formBody: formBody,
+                formFields: formFields,
+                useProxy: hasProxy,
+                followRedirects: followRedirects,
+                rangeHeader: rangeHeader,
+                cookieFilePath: cookieFilePath,
+                timeoutSeconds: timeoutSeconds
+            )
+        case .smart:
+            if preferDirect || !hasProxy {
+                let directResp = await fetch(
+                    urlString: urlString,
+                    method: method,
+                    headers: headers,
+                    formBody: formBody,
+                    formFields: formFields,
+                    useProxy: false,
+                    followRedirects: followRedirects,
+                    rangeHeader: rangeHeader,
+                    cookieFilePath: cookieFilePath,
+                    timeoutSeconds: timeoutSeconds,
+                    connectTimeoutSeconds: 5
+                )
+                if let directResp, directResp.statusCode > 0 {
+                    return directResp
+                }
+                if hasProxy {
+                    return await fetch(
+                        urlString: urlString,
+                        method: method,
+                        headers: headers,
+                        formBody: formBody,
+                        formFields: formFields,
+                        useProxy: true,
+                        followRedirects: followRedirects,
+                        rangeHeader: rangeHeader,
+                        cookieFilePath: cookieFilePath,
+                        timeoutSeconds: timeoutSeconds
+                    )
+                }
+                return directResp
+            } else {
+                let proxyResp = await fetch(
+                    urlString: urlString,
+                    method: method,
+                    headers: headers,
+                    formBody: formBody,
+                    formFields: formFields,
+                    useProxy: true,
+                    followRedirects: followRedirects,
+                    rangeHeader: rangeHeader,
+                    cookieFilePath: cookieFilePath,
+                    timeoutSeconds: timeoutSeconds
+                )
+                if let proxyResp, proxyResp.statusCode > 0 {
+                    return proxyResp
+                }
+                return await fetch(
+                    urlString: urlString,
+                    method: method,
+                    headers: headers,
+                    formBody: formBody,
+                    formFields: formFields,
+                    useProxy: false,
+                    followRedirects: followRedirects,
+                    rangeHeader: rangeHeader,
+                    cookieFilePath: cookieFilePath,
+                    timeoutSeconds: timeoutSeconds,
+                    connectTimeoutSeconds: 5
+                )
+            }
+        }
+    }
+
+    /// Probes CDN connectivity prior to downloading so direct-reachable hosts never waste proxy traffic or shared IP quota.
+    package static func resolveProxyRoute(
+        for urlString: String,
+        policy: ProxyPolicy,
+        headers: [String: String] = [:],
+        timeoutSeconds: Int = 5
+    ) async -> (route: ProxyRouteDecision, probe: HTTPProbeResponse?, note: String) {
+        let sysProxy = ToolchainLocator.detectSystemProxy()
+        switch policy {
+        case .directOnly:
+            let probe = await probeDirectURL(urlString, headers: headers, useProxy: false, timeoutSeconds: timeoutSeconds)
+            return (.direct, probe, "直连通道")
+        case .systemProxy:
+            if let sysProxy {
+                let probe = await probeDirectURL(urlString, headers: headers, useProxy: true, timeoutSeconds: timeoutSeconds)
+                return (.proxy(sysProxy), probe, "系统代理 \(sysProxy)")
+            }
+            let probe = await probeDirectURL(urlString, headers: headers, useProxy: false, timeoutSeconds: timeoutSeconds)
+            return (.direct, probe, "直连通道")
+        case .smart:
+            let directProbe = await probeDirectURL(
+                urlString,
+                headers: headers,
+                useProxy: false,
+                timeoutSeconds: timeoutSeconds
+            )
+            if let directProbe, directProbe.statusCode > 0, directProbe.statusCode < 500 {
+                return (.direct, directProbe, "直连探测畅通，走 --noproxy 直连")
+            }
+            if let sysProxy {
+                let proxyProbe = await probeDirectURL(
+                    urlString,
+                    headers: headers,
+                    useProxy: true,
+                    timeoutSeconds: timeoutSeconds
+                )
+                if let proxyProbe, proxyProbe.statusCode > 0 {
+                    return (.proxy(sysProxy), proxyProbe, "直连不可达，已回退系统代理 \(sysProxy)")
+                }
+                return (.proxy(sysProxy), directProbe, "直连超时，回退系统代理 \(sysProxy)")
+            }
+            return (.direct, directProbe, "直连通道")
+        }
+    }
+
+    package static func cookieHeader(fromCookieFile path: String) -> String? {
+        guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+        var pairs: [String] = []
+        for line in raw.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, (!trimmed.hasPrefix("#") || trimmed.hasPrefix("#HttpOnly_")) else { continue }
+            let cols = trimmed.components(separatedBy: "\t")
+            guard cols.count >= 7 else { continue }
+            let name = cols[5].trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = cols[6].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty {
+                pairs.append("\(name)=\(value)")
+            }
+        }
+        return pairs.isEmpty ? nil : pairs.joined(separator: "; ")
+    }
+
     package static func probeDirectURL(
         _ urlString: String,
         headers: [String: String] = [:],
-        useProxy: Bool
+        useProxy: Bool,
+        timeoutSeconds: Int = 12
     ) async -> HTTPProbeResponse? {
+        let connectCap = min(4, max(2, timeoutSeconds))
         if let head = await fetch(
             urlString: urlString,
             method: "HEAD",
             headers: headers,
             useProxy: useProxy,
             followRedirects: true,
-            timeoutSeconds: 15
-        ), head.statusCode > 0, head.statusCode < 400,
-           (head.contentDispositionFilename != nil || head.contentLength != nil) {
+            timeoutSeconds: timeoutSeconds,
+            connectTimeoutSeconds: connectCap
+        ), head.statusCode > 0,
+           (head.statusCode >= 400 || head.contentDispositionFilename != nil || head.contentLength != nil) {
             return head
         }
 
@@ -128,7 +351,8 @@ package enum ResolverHTTPHelper {
             useProxy: useProxy,
             followRedirects: true,
             rangeHeader: "bytes=0-0",
-            timeoutSeconds: 15
+            timeoutSeconds: timeoutSeconds,
+            connectTimeoutSeconds: connectCap
         )
     }
 
@@ -379,6 +603,34 @@ package enum ResolverHTTPHelper {
 
         if looksHTML || looksJSONError {
             return classifyFailure(statusCode: 0, contentType: "text/html", body: text) ?? "含网页盾·请用浏览器下载"
+        }
+        return nil
+    }
+
+    package static func headerDictionary(from headerLines: [String]) -> [String: String] {
+        var dict: [String: String] = [:]
+        for line in headerLines {
+            guard let idx = line.firstIndex(of: ":") else { continue }
+            let key = String(line[..<idx]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let val = String(line[line.index(after: idx)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !key.isEmpty {
+                dict[key] = val
+            }
+        }
+        return dict
+    }
+
+    package static func validateDownloadProbe(_ probe: HTTPProbeResponse?) -> String? {
+        guard let probe else { return nil }
+        if probe.statusCode >= 400 {
+            return classifyFailure(statusCode: probe.statusCode, contentType: probe.contentType, body: probe.bodyString)
+                ?? "链接已失效"
+        }
+        if let ct = probe.contentType?.lowercased(),
+           ct.contains("text/html"),
+           probe.contentDispositionFilename == nil {
+            return classifyFailure(statusCode: probe.statusCode, contentType: probe.contentType, body: probe.bodyString)
+                ?? "含网页盾·请用浏览器下载"
         }
         return nil
     }

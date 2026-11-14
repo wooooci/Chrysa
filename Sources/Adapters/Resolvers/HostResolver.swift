@@ -10,7 +10,9 @@ package protocol HostResolver: Sendable {
     func initialDownloadMessage(for url: URL) -> String?
     func resolve(input: String, url: URL, passwords: [String]) async -> [ResolvedDownload]
     func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult
+    func resolveDetailed(input: String, url: URL, passwords: [String], settings: DownloadSettings) async -> HostResolutionResult
     func refresh(item: ResolvedDownload, passwords: [String]) async -> ResolvedDownload
+    func refresh(item: ResolvedDownload, passwords: [String], settings: DownloadSettings) async -> ResolvedDownload
     func proxyNeeds() -> Bool
     func proxyNeeds(for url: URL) -> Bool
     func maxThreads() -> Int
@@ -26,24 +28,41 @@ package extension HostResolver {
     func maxThreads() -> Int { 16 }
 
     func resolve(input: String, url: URL, passwords: [String]) async -> [ResolvedDownload] {
-        await resolveDetailed(input: input, url: url, passwords: passwords).downloads
+        await resolveDetailed(input: input, url: url, passwords: passwords, settings: DownloadSettings()).downloads
     }
 
     func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult {
-        let items = await resolve(input: input, url: url, passwords: passwords)
-        return HostResolutionResult(downloads: items, failureReason: items.isEmpty ? "无法获取直链" : nil)
+        await resolveDetailed(input: input, url: url, passwords: passwords, settings: DownloadSettings())
+    }
+
+    func resolveDetailed(input: String, url: URL, passwords: [String], settings: DownloadSettings) async -> HostResolutionResult {
+        HostResolutionResult(downloads: [], failureReason: "无法获取直链")
     }
 
     func refresh(item: ResolvedDownload, passwords: [String]) async -> ResolvedDownload {
+        await refresh(item: item, passwords: passwords, settings: DownloadSettings())
+    }
+
+    func refresh(item: ResolvedDownload, passwords: [String], settings: DownloadSettings) async -> ResolvedDownload {
         guard !item.originalURL.isEmpty,
               let url = URL(string: item.originalURL) else {
             return item
         }
-        let refreshed = await resolveDetailed(input: item.originalURL, url: url, passwords: passwords).downloads
+        let refreshed = await resolveDetailed(
+            input: item.originalURL,
+            url: url,
+            passwords: passwords,
+            settings: settings
+        ).downloads
         if let match = refreshed.first(where: { $0.suggestedFilename == item.suggestedFilename }) ?? refreshed.first {
+            var mergedMirrors = item.mirrorURLs
+            for m in match.mirrorURLs where m != item.originalURL && !mergedMirrors.contains(m) {
+                mergedMirrors.append(m)
+            }
             return ResolvedDownload(
                 originalURL: item.originalURL,
                 finalURL: match.finalURL,
+                mirrorURLs: mergedMirrors,
                 headers: match.headers,
                 suggestedFilename: item.suggestedFilename ?? match.suggestedFilename,
                 useChunkedRange: match.useChunkedRange,
@@ -52,7 +71,8 @@ package extension HostResolver {
                 mailRuWeblink: match.mailRuWeblink ?? item.mailRuWeblink,
                 maxThreads: match.maxThreads ?? item.maxThreads,
                 needsProxy: match.needsProxy ?? item.needsProxy,
-                resolverID: match.resolverID ?? item.resolverID
+                resolverID: match.resolverID ?? item.resolverID,
+                rateLimitNote: match.rateLimitNote
             )
         }
         return item
@@ -75,15 +95,16 @@ package struct UnsupportedHostResolver: HostResolver {
         blockedHosts.contains { host == $0.domain || host.hasSuffix(".\($0.domain)") }
     }
 
-    package func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult {
+    package func resolveDetailed(
+        input: String,
+        url: URL,
+        passwords: [String],
+        settings: DownloadSettings
+    ) async -> HostResolutionResult {
         let host = url.host?.lowercased() ?? ""
         let reason = blockedHosts.first { host == $0.domain || host.hasSuffix(".\($0.domain)") }?.reason
             ?? "不支持该网盘"
         return HostResolutionResult(downloads: [], failureReason: reason)
-    }
-
-    package func resolve(input: String, url: URL, passwords: [String]) async -> [ResolvedDownload] {
-        []
     }
 }
 
@@ -97,6 +118,10 @@ package enum HostResolverRegistry {
         VikingFileResolver(),
         PixeldrainResolver(),
         BuzzheavierResolver(),
+        DataNodesResolver(),
+        QiwiResolver(),
+        WorkuploadResolver(),
+        KrakenFilesResolver(),
         MediaFireResolver(),
         GoogleDriveResolver(),
         FuckingFastResolver(),
@@ -169,13 +194,18 @@ package enum HostResolverRegistry {
         return nil
     }
 
-    package static func resolveLinks(_ input: String, passwords: [String] = AppSettings.defaultPasswords) async -> [ResolvedDownload] {
-        await resolveLinksDetailed(input, passwords: passwords).downloads
+    package static func resolveLinks(
+        _ input: String,
+        passwords: [String] = AppSettings.defaultPasswords,
+        settings: DownloadSettings = DownloadSettings()
+    ) async -> [ResolvedDownload] {
+        await resolveLinksDetailed(input, passwords: passwords, settings: settings).downloads
     }
 
     package static func resolveLinksDetailed(
         _ input: String,
-        passwords: [String] = AppSettings.defaultPasswords
+        passwords: [String] = AppSettings.defaultPasswords,
+        settings: DownloadSettings = DownloadSettings()
     ) async -> HostResolutionResult {
         guard let url = URL(string: input), let host = url.host?.lowercased() else {
             return HostResolutionResult(downloads: [], failureReason: "链接格式无效")
@@ -198,12 +228,17 @@ package enum HostResolverRegistry {
             ])
         }
 
+        if let debridItem = await DebridAccelerator.tryUnrestrict(originalURL: input, url: url, settings: settings) {
+            return HostResolutionResult(downloads: [debridItem])
+        }
+
         for plugin in plugins where plugin.canHandle(host: host, url: url) {
-            let res = await plugin.resolveDetailed(input: input, url: url, passwords: passwords)
+            let res = await plugin.resolveDetailed(input: input, url: url, passwords: passwords, settings: settings)
             let enriched = res.downloads.map { item in
                 ResolvedDownload(
                     originalURL: item.originalURL,
                     finalURL: item.finalURL,
+                    mirrorURLs: item.mirrorURLs,
                     headers: item.headers,
                     suggestedFilename: item.suggestedFilename,
                     useChunkedRange: item.useChunkedRange,
@@ -212,7 +247,8 @@ package enum HostResolverRegistry {
                     mailRuWeblink: item.mailRuWeblink,
                     maxThreads: item.maxThreads ?? plugin.maxThreads(),
                     needsProxy: item.needsProxy ?? plugin.proxyNeeds(for: url),
-                    resolverID: item.resolverID ?? plugin.id
+                    resolverID: item.resolverID ?? plugin.id,
+                    rateLimitNote: item.rateLimitNote
                 )
             }
             return HostResolutionResult(
@@ -222,13 +258,18 @@ package enum HostResolverRegistry {
             )
         }
 
-        return await resolveBareDirectURL(input: input, url: url)
+        return await resolveBareDirectURL(input: input, url: url, settings: settings)
     }
 
-    private static func resolveBareDirectURL(input: String, url: URL) async -> HostResolutionResult {
+    private static func resolveBareDirectURL(
+        input: String,
+        url: URL,
+        settings: DownloadSettings = DownloadSettings()
+    ) async -> HostResolutionResult {
         let lastComp = url.lastPathComponent
         let hasValidExt = !lastComp.isEmpty && lastComp != "/" && ResolverHTTPHelper.hasKnownBinaryOrArchiveExtension(lastComp)
-        let needsProxy = proxyNeeds(for: input)
+        let defaultNeedsProxy = proxyNeeds(for: input)
+        let useProxyProbe = ResolverHTTPHelper.effectiveUseProxy(policy: settings.proxyPolicy, defaultNeedsProxy: defaultNeedsProxy)
 
         if hasValidExt {
             return HostResolutionResult(downloads: [
@@ -237,31 +278,16 @@ package enum HostResolverRegistry {
                     finalURL: input,
                     headers: [],
                     suggestedFilename: lastComp,
-                    needsProxy: needsProxy,
+                    needsProxy: defaultNeedsProxy,
                     resolverID: "direct"
                 )
             ])
         }
 
         // Bare CDN link without valid file extension in path -> HEAD / Range: bytes=0-0 probe
-        if let probe = await ResolverHTTPHelper.probeDirectURL(input, useProxy: needsProxy) {
-            if probe.statusCode >= 400 {
-                let reason = ResolverHTTPHelper.classifyFailure(
-                    statusCode: probe.statusCode,
-                    contentType: probe.contentType,
-                    body: probe.bodyString
-                ) ?? "链接已失效"
-                return HostResolutionResult(downloads: [], failureReason: reason)
-            }
-            if let ct = probe.contentType?.lowercased(),
-               ct.contains("text/html"),
-               probe.contentDispositionFilename == nil {
-                let reason = ResolverHTTPHelper.classifyFailure(
-                    statusCode: probe.statusCode,
-                    contentType: probe.contentType,
-                    body: probe.bodyString
-                ) ?? "含网页盾·请用浏览器下载"
-                return HostResolutionResult(downloads: [], failureReason: reason)
+        if let probe = await ResolverHTTPHelper.probeDirectURL(input, useProxy: useProxyProbe) {
+            if let failure = ResolverHTTPHelper.validateDownloadProbe(probe) {
+                return HostResolutionResult(downloads: [], failureReason: failure)
             }
             let finalURLObj = URL(string: probe.finalURL)
             let finalPathName = finalURLObj?.lastPathComponent
@@ -287,14 +313,18 @@ package enum HostResolverRegistry {
                 finalURL: input,
                 headers: [],
                 suggestedFilename: lastComp.isEmpty || lastComp == "/" ? nil : lastComp,
-                needsProxy: needsProxy,
+                needsProxy: defaultNeedsProxy,
                 resolverID: "direct"
             )
         ])
     }
 
-    package static func resolveSingleLink(_ input: String, passwords: [String] = AppSettings.defaultPasswords) async -> ResolvedDownload {
-        if let first = await resolveLinks(input, passwords: passwords).first {
+    package static func resolveSingleLink(
+        _ input: String,
+        passwords: [String] = AppSettings.defaultPasswords,
+        settings: DownloadSettings = DownloadSettings()
+    ) async -> ResolvedDownload {
+        if let first = await resolveLinks(input, passwords: passwords, settings: settings).first {
             return first
         }
         let fallbackName = URL(string: input)?.lastPathComponent
@@ -303,16 +333,22 @@ package enum HostResolverRegistry {
 
     package static func refreshDownload(
         _ item: ResolvedDownload,
-        passwords: [String] = AppSettings.defaultPasswords
+        passwords: [String] = AppSettings.defaultPasswords,
+        settings: DownloadSettings = DownloadSettings()
     ) async -> ResolvedDownload {
+        if !item.originalURL.isEmpty,
+           let origURL = URL(string: item.originalURL),
+           let debrid = await DebridAccelerator.tryUnrestrict(originalURL: item.originalURL, url: origURL, settings: settings) {
+            return debrid.appendingMirrors(item.mirrorURLs)
+        }
         if let resolverID = item.resolverID,
            let plugin = plugins.first(where: { $0.id == resolverID }) {
-            return await plugin.refresh(item: item, passwords: passwords)
+            return await plugin.refresh(item: item, passwords: passwords, settings: settings)
         }
         if let url = URL(string: item.originalURL),
            let host = url.host?.lowercased(),
            let plugin = plugins.first(where: { $0.canHandle(host: host, url: url) || $0.matchesCDNHost(host) }) {
-            return await plugin.refresh(item: item, passwords: passwords)
+            return await plugin.refresh(item: item, passwords: passwords, settings: settings)
         }
         return item
     }

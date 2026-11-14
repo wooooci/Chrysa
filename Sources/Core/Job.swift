@@ -18,7 +18,7 @@ package enum JobStatus: String, Codable, Sendable {
 
 package struct DownloadPart: Identifiable, Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
-        case id, filename, originalURL, resolvedURL, headers, status, progress
+        case id, filename, originalURL, resolvedURL, mirrorURLs, headers, status, progress
         case downloadedBytes, totalBytes, speedBytesPerSec, message, localPath
         case subDirectory, useChunkedRange, mailRuWeblink, maxThreads, needsProxy, resolverID
     }
@@ -27,6 +27,7 @@ package struct DownloadPart: Identifiable, Codable, Equatable, Sendable {
     package var filename: String
     package var originalURL: String
     package var resolvedURL: String
+    package var mirrorURLs: [String]
     package var headers: [String]
     package var status: JobStatus
     package var progress: Double
@@ -47,6 +48,7 @@ package struct DownloadPart: Identifiable, Codable, Equatable, Sendable {
         filename: String,
         originalURL: String,
         resolvedURL: String,
+        mirrorURLs: [String] = [],
         headers: [String] = [],
         status: JobStatus = .queued,
         progress: Double = 0,
@@ -66,6 +68,7 @@ package struct DownloadPart: Identifiable, Codable, Equatable, Sendable {
         self.filename = filename
         self.originalURL = originalURL
         self.resolvedURL = resolvedURL
+        self.mirrorURLs = mirrorURLs
         self.headers = headers
         self.status = status
         self.progress = Job.clampedProgress(progress)
@@ -88,6 +91,7 @@ package struct DownloadPart: Identifiable, Codable, Equatable, Sendable {
         filename = try container.decodeIfPresent(String.self, forKey: .filename) ?? "part"
         originalURL = try container.decodeIfPresent(String.self, forKey: .originalURL) ?? ""
         resolvedURL = try container.decodeIfPresent(String.self, forKey: .resolvedURL) ?? originalURL
+        mirrorURLs = try container.decodeIfPresent([String].self, forKey: .mirrorURLs) ?? []
         headers = try container.decodeIfPresent([String].self, forKey: .headers) ?? []
         status = try container.decodeIfPresent(JobStatus.self, forKey: .status) ?? .queued
         progress = Job.clampedProgress(try container.decodeIfPresent(Double.self, forKey: .progress) ?? 0)
@@ -128,7 +132,7 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, kind, title, status, progress, source, input, output, message, pill
         case rightText, appID, isArchived, expanded, checklist, logs, listPosition, createdAt, updatedAt
-        case passwordHint, downloadParts
+        case passwordHint, downloadParts, mirrorURLs
     }
     package let id: UUID
     package var kind: JobKind
@@ -159,6 +163,7 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
     package var updatedAt: Date
     package var passwordHint: String?
     package var downloadParts: [DownloadPart]?
+    package var mirrorURLs: [String]
     package init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
@@ -183,7 +188,8 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
             createdAt: createdAt,
             updatedAt: try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt,
             passwordHint: try container.decodeIfPresent(String.self, forKey: .passwordHint),
-            downloadParts: try container.decodeIfPresent([DownloadPart].self, forKey: .downloadParts)
+            downloadParts: try container.decodeIfPresent([DownloadPart].self, forKey: .downloadParts),
+            mirrorURLs: try container.decodeIfPresent([String].self, forKey: .mirrorURLs) ?? []
         )
     }
 
@@ -211,6 +217,9 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
         try container.encode(updatedAt, forKey: .updatedAt)
         try container.encodeIfPresent(passwordHint, forKey: .passwordHint)
         try container.encodeIfPresent(downloadParts, forKey: .downloadParts)
+        if !mirrorURLs.isEmpty {
+            try container.encode(mirrorURLs, forKey: .mirrorURLs)
+        }
     }
     package init(
         id: UUID = UUID(),
@@ -233,7 +242,8 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
         createdAt: Date = Date(),
         updatedAt: Date? = nil,
         passwordHint: String? = nil,
-        downloadParts: [DownloadPart]? = nil
+        downloadParts: [DownloadPart]? = nil,
+        mirrorURLs: [String] = []
     ) {
         self.id = id
         self.kind = kind
@@ -255,6 +265,7 @@ package struct Job: Identifiable, Codable, Equatable, Sendable {
         self.updatedAt = updatedAt ?? createdAt
         self.passwordHint = passwordHint
         self.downloadParts = downloadParts
+        self.mirrorURLs = mirrorURLs
     }
 
     package mutating func appendBoundedLog(_ entry: LogEntry) {

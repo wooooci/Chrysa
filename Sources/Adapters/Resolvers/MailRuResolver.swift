@@ -14,24 +14,42 @@ package struct MailRuResolver: HostResolver {
     }
     package func proxyNeeds() -> Bool { false }
 
-    package func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult {
-        let items = await Self.resolveMailRu(input: input, url: url)
+    package func resolveDetailed(
+        input: String,
+        url: URL,
+        passwords: [String],
+        settings: DownloadSettings
+    ) async -> HostResolutionResult {
+        let items = await Self.resolveMailRu(input: input, url: url, policy: settings.proxyPolicy)
         return HostResolutionResult(downloads: items, failureReason: items.isEmpty ? "链接已失效" : nil)
     }
 
-    package func refresh(item: ResolvedDownload, passwords: [String]) async -> ResolvedDownload {
-        await Self.refreshURLIfNeeded(item)
+    package func refresh(
+        item: ResolvedDownload,
+        passwords: [String],
+        settings: DownloadSettings
+    ) async -> ResolvedDownload {
+        await Self.refreshURLIfNeeded(item, policy: settings.proxyPolicy)
     }
-    package static func resolveMailRu(input: String, url: URL) async -> [ResolvedDownload] {
+
+    package static func resolveMailRu(
+        input: String,
+        url: URL,
+        policy: ProxyPolicy = .smart
+    ) async -> [ResolvedDownload] {
         let comps = url.pathComponents.filter { $0 != "/" }
         guard let pubIdx = comps.firstIndex(of: "public"), comps.count > pubIdx + 1 else {
             return []
         }
         let weblink = comps[(pubIdx + 1)...].joined(separator: "/")
 
-        guard let dispURL = URL(string: "https://cloud.mail.ru/api/v2/dispatcher"),
-              let (dispData, _) = try? await URLSession.shared.data(from: dispURL),
-              let dispJSON = try? JSONSerialization.jsonObject(with: dispData) as? [String: Any],
+        guard let dispResp = await ResolverHTTPHelper.fetchWithPolicy(
+            urlString: "https://cloud.mail.ru/api/v2/dispatcher",
+            policy: policy,
+            preferDirect: true,
+            timeoutSeconds: 15
+        ),
+              let dispJSON = try? JSONSerialization.jsonObject(with: dispResp.bodyData) as? [String: Any],
               let dispBody = dispJSON["body"] as? [String: Any],
               let weblinkGet = dispBody["weblink_get"] as? [[String: Any]],
               let baseURL = weblinkGet.first?["url"] as? String else {
@@ -39,9 +57,13 @@ package struct MailRuResolver: HostResolver {
         }
 
         let encodedQuery = weblink.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? weblink
-        if let folderURL = URL(string: "https://cloud.mail.ru/api/v2/folder?weblink=\(encodedQuery)"),
-           let (fData, _) = try? await URLSession.shared.data(from: folderURL),
-           let fJSON = try? JSONSerialization.jsonObject(with: fData) as? [String: Any],
+        if let fResp = await ResolverHTTPHelper.fetchWithPolicy(
+            urlString: "https://cloud.mail.ru/api/v2/folder?weblink=\(encodedQuery)",
+            policy: policy,
+            preferDirect: true,
+            timeoutSeconds: 20
+        ),
+           let fJSON = try? JSONSerialization.jsonObject(with: fResp.bodyData) as? [String: Any],
            let fBody = fJSON["body"] as? [String: Any],
            let list = fBody["list"] as? [[String: Any]], !list.isEmpty {
             let folderName = (fBody["name"] as? String) ?? "mailru_folder"
@@ -90,9 +112,13 @@ package struct MailRuResolver: HostResolver {
             }
         }
 
-        if let fileURL = URL(string: "https://cloud.mail.ru/api/v2/file?weblink=\(encodedQuery)"),
-           let (fiData, _) = try? await URLSession.shared.data(from: fileURL),
-           let fiJSON = try? JSONSerialization.jsonObject(with: fiData) as? [String: Any],
+        if let fiResp = await ResolverHTTPHelper.fetchWithPolicy(
+            urlString: "https://cloud.mail.ru/api/v2/file?weblink=\(encodedQuery)",
+            policy: policy,
+            preferDirect: true,
+            timeoutSeconds: 20
+        ),
+           let fiJSON = try? JSONSerialization.jsonObject(with: fiResp.bodyData) as? [String: Any],
            let fiBody = fiJSON["body"] as? [String: Any],
            let name = fiBody["name"] as? String {
             let sizeVal = (fiBody["size"] as? NSNumber)?.int64Value
@@ -117,11 +143,18 @@ package struct MailRuResolver: HostResolver {
         return []
     }
 
-    package static func refreshURLIfNeeded(_ item: ResolvedDownload) async -> ResolvedDownload {
+    package static func refreshURLIfNeeded(
+        _ item: ResolvedDownload,
+        policy: ProxyPolicy = .smart
+    ) async -> ResolvedDownload {
         guard let itemWeblink = item.mailRuWeblink,
-              let dispURL = URL(string: "https://cloud.mail.ru/api/v2/dispatcher"),
-              let (dispData, _) = try? await URLSession.shared.data(from: dispURL),
-              let dispJSON = try? JSONSerialization.jsonObject(with: dispData) as? [String: Any],
+              let dispResp = await ResolverHTTPHelper.fetchWithPolicy(
+                urlString: "https://cloud.mail.ru/api/v2/dispatcher",
+                policy: policy,
+                preferDirect: true,
+                timeoutSeconds: 15
+              ),
+              let dispJSON = try? JSONSerialization.jsonObject(with: dispResp.bodyData) as? [String: Any],
               let dispBody = dispJSON["body"] as? [String: Any],
               let weblinkGet = dispBody["weblink_get"] as? [[String: Any]],
               let baseURL = weblinkGet.first?["url"] as? String else {
@@ -135,12 +168,17 @@ package struct MailRuResolver: HostResolver {
         return ResolvedDownload(
             originalURL: item.originalURL,
             finalURL: freshDirectURL,
+            mirrorURLs: item.mirrorURLs,
             headers: item.headers,
             suggestedFilename: item.suggestedFilename,
             useChunkedRange: item.useChunkedRange,
             totalSize: item.totalSize,
             subDirectory: item.subDirectory,
-            mailRuWeblink: item.mailRuWeblink
+            mailRuWeblink: item.mailRuWeblink,
+            maxThreads: item.maxThreads,
+            needsProxy: item.needsProxy,
+            resolverID: item.resolverID,
+            rateLimitNote: item.rateLimitNote
         )
     }
 }

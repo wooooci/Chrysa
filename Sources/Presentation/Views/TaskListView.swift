@@ -123,10 +123,19 @@ struct TaskListSectionView: View {
     let isSnapshotMode: Bool
     @State private var pendingDeletion: PendingDeletion?
     @Environment(\.appTheme) private var theme
-    private struct PendingDeletion: Identifiable {
-        let id = UUID()
+    private struct PendingDeletion {
         let task: StudioTask
         let deleteLocalFile: Bool
+
+        var alertTitle: String {
+            deleteLocalFile ? "删除记录及本地文件？" : "删除记录？"
+        }
+
+        var alertMessage: String {
+            deleteLocalFile
+                ? "仅允许删除下载目录内的普通文件；游戏目录、容器和目录不会被删除。"
+                : "这只会移除任务记录，不会删除本地文件。"
+        }
     }
 
     var body: some View {
@@ -142,24 +151,25 @@ struct TaskListSectionView: View {
                 }
             }
         }
-        .alert(item: $pendingDeletion) { pending in
-            Alert(
-                title: Text(pending.deleteLocalFile ? "删除记录及本地文件？" : "删除记录？"),
-                message: Text(pending.deleteLocalFile
-                    ? "仅允许删除下载目录内的普通文件；游戏目录、容器和目录不会被删除。"
-                    : "这只会移除任务记录，不会删除本地文件。"),
-                primaryButton: .destructive(Text("删除")) {
-                    vm.deleteTask(pending.task, deleteLocalFile: pending.deleteLocalFile)
-                },
-                secondaryButton: .cancel()
-            )
+        // Avoid legacy `.alert(item:)` here because ancestor `.alert(item:)` modifiers on macOS swallow child alerts.
+        .alert(
+            pendingDeletion?.alertTitle ?? "删除记录？",
+            isPresented: $pendingDeletion.isPresent(),
+            presenting: pendingDeletion
+        ) { pending in
+            Button("删除", role: .destructive) {
+                vm.deleteTask(pending.task, deleteLocalFile: pending.deleteLocalFile)
+            }
+            Button("取消", role: .cancel) {}
+        } message: { pending in
+            Text(pending.alertMessage)
         }
     }
 
     private var topDropZone: some View {
         HStack(spacing: 10) {
             if vm.activeTab == .download && !isSnapshotMode {
-                TextField("粘贴网盘 / 直链 / 多行分卷文本，或拖入 .txt 链接列表...", text: $vm.urlInput, axis: .vertical)
+                TextField("粘贴链接或拖入 .txt 列表...", text: $vm.urlInput, axis: .vertical)
                     .lineLimit(1...3)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12.5))
@@ -205,9 +215,9 @@ struct TaskListSectionView: View {
 
     private var activeTabPlaceholder: String {
         switch vm.activeTab {
-        case .download: return "粘贴下载链接，或将 .txt 链接列表拖入此处..."
-        case .unpack:   return "拖入 .7z / .rar / .zip 压缩包，或点击选择文件..."
-        case .patch, .launch, .settings: return "拖入游戏文件夹 / .exe，或点击选择本地目录..."
+        case .download: return "粘贴下载链接或拖入 .txt 列表..."
+        case .unpack:   return "拖入压缩包或点击添加文件..."
+        case .patch, .launch, .settings: return "拖入游戏目录 / .exe 或点击选择..."
         }
     }
     private var activeTabActionTitle: String {
@@ -238,7 +248,7 @@ struct TaskListSectionView: View {
                                 .frame(width: 16, height: 16, alignment: .center)
                         }
                         .buttonStyle(.plain)
-                        .help(row.isArchived ? "点击取消归档" : "点击归档该项目")
+                        .help(row.isArchived ? "取消归档" : "归档")
 
                         Text(row.title)
                             .font(.system(size: 13.5, weight: row.expanded ? .semibold : .regular))
@@ -255,93 +265,29 @@ struct TaskListSectionView: View {
                             )
                         }
 
-                        Spacer()
+                        Spacer(minLength: 8)
 
-                        if case .failed = row.status {
-                            Button(action: { vm.retryTask(row) }) {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "arrow.clockwise")
-                                        .font(.system(size: 10, weight: .semibold))
-                                    Text("重试")
-                                        .font(.system(size: 11, weight: .semibold))
-                                }
-                                .foregroundColor(theme.accent)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 2)
-                                .background(
-                                    Capsule().fill(theme.accent.opacity(0.10))
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        } else if case .paused = row.status {
-                            Button(action: { vm.resumeTask(row) }) {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "play.fill")
-                                        .font(.system(size: 9, weight: .semibold))
-                                    Text("继续")
-                                        .font(.system(size: 11, weight: .semibold))
-                                }
-                                .foregroundColor(theme.accent)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 2)
-                                .background(
-                                    Capsule().fill(theme.accent.opacity(0.10))
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        } else if case .running = row.status {
-                            if vm.activeTab == .download {
-                                Button(action: { vm.pauseTask(row) }) {
-                                    HStack(spacing: 3) {
-                                        Image(systemName: "pause.fill")
-                                            .font(.system(size: 9, weight: .semibold))
-                                        Text("暂停")
-                                            .font(.system(size: 11, weight: .semibold))
-                                    }
-                                    .foregroundColor(.t3TextSub)
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 2)
-                                    .background(
-                                        Capsule().fill(Color.t3TopBoxBg)
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                                .help("暂停下载并保留续传进度")
-                            } else {
-                                Button(action: { vm.stopTask(row) }) {
-                                    Image(systemName: "stop.circle")
-                                        .font(.system(size: 13))
-                                        .foregroundColor(.t3TextMuted)
-                                }
-                                .buttonStyle(.plain)
-                                .help("停止任务")
-                            }
-                        } else if case .locked = row.status {
-                            Button(action: { vm.stopTask(row) }) {
-                                Image(systemName: "stop.circle")
-                                    .font(.system(size: 13))
-                                    .foregroundColor(.t3TextMuted)
-                            }
-                            .buttonStyle(.plain)
-                            .help("停止任务")
-                        }
+                        HStack(alignment: .center, spacing: 4) {
+                            Text(rowRightText(row))
+                                .font(.system(size: 11.5, weight: .regular))
+                                .monospacedDigit()
+                                .foregroundColor(.t3TextMuted)
+                                .lineLimit(1)
+                                .padding(.trailing, 4)
 
-                        Text(vm.activeTab == .patch && row.status == .done && row.rightText == "▶ 启动" ? "已入库" : row.rightText)
-                            .font(.system(size: 11.5, weight: .regular, design: .monospaced))
-                            .foregroundColor(.t3TextMuted)
+                            rowActionSlot(for: row)
+                                .frame(width: 24, height: 24, alignment: .center)
 
-                        if !isSnapshotMode {
-                            Menu {
-                                taskMenuItems(for: row)
-                            } label: {
-                                Image(systemName: "ellipsis")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(.t3TextMuted)
-                                    .frame(width: 20, height: 20)
-                                    .contentShape(Rectangle())
+                            if !isSnapshotMode {
+                                Menu {
+                                    taskMenuItems(for: row)
+                                } label: {
+                                    TaskRowMenuIconLabel()
+                                }
+                                .menuStyle(.borderlessButton)
+                                .fixedSize()
+                                .help("更多操作")
                             }
-                            .menuStyle(.borderlessButton)
-                            .fixedSize()
                         }
                     }
                     .padding(.vertical, 6)
@@ -377,6 +323,63 @@ struct TaskListSectionView: View {
         }
     }
 
+    private func rowRightText(_ row: StudioTask) -> String {
+        if vm.activeTab == .patch && row.status == .done && row.rightText == "▶ 启动" {
+            return "已入库"
+        }
+        return row.rightText
+    }
+
+    @ViewBuilder
+    private func rowActionSlot(for row: StudioTask) -> some View {
+        switch row.status {
+        case .failed:
+            TaskRowActionIconButton(
+                systemName: "arrow.clockwise",
+                tint: theme.accent,
+                tooltip: "重试"
+            ) {
+                vm.retryTask(row)
+            }
+        case .paused:
+            TaskRowActionIconButton(
+                systemName: "play",
+                tint: theme.accent,
+                tooltip: "继续"
+            ) {
+                vm.resumeTask(row)
+            }
+        case .running:
+            if vm.activeTab == .download {
+                TaskRowActionIconButton(
+                    systemName: "pause",
+                    tint: .t3TextMain,
+                    tooltip: "暂停"
+                ) {
+                    vm.pauseTask(row)
+                }
+            } else {
+                TaskRowActionIconButton(
+                    systemName: "stop",
+                    tint: .t3TextMain,
+                    tooltip: "停止"
+                ) {
+                    vm.stopTask(row)
+                }
+            }
+        case .locked:
+            TaskRowActionIconButton(
+                systemName: "stop",
+                tint: .t3TextMain,
+                tooltip: "停止"
+            ) {
+                vm.stopTask(row)
+            }
+        default:
+            Color.clear
+        }
+    }
+
     private func rowTitleColor(_ row: StudioTask) -> Color {
         if row.isArchived {
             return .t3TextMuted
@@ -390,7 +393,7 @@ struct TaskListSectionView: View {
     @ViewBuilder
     private func taskMenuItems(for row: StudioTask) -> some View {
         Button(action: { vm.beginEditTask(row) }) {
-            Label("编辑项目 (名称 / 链接)...", systemImage: "pencil")
+            Label("编辑...", systemImage: "pencil")
         }
 
         Button(action: { vm.retryTask(row) }) {
@@ -510,27 +513,28 @@ struct TaskExpandedDetailView: View {
 
                                 Spacer(minLength: 6)
 
-                                if part.status == .failed || part.status == .cancelled {
-                                    Button(action: {
-                                        vm.retryDownloadPart(jobID: row.id, partID: part.id)
-                                    }) {
-                                        HStack(spacing: 2.5) {
-                                            Image(systemName: "arrow.clockwise")
-                                                .font(.system(size: 9, weight: .semibold))
-                                            Text("重试")
-                                                .font(.system(size: 10.5, weight: .semibold))
-                                        }
-                                        .foregroundColor(theme.accent)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 1.5)
-                                        .background(Capsule().fill(theme.accent.opacity(0.10)))
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-
                                 Text(partRightText(part))
-                                    .font(.system(size: 11, design: .monospaced))
+                                    .font(.system(size: 11))
+                                    .monospacedDigit()
                                     .foregroundColor(.t3TextMuted)
+                                    .lineLimit(1)
+
+                                Group {
+                                    if part.status == .failed || part.status == .cancelled {
+                                        TaskRowActionIconButton(
+                                            systemName: "arrow.clockwise",
+                                            tint: theme.accent,
+                                            tooltip: "重试分卷",
+                                            size: 20,
+                                            iconSize: 10.5
+                                        ) {
+                                            vm.retryDownloadPart(jobID: row.id, partID: part.id)
+                                        }
+                                    } else {
+                                        Color.clear
+                                    }
+                                }
+                                .frame(width: 20, height: 20, alignment: .center)
                             }
                         }
                     }
@@ -919,5 +923,53 @@ struct GlobalLogDrawerView: View {
         case .warning: return Color(red: 0.72, green: 0.48, blue: 0.06)
         case .error:   return Color.red.opacity(0.88)
         }
+    }
+}
+
+private struct TaskRowActionIconButton: View {
+    let systemName: String
+    let tint: Color
+    let tooltip: String
+    var size: CGFloat = 24
+    var iconSize: CGFloat = 12
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: iconSize, weight: .medium))
+                .foregroundColor(isHovered ? tint : .t3TextSub)
+                .frame(width: size, height: size)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isHovered ? Color.t3TopBoxBg : Color.clear)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .help(tooltip)
+    }
+}
+
+private struct TaskRowMenuIconLabel: View {
+    @State private var isHovered = false
+
+    var body: some View {
+        Image(systemName: "ellipsis")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundColor(isHovered ? .t3TextMain : .t3TextMuted)
+            .frame(width: 24, height: 24)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(isHovered ? Color.t3TopBoxBg : Color.clear)
+            )
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                isHovered = hovering
+            }
     }
 }

@@ -106,25 +106,25 @@ package struct AppThemePalette: Equatable, Sendable {
     private static func logoThemeSpec(for iconID: String) -> (color: Color, name: String) {
         switch iconID {
         case "cultured_prussian":
-            // 白底 3 · 学院普鲁士蓝 (#24479E)
-            return (Color(red: 0.141, green: 0.278, blue: 0.620), "学院普鲁士蓝")
+            // 白底 3 · 学院普鲁士蓝 (#314982)
+            return (Color(red: 0.192, green: 0.286, blue: 0.510), "学院普鲁士蓝")
         case "nordic_sage":
-            // 白底 4 · 北欧莫兰迪冷杉 (#2B5B50)
-            return (Color(red: 0.169, green: 0.357, blue: 0.314), "北欧冷杉绿")
+            // 白底 4 · 北欧莫兰迪冷杉 (#2E564C)
+            return (Color(red: 0.180, green: 0.337, blue: 0.298), "北欧冷杉绿")
         case "w6_burgundy":
-            // 白底 6A · 暖砂陶土与勃艮第 (#8C2D38)
-            return (Color(red: 0.549, green: 0.176, blue: 0.220), "勃艮第酒红")
+            // 白底 6A · 暖砂陶土与勃艮第 (#7F2D3C)
+            return (Color(red: 0.498, green: 0.176, blue: 0.235), "勃艮第酒红")
         case "dark_nebula":
-            // 黑底 1 · 曜石星云紫青 (#1E7CC8)
-            return (Color(red: 0.118, green: 0.486, blue: 0.784), "星云电光青")
+            // 黑底 1 · 曜石星云紫青 (#2E80B3)
+            return (Color(red: 0.180, green: 0.502, blue: 0.702), "星云电光青")
         case "dark_terracotta_gold":
-            // 黑底 2 · 曜石黑金与赤陶 (#B25B28)
-            return (Color(red: 0.698, green: 0.357, blue: 0.157), "干邑赤陶金")
+            // 黑底 2 · 曜石黑金与赤陶 (#AE6434)
+            return (Color(red: 0.682, green: 0.392, blue: 0.204), "干邑赤陶金")
         case "dark_emerald_mint":
-            // 黑底 3 · 曜石极光翡翠 (#14846E)
-            return (Color(red: 0.078, green: 0.518, blue: 0.431), "极光翡翠绿")
+            // 黑底 3 · 曜石极光翡翠 (#1D826B)
+            return (Color(red: 0.114, green: 0.510, blue: 0.420), "极光翡翠绿")
         default:
-            return (Color(red: 0.118, green: 0.486, blue: 0.784), "星云电光青")
+            return (Color(red: 0.180, green: 0.502, blue: 0.702), "星云电光青")
         }
     }
 }

@@ -28,12 +28,12 @@ package final class AppSettingsStore: ObservableObject {
     private var dockIconTask: Task<Void, Never>?
 
     package let iconOptions: [AppIconOption] = [
-        AppIconOption(id: "cultured_prussian",    title: "白底 3 · 学院普鲁士蓝",   subtitle: "雾银浅蓝 ➔ 学院钴蓝 ➔ 普鲁士皇家深蓝", category: "白瓷底系列"),
-        AppIconOption(id: "nordic_sage",          title: "白底 4 · 北欧莫兰迪冷杉", subtitle: "鼠尾草灰绿 ➔ 莫兰迪青松 ➔ 北欧深冷杉墨绿", category: "白瓷底系列"),
-        AppIconOption(id: "w6_burgundy",          title: "白底 6A · 暖砂陶土与勃艮第", subtitle: "香槟暖砂 ➔ 赤陶红棕 ➔ 陈年勃艮第酒红棕", category: "白瓷底系列"),
-        AppIconOption(id: "dark_nebula",          title: "黑底 1 · 曜石星云紫青",   subtitle: "深空曜石 + 暮光紫 ➔ 电光冰蓝 ➔ 纯白雪光", category: "曜石黑底系列"),
-        AppIconOption(id: "dark_terracotta_gold", title: "黑底 2 · 曜石黑金与赤陶", subtitle: "暖曜石黑 + 赤陶红棕 ➔ 干邑流金 ➔ 暖香槟钛白", category: "曜石黑底系列"),
-        AppIconOption(id: "dark_emerald_mint",    title: "黑底 3 · 曜石极光翡翠",   subtitle: "深空曜石 + 北欧冷杉绿 ➔ 极光薄荷青 ➔ 冰川纯白", category: "曜石黑底系列")
+        AppIconOption(id: "cultured_prussian",    title: "白底 3 · 学院普鲁士蓝",   subtitle: "雾银灰蓝 ➔ 学院灰钴蓝 ➔ 普鲁士深灰藏蓝", category: "白瓷底系列"),
+        AppIconOption(id: "nordic_sage",          title: "白底 4 · 北欧莫兰迪冷杉", subtitle: "鼠尾草灰绿 ➔ 莫兰迪青松 ➔ 北欧深冷杉灰绿", category: "白瓷底系列"),
+        AppIconOption(id: "w6_burgundy",          title: "白底 6A · 暖砂陶土与勃艮第", subtitle: "香槟暖驼砂 ➔ 哑光赤陶棕 ➔ 陈年勃艮第酒红棕", category: "白瓷底系列"),
+        AppIconOption(id: "dark_nebula",          title: "黑底 1 · 曜石星云紫青",   subtitle: "哑光曜石黑 + 暮光灰靛 ➔ 星云雾青 ➔ 哑光冷雾钛白", category: "曜石黑底系列"),
+        AppIconOption(id: "dark_terracotta_gold", title: "黑底 2 · 曜石黑金与赤陶", subtitle: "暖岩曜石黑 + 赤陶红棕 ➔ 拉丝干邑金 ➔ 哑光暖香槟钛白", category: "曜石黑底系列"),
+        AppIconOption(id: "dark_emerald_mint",    title: "黑底 3 · 曜石极光翡翠",   subtitle: "深松曜石黑 + 冷杉灰翠 ➔ 极光青玉 ➔ 哑光青雾瓷白", category: "曜石黑底系列")
     ]
 
     package init(inMemoryOnly: Bool = false, customFileURL: URL? = nil) {

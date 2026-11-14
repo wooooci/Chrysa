@@ -109,6 +109,8 @@ package actor DownloadService {
         settings: AppSettings,
         stagingJobID: UUID? = nil,
         stagingSubkey: String? = nil,
+        refreshHandler: (@Sendable (ResolvedDownload, AppSettings) async -> HostResolutionResult)? = nil,
+        mirrorResolveHandler: (@Sendable (String, AppSettings) async -> HostResolutionResult)? = nil,
         isCancelled: @escaping @Sendable () async -> Bool = { Task.isCancelled },
         onProgress: @escaping @Sendable (DownloadProgressUpdate) async -> Void,
         onLog: @escaping @Sendable (String, Bool) async -> Void,
@@ -117,18 +119,37 @@ package actor DownloadService {
         if await supervisor.isCancelled(taskID, checking: isCancelled) { return .cancelled }
         let effectiveStageJobID = stagingJobID ?? taskID
 
-        if resolved.useChunkedRange, let totalSize = resolved.totalSize, totalSize > 0 {
-            return await runChunkedRangeDownload(
-                taskID: taskID,
-                stagingJobID: effectiveStageJobID,
-                stagingSubkey: stagingSubkey,
-                resolved: resolved,
-                totalSize: totalSize,
-                settings: settings,
-                isCancelled: isCancelled,
-                onProgress: onProgress,
-                onLog: onLog,
-                onDiagnostic: onDiagnostic
+        let resolverRefresh: @Sendable (ResolvedDownload, AppSettings) async -> HostResolutionResult = refreshHandler ?? { item, cfg in
+            guard !item.originalURL.isEmpty else {
+                return HostResolutionResult(downloads: [], failureReason: "缺少原始分享链接")
+            }
+            let detailed = await HostResolverRegistry.resolveLinksDetailed(
+                item.originalURL,
+                passwords: cfg.unpack.passwords,
+                settings: cfg.download
+            )
+            if !detailed.downloads.isEmpty {
+                return detailed
+            }
+            if detailed.failureReason != nil {
+                return detailed
+            }
+            let fallback = await HostResolverRegistry.refreshDownload(
+                item,
+                passwords: cfg.unpack.passwords,
+                settings: cfg.download
+            )
+            if fallback.finalURL != item.finalURL || fallback.headers != item.headers {
+                return HostResolutionResult(downloads: [fallback])
+            }
+            return HostResolutionResult(downloads: [], failureReason: "链接已失效")
+        }
+
+        let resolverMirror: @Sendable (String, AppSettings) async -> HostResolutionResult = mirrorResolveHandler ?? { urlStr, cfg in
+            await HostResolverRegistry.resolveLinksDetailed(
+                urlStr,
+                passwords: cfg.unpack.passwords,
+                settings: cfg.download
             )
         }
 
@@ -140,13 +161,13 @@ package actor DownloadService {
             guard downloadsRoot.path != "/" else { return .failed(pill: "下载目录无效") }
             if let rawSubdirectory = resolved.subDirectory, !rawSubdirectory.isEmpty {
                 guard let subdirectory = PathSafety.safeRelativeDirectory(rawSubdirectory) else {
-                    await onLog("error ▸ 下载子目录包含不安全路径", true)
+                    await onDiagnostic(StageLog("下载子目录包含不安全路径", level: .error))
                     return .failed(pill: "路径无效")
                 }
                 let candidate = downloadsRoot.appendingPathComponent(subdirectory, isDirectory: true)
                 try FileManager.default.createDirectory(at: candidate, withIntermediateDirectories: true)
                 guard let contained = PathSafety.containedURL(candidate, in: downloadsRoot) else {
-                    await onLog("error ▸ 下载子目录越出下载目录", true)
+                    await onDiagnostic(StageLog("下载子目录越出下载目录", level: .error))
                     return .failed(pill: "路径无效")
                 }
                 downloadsDirectory = contained
@@ -161,181 +182,431 @@ package actor DownloadService {
             )
             try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
         } catch {
-            await onLog("error ▸ 无法准备下载目录: \(error.localizedDescription)", true)
+            await onDiagnostic(StageLog("无法准备下载目录: \(error.localizedDescription)", level: .error))
             return .failed(pill: "目录错误")
         }
 
         let rawFilename = resolved.suggestedFilename ?? URL(string: resolved.finalURL)?.lastPathComponent ?? currentTitle
         guard let candidateFilename = PathSafety.safeFilename(rawFilename) else {
-            await onLog("error ▸ 远端文件名无效或包含路径分隔符", true)
+            await onDiagnostic(StageLog("远端文件名无效或包含路径分隔符", level: .error))
             return .failed(pill: "文件名无效")
         }
 
         // Preserve existing staged filename if resuming an existing `.aria2` download in this deterministic staging folder
-        let filename = Self.existingStagedFilename(in: stagingDirectory) ?? candidateFilename
-        let stagedFile = stagingDirectory.appendingPathComponent(filename)
-        let hasResumeState = FileManager.default.fileExists(atPath: stagedFile.path)
-            && FileManager.default.fileExists(atPath: stagedFile.path + ".aria2")
-        if hasResumeState {
-            await onLog("resume ▸ 检测到未完成暂存与 .aria2 控制文件，继续断点续传: \(filename)", false)
+        var filename = Self.existingStagedFilename(in: stagingDirectory) ?? candidateFilename
+        var activeResolved = resolved
+        var mirrorQueue = resolved.mirrorURLs
+        var attemptedMirrors = 0
+        let totalMirrors = resolved.mirrorURLs.count
+        var didRefreshOrigin = false
+
+        func existingPartialBytes(for name: String) -> Int64 {
+            let path = stagingDirectory.appendingPathComponent(name).path
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+               let size = attrs[.size] as? Int64 {
+                return size
+            }
+            return 0
         }
 
-        guard let aria2Path = ToolchainLocator.locateDownloadEngineBinary() else {
-            await onLog("error ▸ 未找到下载内核 (sf-dl / aria2c)", true)
-            return .failed(pill: "缺少内核")
+        func checkDiskPreflightIfKnown(knownTotal: Int64?, name: String) async -> Bool {
+            guard let total = knownTotal, total > 0 else { return true }
+            let partial = existingPartialBytes(for: name)
+            let isArch = UnpackService.isArchiveFile(name) || UnpackService.isInnoSetupInstaller(name)
+            let needed = DiskSpacePreflight.requiredBytes(
+                totalBytes: total,
+                existingStagedBytes: partial,
+                includeUnpackReserve: settings.unpack.autoRelay && isArch
+            )
+            if let avail = DiskSpaceHelper.availableBytes(atDirectory: downloadsDirectory.path), avail < needed {
+                let needStr = DiskSpaceHelper.formatBytes(needed)
+                let availStr = DiskSpaceHelper.formatBytes(avail)
+                await onDiagnostic(StageLog("磁盘空间不足: 需 \(needStr)，可用 \(availStr)", level: .error))
+                return false
+            }
+            return true
         }
 
-        let effectiveThreads = HostResolverRegistry.maxThreads(
-            for: resolved.finalURL,
-            resolvedMax: resolved.maxThreads,
-            configuredMax: settings.download.maxConcurrentConnections
-        )
-        let threadsStr = "\(effectiveThreads)"
+        if !(await checkDiskPreflightIfKnown(knownTotal: activeResolved.totalSize, name: filename)) {
+            return .failed(pill: "空间不足")
+        }
 
-        let customUA: String = {
-            for h in resolved.headers {
-                if h.lowercased().hasPrefix("user-agent:") {
-                    return h.dropFirst("user-agent:".count).trimmingCharacters(in: .whitespacesAndNewlines)
+        func switchToNextMirror(reason: String, allowResumeIfSizeMatches: Bool) async -> Bool {
+            while !mirrorQueue.isEmpty {
+                let nextURL = mirrorQueue.removeFirst()
+                attemptedMirrors += 1
+                await onDiagnostic(StageLog("\(reason)，切换备用镜像 (\(attemptedMirrors)/\(totalMirrors))", level: .warning))
+                let mirrorRes = await resolverMirror(nextURL, settings)
+                guard let candidate = mirrorRes.downloads.first else {
+                    continue
                 }
-            }
-            return ResolverHTTPHelper.browserUserAgent
-        }()
-
-        var args = [
-            "--no-conf",
-            "-c",
-            "-x", threadsStr,
-            "-s", threadsStr,
-            "-k", "1M",
-            "-U", customUA,
-            "--file-allocation=none",
-            "--dir=\(stagingDirectory.path)",
-            "--summary-interval=1",
-            "--console-log-level=warn",
-            "--allow-overwrite=true"
-        ]
-
-        if HostResolverRegistry.proxyNeeds(for: resolved.finalURL, resolvedNeeds: resolved.needsProxy),
-           let sysProxy = ToolchainLocator.detectSystemProxy() {
-            args.append("--all-proxy=\(sysProxy)")
-            await onLog("proxy ▸ 海外节点通过 sf-dl 挂载系统代理: \(sysProxy) (\(threadsStr) 线程)", false)
-        }
-        args.append("--out=\(filename)")
-        for h in resolved.headers where !h.lowercased().hasPrefix("user-agent:") {
-            args.append("--header=\(h)")
-        }
-        args.append(resolved.finalURL)
-
-        final class StreamCapture: @unchecked Sendable {
-            private let lock = NSLock()
-            var detectedPath: String? = nil
-            var detectedTitle: String? = nil
-            var lastRightText: String? = nil
-            func record(path: String?, title: String?, right: String?) {
-                lock.lock()
-                if let p = path { detectedPath = p }
-                if let t = title { detectedTitle = t }
-                if let r = right { lastRightText = r }
-                lock.unlock()
-            }
-            func snapshot() -> (String?, String?, String?) {
-                lock.lock()
-                defer { lock.unlock() }
-                return (detectedPath, detectedTitle, lastRightText)
-            }
-        }
-        let capture = StreamCapture()
-        let progressEvents = StageEventQueue<DownloadProgressUpdate> { update in
-            await onProgress(update)
-        }
-        let expectedTotal = resolved.totalSize
-
-        do {
-            let result = try await supervisor.run(
-                executable: aria2Path,
-                arguments: args,
-                taskID: taskID,
-                captureOutput: false,
-                mergeStderr: true
-            ) { [weak self] chunk in
-                let parsed = Self.parseAria2Chunk(chunk, fallbackTotal: expectedTotal)
-                capture.record(path: nil, title: nil, right: parsed.rightText)
-                if parsed.progress != nil || parsed.pill != nil || parsed.rightText != nil {
-                    var visibleUpdate = parsed
-                    visibleUpdate.localPath = nil
-                    visibleUpdate.resolvedTitle = filename
-                    progressEvents.submit(visibleUpdate)
-                }
-                if let pct = parsed.progress {
-                    let pInt = Int(pct * 100.0)
-                    Task {
-                        await self?.logConsoleProgressIfNeeded(
-                            taskID: taskID,
-                            title: parsed.resolvedTitle ?? resolved.suggestedFilename ?? currentTitle,
-                            pct: pInt,
-                            pill: parsed.pill,
-                            right: parsed.rightText
-                        )
+                if !allowResumeIfSizeMatches
+                    || (activeResolved.totalSize != nil && candidate.totalSize != nil && candidate.totalSize != activeResolved.totalSize) {
+                    let oldStaged = stagingDirectory.appendingPathComponent(filename)
+                    try? FileManager.default.removeItem(at: oldStaged)
+                    try? FileManager.default.removeItem(atPath: oldStaged.path + ".aria2")
+                    try? FileManager.default.removeItem(atPath: oldStaged.path + ".chrysa-chunks.json")
+                    if let newName = candidate.suggestedFilename, let safeNew = PathSafety.safeFilename(newName) {
+                        filename = Self.existingStagedFilename(in: stagingDirectory) ?? safeNew
                     }
                 }
+                activeResolved = candidate
+                didRefreshOrigin = false
+                return true
             }
-
-            await progressEvents.drain()
-
-            if await supervisor.isCancelled(taskID, checking: isCancelled) {
-                return .cancelled
-            }
-
-            let (_, _, streamRight) = capture.snapshot()
-            if result.exitCode == 0 {
-                guard FileManager.default.fileExists(atPath: stagedFile.path) else {
-                    await onLog("error ▸ 下载内核未生成预期文件", true)
-                    return .failed(pill: "文件缺失")
-                }
-
-                // Anti-"Fake Success" File Guard: catch HTML error/challenge pages masquerading as archives/binaries
-                if let guardFailure = ResolverHTTPHelper.validateStagedPayload(at: stagedFile, expectedFilename: filename) {
-                    try? FileManager.default.removeItem(at: stagedFile)
-                    try? FileManager.default.removeItem(atPath: stagedFile.path + ".aria2")
-                    await onLog("error ▸ 拦截假包文件 [\(filename)] -> \(guardFailure)", true)
-                    return .failed(pill: guardFailure)
-                }
-
-                do {
-                    let published = try PathSafety.publishFile(
-                        from: stagedFile,
-                        toDirectory: downloadsDirectory,
-                        filename: filename,
-                        allowedSourceRoot: downloadsRoot
-                    )
-                    Self.cleanupPartStagingIfEmpty(
-                        stagingDirectory: stagingDirectory,
-                        jobID: effectiveStageJobID,
-                        downloadsRoot: downloadsRoot
-                    )
-                    await onLog("dl ▸ 下载完成: \(published.name)", true)
-                    return .completed(localPath: published.url.path, finalTitle: published.name, rightText: streamRight)
-                } catch {
-                    await onLog("error ▸ 无法安全发布下载文件: \(error.localizedDescription)", true)
-                    return .failed(pill: "发布失败")
-                }
-            } else {
-                let failurePill = Self.classifyAria2Exit(exitCode: result.exitCode, diagnostic: result.diagnosticOutput)
-                await onDiagnostic(StageLog(
-                    "error ▸ 下载内核异常退出 (代码 \(result.exitCode) · \(failurePill))",
-                    level: .error,
-                    rawOutput: LogEntry.sanitizeRawOutput(result.diagnosticOutput)
-                ))
-                return .failed(pill: failurePill)
-            }
-        } catch {
-            await progressEvents.drain()
-            if await supervisor.isCancelled(taskID, checking: isCancelled) {
-                return .cancelled
-            }
-            await onLog("error ▸ 无法启动下载内核: \(error.localizedDescription)", false)
-            return .failed(pill: "启动失败")
+            return false
         }
+
+        while true {
+            if await supervisor.isCancelled(taskID, checking: isCancelled) { return .cancelled }
+
+            let stagedFile = stagingDirectory.appendingPathComponent(filename)
+            let hasAria2Resume = FileManager.default.fileExists(atPath: stagedFile.path)
+                && FileManager.default.fileExists(atPath: stagedFile.path + ".aria2")
+            if hasAria2Resume {
+                await onLog("检测到未完成暂存与 .aria2 控制文件，继续断点续传: \(filename)", false)
+            }
+
+            // Pre-flight proxy route probe & live metadata check
+            let headerDict = ResolverHTTPHelper.headerDictionary(from: activeResolved.headers)
+            let routeDecision = await ResolverHTTPHelper.resolveProxyRoute(
+                for: activeResolved.finalURL,
+                policy: settings.download.proxyPolicy,
+                headers: headerDict,
+                timeoutSeconds: 5
+            )
+            let probe = routeDecision.probe
+
+            // Newly discovered Content-Length triggers preflight check too
+            if activeResolved.totalSize == nil, let probedSize = probe?.contentLength, probedSize > 0 {
+                if !(await checkDiskPreflightIfKnown(knownTotal: probedSize, name: filename)) {
+                    return .failed(pill: "空间不足")
+                }
+            }
+
+            // Handle expired/failed direct URL caught during pre-transfer probe
+            if let probe, (probe.statusCode == 403 || probe.statusCode == 410) {
+                if !didRefreshOrigin && !activeResolved.originalURL.isEmpty {
+                    await onDiagnostic(StageLog("直链签名已过期 (HTTP \(probe.statusCode))，正在从原分享页刷新...", level: .warning))
+                    let refreshedRes = await resolverRefresh(activeResolved, settings)
+                    if let matched = Self.pickMatchingDownload(from: refreshedRes.downloads, preferredFilename: filename) {
+                        activeResolved = Self.mergedRefreshedDownload(current: activeResolved, refreshed: matched)
+                        didRefreshOrigin = true
+                        await onLog("直链已刷新，沿用暂存进度继续续传", false)
+                        continue
+                    } else if await switchToNextMirror(reason: refreshedRes.failureReason ?? "原分享链接已失效", allowResumeIfSizeMatches: true) {
+                        continue
+                    } else {
+                        let reason = refreshedRes.failureReason ?? "链接已失效"
+                        await onDiagnostic(StageLog("原分享链接刷新失败: \(reason)", level: .error))
+                        return .failed(pill: reason)
+                    }
+                } else if await switchToNextMirror(reason: "直链失效 (HTTP \(probe.statusCode))", allowResumeIfSizeMatches: true) {
+                    continue
+                }
+            } else if let probeFailure = ResolverHTTPHelper.validateDownloadProbe(probe) {
+                if await switchToNextMirror(reason: probeFailure, allowResumeIfSizeMatches: true) {
+                    continue
+                }
+                if probe?.statusCode == 404 || probeFailure == "今日额度已满" || probeFailure == "需访问密码" {
+                    await onDiagnostic(StageLog(probeFailure, level: .error))
+                    return .failed(pill: probeFailure)
+                }
+            }
+
+            let isPixeldrain = activeResolved.resolverID == "pixeldrain" || activeResolved.finalURL.lowercased().contains("pixeldrain.com")
+            let hasPixeldrainAuth = activeResolved.headers.contains { $0.lowercased().hasPrefix("authorization: basic") }
+            var detectedRateLimit = activeResolved.rateLimitNote
+            if isPixeldrain && !hasPixeldrainAuth {
+                if let probe,
+                   probe.statusCode == 429
+                    || probe.headers["x-bandwidth-limit"] != nil
+                    || probe.headers["download-speed-limit"] != nil {
+                    detectedRateLimit = "限速 1MB/s"
+                }
+            }
+            if detectedRateLimit == "限速 1MB/s" {
+                if !mirrorQueue.isEmpty, await switchToNextMirror(reason: "主源触发服务端 1MB/s 限速", allowResumeIfSizeMatches: true) {
+                    continue
+                }
+                await onProgress(DownloadProgressUpdate(pill: "限速 1MB/s"))
+                await onDiagnostic(StageLog("服务端触发 1MB/s 限速，可在设置配置 Pixeldrain API Key 或切换节点", level: .warning))
+            }
+
+            if activeResolved.useChunkedRange, let totalSize = activeResolved.totalSize ?? probe?.contentLength, totalSize > 0 {
+                let chunkOutcome = await runChunkedRangeDownload(
+                    taskID: taskID,
+                    stagingJobID: effectiveStageJobID,
+                    stagingSubkey: stagingSubkey,
+                    resolved: activeResolved,
+                    totalSize: totalSize,
+                    settings: settings,
+                    initialRoute: routeDecision.route,
+                    routeNote: routeDecision.note,
+                    isCancelled: isCancelled,
+                    onProgress: onProgress,
+                    onLog: onLog,
+                    onDiagnostic: onDiagnostic
+                )
+                switch chunkOutcome {
+                case .completed, .cancelled:
+                    return chunkOutcome
+                case .failed(let pill):
+                    if await switchToNextMirror(reason: "主源下载中断 (\(pill))", allowResumeIfSizeMatches: true) {
+                        continue
+                    }
+                    return .failed(pill: pill)
+                }
+            }
+
+            guard let aria2Path = ToolchainLocator.locateDownloadEngineBinary() else {
+                await onDiagnostic(StageLog("未找到下载内核 (sf-dl / aria2c)", level: .error))
+                return .failed(pill: "缺少内核")
+            }
+
+            let effectiveThreads = HostResolverRegistry.maxThreads(
+                for: activeResolved.finalURL,
+                resolvedMax: activeResolved.maxThreads,
+                configuredMax: settings.download.maxConcurrentConnections
+            )
+            let threadsStr = "\(effectiveThreads)"
+
+            let customUA: String = {
+                for h in activeResolved.headers {
+                    if h.lowercased().hasPrefix("user-agent:") {
+                        return h.dropFirst("user-agent:".count).trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                }
+                return ResolverHTTPHelper.browserUserAgent
+            }()
+
+            var args = [
+                "--no-conf",
+                "-c",
+                "-x", threadsStr,
+                "-s", threadsStr,
+                "-k", "1M",
+                "-U", customUA,
+                "--file-allocation=none",
+                "--dir=\(stagingDirectory.path)",
+                "--summary-interval=1",
+                "--console-log-level=warn",
+                "--allow-overwrite=true"
+            ]
+
+            let childEnv: [String: String]?
+            switch routeDecision.route {
+            case .proxy(let sysProxy):
+                args.append("--all-proxy=\(sysProxy)")
+                childEnv = nil
+                await onLog("\(routeDecision.note) (\(threadsStr) 线程)", false)
+            case .direct:
+                args.append("--all-proxy=")
+                childEnv = ResolverHTTPHelper.cleanedDirectEnvironment()
+                await onLog("\(routeDecision.note) (\(threadsStr) 线程)", false)
+            }
+            args.append("--out=\(filename)")
+            for h in activeResolved.headers where !h.lowercased().hasPrefix("user-agent:") {
+                args.append("--header=\(h)")
+            }
+            args.append(activeResolved.finalURL)
+
+            final class StreamCapture: @unchecked Sendable {
+                private let lock = NSLock()
+                var detectedPath: String? = nil
+                var detectedTitle: String? = nil
+                var lastRightText: String? = nil
+                func record(path: String?, title: String?, right: String?) {
+                    lock.lock()
+                    if let p = path { detectedPath = p }
+                    if let t = title { detectedTitle = t }
+                    if let r = right { lastRightText = r }
+                    lock.unlock()
+                }
+                func snapshot() -> (String?, String?, String?) {
+                    lock.lock()
+                    defer { lock.unlock() }
+                    return (detectedPath, detectedTitle, lastRightText)
+                }
+            }
+            let capture = StreamCapture()
+            let progressEvents = StageEventQueue<DownloadProgressUpdate> { update in
+                await onProgress(update)
+            }
+            let expectedTotal = activeResolved.totalSize ?? probe?.contentLength
+            let rateLimitNoteSnapshot = detectedRateLimit
+            let snapshotFilename = filename
+            let snapshotFallbackTitle = activeResolved.suggestedFilename
+
+            do {
+                let result = try await supervisor.run(
+                    executable: aria2Path,
+                    arguments: args,
+                    environment: childEnv,
+                    taskID: taskID,
+                    captureOutput: false,
+                    mergeStderr: true
+                ) { [weak self] chunk in
+                    var parsed = Self.parseAria2Chunk(chunk, fallbackTotal: expectedTotal)
+                    if rateLimitNoteSnapshot == "限速 1MB/s",
+                       let spd = parsed.speedBytesPerSec,
+                       spd > 0,
+                       spd <= 1_250_000 {
+                        parsed.pill = "限速 1MB/s"
+                    }
+                    capture.record(path: nil, title: nil, right: parsed.rightText)
+                    if parsed.progress != nil || parsed.pill != nil || parsed.rightText != nil {
+                        var visibleUpdate = parsed
+                        visibleUpdate.localPath = nil
+                        visibleUpdate.resolvedTitle = snapshotFilename
+                        progressEvents.submit(visibleUpdate)
+                    }
+                    if let pct = parsed.progress {
+                        let pInt = Int(pct * 100.0)
+                        Task {
+                            await self?.logConsoleProgressIfNeeded(
+                                taskID: taskID,
+                                title: parsed.resolvedTitle ?? snapshotFallbackTitle ?? currentTitle,
+                                pct: pInt,
+                                pill: parsed.pill,
+                                right: parsed.rightText
+                            )
+                        }
+                    }
+                }
+
+                await progressEvents.drain()
+
+                if await supervisor.isCancelled(taskID, checking: isCancelled) {
+                    return .cancelled
+                }
+
+                let (_, _, streamRight) = capture.snapshot()
+                if result.exitCode == 0 {
+                    guard FileManager.default.fileExists(atPath: stagedFile.path) else {
+                        if await switchToNextMirror(reason: "下载文件缺失", allowResumeIfSizeMatches: false) {
+                            continue
+                        }
+                        await onDiagnostic(StageLog("下载内核未生成预期文件", level: .error))
+                        return .failed(pill: "文件缺失")
+                    }
+
+                    // Anti-"Fake Success" File Guard: catch HTML error/challenge pages masquerading as archives/binaries
+                    if let guardFailure = ResolverHTTPHelper.validateStagedPayload(at: stagedFile, expectedFilename: filename) {
+                        try? FileManager.default.removeItem(at: stagedFile)
+                        try? FileManager.default.removeItem(atPath: stagedFile.path + ".aria2")
+                        if await switchToNextMirror(reason: "主源返回无效页面 (\(guardFailure))", allowResumeIfSizeMatches: false) {
+                            continue
+                        }
+                        await onDiagnostic(StageLog("拦截假包文件 [\(filename)] · \(guardFailure)", level: .error))
+                        return .failed(pill: guardFailure)
+                    }
+
+                    do {
+                        let published = try PathSafety.publishFile(
+                            from: stagedFile,
+                            toDirectory: downloadsDirectory,
+                            filename: filename,
+                            allowedSourceRoot: downloadsRoot
+                        )
+                        Self.cleanupPartStagingIfEmpty(
+                            stagingDirectory: stagingDirectory,
+                            jobID: effectiveStageJobID,
+                            downloadsRoot: downloadsRoot
+                        )
+                        await onLog("下载完成: \(published.name)", true)
+                        return .completed(localPath: published.url.path, finalTitle: published.name, rightText: streamRight)
+                    } catch {
+                        await onDiagnostic(StageLog("无法发布下载文件: \(error.localizedDescription)", level: .error))
+                        return .failed(pill: "发布失败")
+                    }
+                } else {
+                    if Self.isExpiredDirectLinkExit(exitCode: result.exitCode, diagnostic: result.diagnosticOutput),
+                       !didRefreshOrigin,
+                       !activeResolved.originalURL.isEmpty {
+                        await onDiagnostic(StageLog("直链已过期 (HTTP 403/410)，正在从原分享页刷新并延续进度...", level: .warning))
+                        let refreshedRes = await resolverRefresh(activeResolved, settings)
+                        if let matched = Self.pickMatchingDownload(from: refreshedRes.downloads, preferredFilename: filename) {
+                            activeResolved = Self.mergedRefreshedDownload(current: activeResolved, refreshed: matched)
+                            didRefreshOrigin = true
+                            await onLog("直链已刷新，沿用 .aria2 进度继续续传", false)
+                            continue
+                        } else if await switchToNextMirror(reason: refreshedRes.failureReason ?? "原分享页已失效", allowResumeIfSizeMatches: true) {
+                            continue
+                        } else {
+                            let failureReason = refreshedRes.failureReason ?? "链接已失效"
+                            await onDiagnostic(StageLog(
+                                "原分享链接确认失效: \(failureReason)",
+                                level: .error,
+                                rawOutput: LogEntry.sanitizeRawOutput(result.diagnosticOutput, redact: settings.download.redactedSecrets)
+                            ))
+                            return .failed(pill: failureReason)
+                        }
+                    }
+
+                    let failurePill = Self.classifyAria2Exit(exitCode: result.exitCode, diagnostic: result.diagnosticOutput)
+                    if await switchToNextMirror(reason: "主源失败 (\(failurePill))", allowResumeIfSizeMatches: true) {
+                        continue
+                    }
+
+                    await onDiagnostic(StageLog(
+                        "下载异常退出 (代码 \(result.exitCode) · \(failurePill))",
+                        level: .error,
+                        rawOutput: LogEntry.sanitizeRawOutput(result.diagnosticOutput, redact: settings.download.redactedSecrets)
+                    ))
+                    return .failed(pill: failurePill)
+                }
+            } catch {
+                await progressEvents.drain()
+                if await supervisor.isCancelled(taskID, checking: isCancelled) {
+                    return .cancelled
+                }
+                if await switchToNextMirror(reason: "内核启动异常", allowResumeIfSizeMatches: true) {
+                    continue
+                }
+                await onDiagnostic(StageLog("无法启动下载内核: \(error.localizedDescription)", level: .error))
+                return .failed(pill: "启动失败")
+            }
+        }
+    }
+
+    private static func pickMatchingDownload(
+        from candidates: [ResolvedDownload],
+        preferredFilename: String
+    ) -> ResolvedDownload? {
+        guard !candidates.isEmpty else { return nil }
+        return candidates.first {
+            $0.suggestedFilename?.caseInsensitiveCompare(preferredFilename) == .orderedSame
+        } ?? candidates.first
+    }
+
+    private static func mergedRefreshedDownload(
+        current: ResolvedDownload,
+        refreshed: ResolvedDownload
+    ) -> ResolvedDownload {
+        ResolvedDownload(
+            originalURL: current.originalURL,
+            finalURL: refreshed.finalURL,
+            mirrorURLs: current.mirrorURLs,
+            headers: refreshed.headers,
+            suggestedFilename: current.suggestedFilename ?? refreshed.suggestedFilename,
+            useChunkedRange: refreshed.useChunkedRange,
+            totalSize: refreshed.totalSize ?? current.totalSize,
+            subDirectory: current.subDirectory ?? refreshed.subDirectory,
+            mailRuWeblink: refreshed.mailRuWeblink ?? current.mailRuWeblink,
+            maxThreads: refreshed.maxThreads ?? current.maxThreads,
+            needsProxy: refreshed.needsProxy ?? current.needsProxy,
+            resolverID: refreshed.resolverID ?? current.resolverID,
+            rateLimitNote: refreshed.rateLimitNote
+        )
+    }
+
+    package static func isExpiredDirectLinkExit(exitCode: Int32, diagnostic: String) -> Bool {
+        let lower = diagnostic.lowercased()
+        if lower.contains("403") || lower.contains("forbidden") || lower.contains("410") || lower.contains("gone") {
+            return true
+        }
+        return false
     }
 
     private static func existingStagedFilename(in stagingDirectory: URL) -> String? {
@@ -448,6 +719,8 @@ package actor DownloadService {
         resolved: ResolvedDownload,
         totalSize: Int64,
         settings: AppSettings,
+        initialRoute: ProxyRouteDecision = .direct,
+        routeNote: String = "直连通道",
         isCancelled: @escaping @Sendable () async -> Bool,
         onProgress: @escaping @Sendable (DownloadProgressUpdate) async -> Void,
         onLog: @escaping @Sendable (String, Bool) async -> Void,
@@ -461,13 +734,13 @@ package actor DownloadService {
             guard downloadsRoot.path != "/" else { return .failed(pill: "下载目录无效") }
             if let rawSubdirectory = resolved.subDirectory, !rawSubdirectory.isEmpty {
                 guard let subdirectory = PathSafety.safeRelativeDirectory(rawSubdirectory) else {
-                    await onLog("error ▸ 下载子目录包含不安全路径", true)
+                    await onDiagnostic(StageLog("下载子目录包含不安全路径", level: .error))
                     return .failed(pill: "路径无效")
                 }
                 let candidate = downloadsRoot.appendingPathComponent(subdirectory, isDirectory: true)
                 try FileManager.default.createDirectory(at: candidate, withIntermediateDirectories: true)
                 guard let contained = PathSafety.containedURL(candidate, in: downloadsRoot) else {
-                    await onLog("error ▸ 下载子目录越出下载目录", true)
+                    await onDiagnostic(StageLog("下载子目录越出下载目录", level: .error))
                     return .failed(pill: "路径无效")
                 }
                 downloadsDirectory = contained
@@ -482,13 +755,13 @@ package actor DownloadService {
             )
             try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
         } catch {
-            await onLog("error ▸ 无法准备下载目录", true)
+            await onDiagnostic(StageLog("无法准备下载目录", level: .error))
             return .failed(pill: "目录错误")
         }
 
         let rawFilename = resolved.suggestedFilename ?? URL(string: resolved.finalURL)?.lastPathComponent ?? "Download_\(UUID().uuidString).7z"
         guard let candidateFilename = PathSafety.safeFilename(rawFilename) else {
-            await onLog("error ▸ 远端文件名无效或包含路径分隔符", true)
+            await onDiagnostic(StageLog("远端文件名无效或包含路径分隔符", level: .error))
             return .failed(pill: "文件名无效")
         }
         let filename = Self.existingStagedFilename(in: stagingDirectory) ?? candidateFilename
@@ -526,9 +799,9 @@ package actor DownloadService {
         }()
 
         if canResumeExisting {
-            await onLog("range-3m ▸ 检测到已完成的切片位图 (\(completedIndices.count)/\(ranges.count))，断点续传中...", true)
+            await onLog("检测到切片位图 (\(completedIndices.count)/\(ranges.count))，断点续传中...", false)
         } else {
-            await onLog("range-3m ▸ 启用 8 路 × 3MB 切片校验引擎 (\(ranges.count) 片)", true)
+            await onLog("\(routeNote)，启用 8 路 × 3MB 切片校验 (\(ranges.count) 片)", false)
             guard FileManager.default.createFile(atPath: stagedDataURL.path, contents: nil),
                   let fileHandle = FileHandle(forWritingAtPath: stagedDataURL.path) else {
                 return .failed(pill: "写入失败")
@@ -542,7 +815,7 @@ package actor DownloadService {
                 }
             } catch {
                 try? fileHandle.close()
-                await onLog("error ▸ 无法预分配分片文件: \(error.localizedDescription)", true)
+                await onDiagnostic(StageLog("无法预分配分片文件: \(error.localizedDescription)", level: .error))
                 return .failed(pill: "写入失败")
             }
         }
@@ -559,8 +832,8 @@ package actor DownloadService {
         let totalGB = Double(totalSize) / (1024.0 * 1024.0 * 1024.0)
         var activeCDNURL = resolved.finalURL
         let supervisorRef = self.supervisor
-        let useProxy = HostResolverRegistry.proxyNeeds(for: resolved.finalURL, resolvedNeeds: resolved.needsProxy)
-        let proxyArg = useProxy ? ToolchainLocator.detectSystemProxy() : nil
+        let proxyArg = initialRoute.proxyAddress
+        let directEnv: [String: String]? = proxyArg == nil ? ResolverHTTPHelper.cleanedDirectEnvironment() : nil
 
         if completedBytes > 0 {
             let doneGB = Double(completedBytes) / (1024.0 * 1024.0 * 1024.0)
@@ -610,7 +883,8 @@ package actor DownloadService {
                                 if attempt >= 2 {
                                     let refreshed = await HostResolverRegistry.refreshDownload(
                                         resolved,
-                                        passwords: settings.unpack.passwords
+                                        passwords: settings.unpack.passwords,
+                                        settings: settings.download
                                     )
                                     if !refreshed.finalURL.isEmpty {
                                         currentURL = refreshed.finalURL
@@ -639,6 +913,7 @@ package actor DownloadService {
                             let res = try? await supervisorRef.run(
                                 executable: "/usr/bin/curl",
                                 arguments: curlArgs,
+                                environment: directEnv,
                                 taskID: taskID
                             )
                             if res?.exitCode == 0,
@@ -681,15 +956,15 @@ package actor DownloadService {
                         completedIndices.insert(cIdx)
                     } catch {
                         try? writer.close()
-                        await onLog("error ▸ 切片 #\(cIdx) 写入失败: \(error.localizedDescription)", true)
+                        await onDiagnostic(StageLog("切片 #\(cIdx) 写入失败: \(error.localizedDescription)", level: .error))
                         return .failed(pill: "写入失败")
                     }
                 } else {
                     try? writer.close()
                     await onDiagnostic(StageLog(
-                        "error ▸ 切片 #\(cIdx) (\(cStart)-\(cEnd)) 5 次重试后校验失败，已中止",
+                        "切片 #\(cIdx) (\(cStart)-\(cEnd)) 重试后校验失败，已中止",
                         level: .error,
-                        rawOutput: errDiag.flatMap { LogEntry.sanitizeRawOutput($0) }
+                        rawOutput: errDiag.flatMap { LogEntry.sanitizeRawOutput($0, redact: settings.download.redactedSecrets) }
                     ))
                     return .failed(pill: "切片校验失败")
                 }
@@ -697,7 +972,7 @@ package actor DownloadService {
             do {
                 try writer.close()
             } catch {
-                await onLog("error ▸ 分片文件关闭失败: \(error.localizedDescription)", true)
+                await onDiagnostic(StageLog("分片文件关闭失败: \(error.localizedDescription)", level: .error))
                 return .failed(pill: "写入失败")
             }
 
@@ -734,7 +1009,7 @@ package actor DownloadService {
         if let guardFailure = ResolverHTTPHelper.validateStagedPayload(at: stagedDataURL, expectedFilename: filename) {
             try? FileManager.default.removeItem(at: stagedDataURL)
             try? FileManager.default.removeItem(at: bitmapURL)
-            await onLog("error ▸ 拦截假包文件 [\(filename)] -> \(guardFailure)", true)
+            await onDiagnostic(StageLog("拦截假包文件 [\(filename)] · \(guardFailure)", level: .error))
             return .failed(pill: guardFailure)
         }
 
@@ -752,10 +1027,10 @@ package actor DownloadService {
                 jobID: stagingJobID,
                 downloadsRoot: downloadsRoot
             )
-            await onLog("range-3m ▸ 下载完成并通过全量切片校验: \(published.name)", true)
+            await onLog("下载完成: \(published.name)", true)
             return .completed(localPath: published.url.path, finalTitle: published.name, rightText: finalRight)
         } catch {
-            await onLog("error ▸ 无法安全发布分片下载文件: \(error.localizedDescription)", true)
+            await onDiagnostic(StageLog("无法发布下载文件: \(error.localizedDescription)", level: .error))
             return .failed(pill: "发布失败")
         }
     }

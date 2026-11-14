@@ -83,6 +83,7 @@ package actor ProcessSupervisor {
         executable: String,
         arguments: [String],
         currentDirectory: String? = nil,
+        environment: [String: String]? = nil,
         taskID: UUID? = nil,
         captureOutput: Bool = false,
         mergeStderr: Bool = false,
@@ -96,6 +97,9 @@ package actor ProcessSupervisor {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: executable)
         proc.arguments = arguments
+        if let environment {
+            proc.environment = environment
+        }
         if let cwd = currentDirectory {
             proc.currentDirectoryURL = URL(fileURLWithPath: cwd)
         }

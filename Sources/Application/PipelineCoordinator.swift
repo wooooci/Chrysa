@@ -28,6 +28,8 @@ package final class PipelineCoordinator {
     private var maxConcurrentDownloads: Int = 2
     private var lastDownloadDirectory: String?
     private var bottleScanID: UUID?
+    private var activeSleepTokens: [UUID: UUID] = [:]
+    private var isIdleSleepPrevented = false
 
     package init(
         services: any WorkflowServices,
@@ -210,6 +212,7 @@ package final class PipelineCoordinator {
         }
         await services.cancel(taskID: id)
         releaseDownloadSlot(token: id)
+        clearSleepAssertions(for: id)
         if let dir = downloadDirectory ?? lastDownloadDirectory {
             services.cleanupStaging(for: id, downloadDirectory: dir)
         }
@@ -234,6 +237,7 @@ package final class PipelineCoordinator {
         }
         await services.cancel(taskID: id)
         releaseDownloadSlot(token: id)
+        clearSleepAssertions(for: id)
 
         if var parts = livePartsByJob[id] ?? job.downloadParts, !parts.isEmpty {
             for idx in parts.indices where parts[idx].status == .running || parts[idx].status == .queued {
@@ -243,11 +247,10 @@ package final class PipelineCoordinator {
             }
             livePartsByJob[id] = parts
             _ = await jobStore.updateDownloadMetadata(id: id, passwordHint: job.passwordHint, downloadParts: parts)
-            let doneCount = parts.filter { $0.status == .succeeded }.count
             await updateJob(
                 id,
                 status: .paused,
-                message: "已暂停 · \(doneCount)/\(parts.count)",
+                message: "已暂停",
                 rightText: Self.formatAggregatedRightText(parts: parts)
             )
         } else {
@@ -268,6 +271,7 @@ package final class PipelineCoordinator {
         }
         await services.cancel(taskID: id)
         releaseDownloadSlot(token: id)
+        clearSleepAssertions(for: id)
         if let dir = downloadDirectory ?? lastDownloadDirectory {
             services.cleanupStaging(for: id, downloadDirectory: dir)
         }
@@ -324,6 +328,7 @@ package final class PipelineCoordinator {
         let passwordHint = parsed.primaryPassword
 
         let urls: [String]
+        let mirrorGroups = parsed.mirrorGroups
         if !parsed.urls.isEmpty {
             urls = parsed.urls
         } else if let single = services.normalizeDownloadInput(rawInput) {
@@ -334,24 +339,39 @@ package final class PipelineCoordinator {
             let lower = trimmed.lowercased()
             if lower.hasPrefix("magnet:") || lower.hasSuffix(".torrent") {
                 Task {
-                    await recordLog(taskID: nil, module: .download, level: .warning, message: "unsupported ▸ 不支持 .torrent 种子或 magnet: 磁力链接")
+                    await recordLog(taskID: nil, module: .download, level: .warning, message: "不支持 .torrent 种子或 magnet 链接")
                 }
             }
             return
         }
 
         if urls.count == 1 {
-            launchSingleInputURL(urls[0], passwordHint: passwordHint, settings: settings)
+            launchSingleInputURL(
+                urls[0],
+                mirrorURLs: mirrorGroups[urls[0]] ?? [],
+                passwordHint: passwordHint,
+                settings: settings
+            )
             return
         }
 
-        launchMultiInputURLs(urls, passwordHint: passwordHint, settings: settings)
+        launchMultiInputURLs(
+            urls,
+            mirrorGroups: mirrorGroups,
+            passwordHint: passwordHint,
+            settings: settings
+        )
     }
 
-    private func launchSingleInputURL(_ cleanURL: String, passwordHint: String?, settings: AppSettings) {
+    private func launchSingleInputURL(
+        _ cleanURL: String,
+        mirrorURLs: [String] = [],
+        passwordHint: String?,
+        settings: AppSettings
+    ) {
         let guessedName = services.suggestedDownloadName(cleanURL)
             ?? "Download_\(Int(Date().timeIntervalSince1970)).7z"
-        let initialMessage = services.initialDownloadMessage(for: cleanURL) ?? "嗅探中"
+        let initialMessage = services.initialDownloadMessage(for: cleanURL) ?? "解析中"
         let taskID = UUID()
         let job = Job(
             id: taskID,
@@ -363,22 +383,34 @@ package final class PipelineCoordinator {
             input: ArtifactRef(kind: .remoteURL, value: cleanURL),
             message: initialMessage,
             rightText: "准备中",
-            passwordHint: passwordHint
+            passwordHint: passwordHint,
+            mirrorURLs: mirrorURLs
         )
         cancelledTaskIDs.remove(taskID)
         pausedTaskIDs.remove(taskID)
 
         workers[taskID] = Task { [weak self] in
             guard let self else { return }
-            defer { self.workers[taskID] = nil }
+            let sleepToken = self.beginSleepAssertion(for: taskID)
+            defer {
+                self.endSleepAssertion(token: sleepToken)
+                self.workers[taskID] = nil
+            }
             await self.services.clearCancellation(taskID: taskID)
             await self.addJob(job)
             if let passwordHint, !passwordHint.isEmpty {
-                await self.recordLog(taskID: taskID, module: .download, level: .info, message: "pw ▸ 已提取文本解压密码并优先绑定")
+                await self.recordLog(taskID: taskID, module: .download, level: .info, message: "已绑定文本中的解压密码")
             }
-            await self.recordLog(taskID: taskID, module: .download, level: .info, message: "sniff ▸ 开始解析链接: \(cleanURL)")
+            await self.recordLog(taskID: taskID, module: .download, level: .info, message: "解析链接: \(cleanURL)")
             let passwords = Self.candidatePasswords(hint: passwordHint, settings: settings)
-            let resolution = await self.services.resolveDownloadsDetailed(cleanURL, passwords: passwords)
+            let resolvedOutcome = await self.resolveWithMirrors(
+                cleanURL,
+                extraMirrors: mirrorURLs,
+                passwords: passwords,
+                settings: settings,
+                taskID: taskID
+            )
+            let resolution = resolvedOutcome.result
             guard self.acceptsProgress(for: taskID), !self.pausedTaskIDs.contains(taskID) else { return }
 
             guard let first = resolution.downloads.first else {
@@ -388,7 +420,7 @@ package final class PipelineCoordinator {
                     taskID: taskID,
                     module: .download,
                     level: .error,
-                    message: "无法从分享页解析出有效文件直链 (\(reason)): \(cleanURL)",
+                    message: "解析直链失败 (\(reason)): \(cleanURL)",
                     rawOutput: resolution.diagnostic
                 )
                 return
@@ -396,8 +428,15 @@ package final class PipelineCoordinator {
 
             if resolution.downloads.count == 1 {
                 let displayName = first.suggestedFilename ?? guessedName
-                await self.updateJob(taskID, title: displayName, message: "排队中")
-                await self.recordLog(taskID: taskID, module: .download, level: .info, message: "dl ▸ 启动高速下载: \(first.suggestedFilename ?? first.finalURL)")
+                let resolvedRef = ArtifactRef(kind: .remoteURL, value: resolvedOutcome.usedOriginURL)
+                _ = await self.jobStore.updateDownloadMetadata(
+                    id: taskID,
+                    passwordHint: passwordHint,
+                    downloadParts: nil,
+                    mirrorURLs: first.mirrorURLs
+                )
+                await self.updateJob(taskID, title: displayName, source: resolvedRef, message: "排队中")
+                await self.recordLog(taskID: taskID, module: .download, level: .info, message: "开始下载: \(first.suggestedFilename ?? first.finalURL)")
                 await self.runDownloadTask(taskID: taskID, resolved: first, settings: settings)
             } else {
                 await self.runFolderDownloadPipeline(firstTaskID: taskID, guessedName: guessedName, items: resolution.downloads, settings: settings)
@@ -405,7 +444,12 @@ package final class PipelineCoordinator {
         }
     }
 
-    private func launchMultiInputURLs(_ urls: [String], passwordHint: String?, settings: AppSettings) {
+    private func launchMultiInputURLs(
+        _ urls: [String],
+        mirrorGroups: [String: [String]] = [:],
+        passwordHint: String?,
+        settings: AppSettings
+    ) {
         let taskID = UUID()
         let initialJob = Job(
             id: taskID,
@@ -415,7 +459,7 @@ package final class PipelineCoordinator {
             progress: 0.02,
             source: ArtifactRef(kind: .remoteURL, value: urls[0]),
             input: ArtifactRef(kind: .remoteURL, value: urls[0]),
-            message: "嗅探 0/\(urls.count)",
+            message: "解析 0/\(urls.count)",
             rightText: "准备中",
             passwordHint: passwordHint
         )
@@ -424,21 +468,32 @@ package final class PipelineCoordinator {
 
         workers[taskID] = Task { [weak self] in
             guard let self else { return }
-            defer { self.workers[taskID] = nil }
+            let sleepToken = self.beginSleepAssertion(for: taskID)
+            defer {
+                self.endSleepAssertion(token: sleepToken)
+                self.workers[taskID] = nil
+            }
             await self.services.clearCancellation(taskID: taskID)
             await self.addJob(initialJob)
             if let passwordHint, !passwordHint.isEmpty {
-                await self.recordLog(taskID: taskID, module: .download, level: .info, message: "pw ▸ 已从粘贴文本提取解压密码并优先绑定")
+                await self.recordLog(taskID: taskID, module: .download, level: .info, message: "已绑定文本中的解压密码")
             }
-            await self.recordLog(taskID: taskID, module: .download, level: .info, message: "batch ▸ 开始批量嗅探 \(urls.count) 条链接...")
+            await self.recordLog(taskID: taskID, module: .download, level: .info, message: "批量解析 \(urls.count) 个链接")
 
             let passwords = Self.candidatePasswords(hint: passwordHint, settings: settings)
             var resolvedByIndex: [(Int, HostResolutionResult)] = []
             await withTaskGroup(of: (Int, HostResolutionResult).self) { group in
                 for (idx, url) in urls.enumerated() {
+                    let mirrors = mirrorGroups[url] ?? []
                     group.addTask {
-                        let res = await self.services.resolveDownloadsDetailed(url, passwords: passwords)
-                        return (idx, res)
+                        let outcome = await self.resolveWithMirrors(
+                            url,
+                            extraMirrors: mirrors,
+                            passwords: passwords,
+                            settings: settings,
+                            taskID: taskID
+                        )
+                        return (idx, outcome.result)
                     }
                 }
                 var completed = 0
@@ -446,7 +501,7 @@ package final class PipelineCoordinator {
                     resolvedByIndex.append(pair)
                     completed += 1
                     if self.acceptsProgress(for: taskID), !self.pausedTaskIDs.contains(taskID) {
-                        await self.updateJob(taskID, message: "嗅探 \(completed)/\(urls.count)")
+                        await self.updateJob(taskID, message: "解析 \(completed)/\(urls.count)")
                     }
                 }
             }
@@ -469,16 +524,22 @@ package final class PipelineCoordinator {
                 return
             }
 
-            let groupInputs = allDownloads.map { item in
+            let (coalescedDownloads, coalescedCount) = Self.coalesceMirrorDownloads(allDownloads)
+            if coalescedCount > 0 {
+                await self.recordLog(taskID: taskID, module: .download, level: .info, message: "已关联 \(coalescedCount) 组备选镜像")
+            }
+
+            let groupInputs = coalescedDownloads.map { item in
                 MultipartGroupItem(
                     url: item.originalURL,
                     filename: item.suggestedFilename ?? DownloadInputParser.inferFilenameFromURL(item.finalURL),
-                    subDirectory: item.subDirectory
+                    subDirectory: item.subDirectory,
+                    mirrorURLs: item.mirrorURLs
                 )
             }
             let groups = DownloadInputParser.groupMultipartItems(groupInputs)
             var resolvedLookup: [String: [ResolvedDownload]] = [:]
-            for dl in allDownloads {
+            for dl in coalescedDownloads {
                 resolvedLookup[dl.originalURL, default: []].append(dl)
             }
 
@@ -512,12 +573,17 @@ package final class PipelineCoordinator {
                         input: ArtifactRef(kind: .remoteURL, value: firstExtra.finalURL),
                         message: "排队中",
                         rightText: firstExtra.totalSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "待下载",
-                        passwordHint: passwordHint
+                        passwordHint: passwordHint,
+                        mirrorURLs: firstExtra.mirrorURLs
                     )
                     await self.addJob(extraJob)
                     self.workers[extraID] = Task { [weak self] in
                         guard let self else { return }
-                        defer { self.workers[extraID] = nil }
+                        let extraSleep = self.beginSleepAssertion(for: extraID)
+                        defer {
+                            self.endSleepAssertion(token: extraSleep)
+                            self.workers[extraID] = nil
+                        }
                         await self.runDownloadTask(taskID: extraID, resolved: firstExtra, settings: settings)
                     }
                 } else {
@@ -538,7 +604,11 @@ package final class PipelineCoordinator {
                     await self.addJob(extraJob)
                     self.workers[extraID] = Task { [weak self] in
                         guard let self else { return }
-                        defer { self.workers[extraID] = nil }
+                        let extraSleep = self.beginSleepAssertion(for: extraID)
+                        defer {
+                            self.endSleepAssertion(token: extraSleep)
+                            self.workers[extraID] = nil
+                        }
                         await self.runAggregatedDownloadPipeline(jobID: extraID, settings: settings)
                     }
                 }
@@ -546,6 +616,12 @@ package final class PipelineCoordinator {
 
             if firstGroup.items.count == 1 {
                 let item = firstGroup.items[0]
+                _ = await self.jobStore.updateDownloadMetadata(
+                    id: taskID,
+                    passwordHint: passwordHint,
+                    downloadParts: nil,
+                    mirrorURLs: item.mirrorURLs
+                )
                 await self.updateJob(
                     taskID,
                     title: item.suggestedFilename ?? firstGroup.title,
@@ -585,7 +661,11 @@ package final class PipelineCoordinator {
 
         workers[id] = Task { [weak self] in
             guard let self else { return }
-            defer { self.workers[id] = nil }
+            let sleepToken = self.beginSleepAssertion(for: id)
+            defer {
+                self.endSleepAssertion(token: sleepToken)
+                self.workers[id] = nil
+            }
             guard let job = await self.jobStore.job(for: id), job.kind == .download else { return }
             await self.services.clearCancellation(taskID: id)
 
@@ -610,12 +690,17 @@ package final class PipelineCoordinator {
                 return
             }
 
-            let originURL = job.sourceURL ?? job.input?.value ?? ""
+            let rawOrigin = job.sourceURL ?? job.input?.value ?? ""
+            let parsedOrigin = DownloadInputParser.parse(rawOrigin, knownBareDomains: self.services.knownBareHostDomains())
+            let originURL = parsedOrigin.urls.first ?? rawOrigin
+            let combinedMirrors = Array(NSOrderedSet(array: job.mirrorURLs + (parsedOrigin.mirrorGroups[originURL] ?? [])))
+                .compactMap { $0 as? String }
+                .filter { $0 != originURL }
             guard !originURL.isEmpty else { return }
             _ = await self.jobStore.reopenForResume(
                 id: id,
                 status: .running,
-                message: isResume ? "刷新直链续传..." : "重新解析...",
+                message: "解析中",
                 rightText: job.rightText
             )
             if let updated = await self.jobStore.job(for: id) {
@@ -625,16 +710,23 @@ package final class PipelineCoordinator {
                 taskID: id,
                 module: .download,
                 level: .info,
-                message: isResume ? "resume ▸ 刷新直链并断点续传: \(originURL)" : "retry ▸ 重新解析下载链接: \(originURL)"
+                message: isResume ? "刷新直链续传: \(originURL)" : "重新解析: \(originURL)"
             )
 
             let passwords = Self.candidatePasswords(hint: job.passwordHint, settings: settings)
-            let resolution = await self.services.resolveDownloadsDetailed(originURL, passwords: passwords)
+            let resolvedOutcome = await self.resolveWithMirrors(
+                originURL,
+                extraMirrors: combinedMirrors,
+                passwords: passwords,
+                settings: settings,
+                taskID: id
+            )
+            let resolution = resolvedOutcome.result
             guard self.acceptsProgress(for: id), !self.pausedTaskIDs.contains(id) else { return }
 
             guard let first = resolution.downloads.first else {
                 let reason = resolution.failureReason ?? "解析失败"
-                await self.updateJob(id, status: .failed, message: reason, rightText: "无法获取直链")
+                await self.updateJob(id, status: .failed, message: reason, rightText: "解析失败")
                 return
             }
 
@@ -647,6 +739,7 @@ package final class PipelineCoordinator {
                 let resolvedItem = ResolvedDownload(
                     originalURL: first.originalURL,
                     finalURL: first.finalURL,
+                    mirrorURLs: first.mirrorURLs,
                     headers: first.headers,
                     suggestedFilename: preservedName,
                     useChunkedRange: first.useChunkedRange,
@@ -655,7 +748,14 @@ package final class PipelineCoordinator {
                     mailRuWeblink: first.mailRuWeblink,
                     maxThreads: first.maxThreads,
                     needsProxy: first.needsProxy,
-                    resolverID: first.resolverID
+                    resolverID: first.resolverID,
+                    rateLimitNote: first.rateLimitNote
+                )
+                _ = await self.jobStore.updateDownloadMetadata(
+                    id: id,
+                    passwordHint: job.passwordHint,
+                    downloadParts: nil,
+                    mirrorURLs: resolvedItem.mirrorURLs
                 )
                 await self.runDownloadTask(taskID: id, resolved: resolvedItem, settings: settings)
             } else {
@@ -686,7 +786,7 @@ package final class PipelineCoordinator {
                 _ = await self.jobStore.reopenForResume(
                     id: jobID,
                     status: .running,
-                    message: "分卷续传中",
+                    message: "分卷续传",
                     rightText: Self.formatAggregatedRightText(parts: parts)
                 )
                 if let updated = await self.jobStore.job(for: jobID) {
@@ -694,7 +794,11 @@ package final class PipelineCoordinator {
                 }
                 self.workers[jobID] = Task { [weak self] in
                     guard let self else { return }
-                    defer { self.workers[jobID] = nil }
+                    let sleepToken = self.beginSleepAssertion(for: jobID)
+                    defer {
+                        self.endSleepAssertion(token: sleepToken)
+                        self.workers[jobID] = nil
+                    }
                     await self.runAggregatedDownloadPipeline(jobID: jobID, settings: settings)
                 }
             } else if let updated = await self.jobStore.job(for: jobID) {
@@ -729,7 +833,7 @@ package final class PipelineCoordinator {
             taskID: firstTaskID,
             module: .download,
             level: .info,
-            message: "folder ▸ 聚合多文件任务 [\(displayTitle)]，共 \(parts.count) 个分卷/文件"
+            message: "合并多文件任务 \(displayTitle)（\(parts.count) 个分卷）"
         )
         await runAggregatedDownloadPipeline(jobID: firstTaskID, settings: settings)
     }
@@ -738,6 +842,8 @@ package final class PipelineCoordinator {
         guard let initialJob = await jobStore.job(for: jobID),
               let initialParts = initialJob.downloadParts,
               !initialParts.isEmpty else { return }
+        let sleepToken = beginSleepAssertion(for: jobID)
+        defer { endSleepAssertion(token: sleepToken) }
         livePartsByJob[jobID] = initialParts
 
         let names = initialParts.map(\.filename)
@@ -779,7 +885,7 @@ package final class PipelineCoordinator {
 
             baseUnpackTriggered = true
             let detail = hasRemaining ? " (附属文件继续下载)" : ""
-            await recordLog(taskID: jobID, module: .unpack, level: .info, message: "relay ▸ 主文件与分卷已就绪，自动流转至解压: \(primaryFile)\(detail)")
+            await recordLog(taskID: jobID, module: .unpack, level: .info, message: "分卷就绪，开始解压: \(primaryFile)\(detail)")
             guard await prepareUnpackStage(taskID: jobID, archivePath: primaryPath, progress: 1.0 / 3.0) else { return }
 
             relayTask = Task { @MainActor [weak self] in
@@ -795,6 +901,33 @@ package final class PipelineCoordinator {
         }
 
         let pendingParts = initialParts.filter { $0.status != .succeeded }
+        if !pendingParts.isEmpty {
+            let knownTotalBytes = initialParts.reduce(Int64(0)) { $0 + ($1.totalBytes ?? 0) }
+            let existingStagedBytes = initialParts.reduce(Int64(0)) { acc, part in
+                if part.status == .succeeded {
+                    return acc + max(part.downloadedBytes, part.totalBytes ?? 0)
+                }
+                return acc + part.downloadedBytes
+            }
+            let spaceOK = await checkDiskSpacePreflight(
+                jobID: jobID,
+                knownTotalBytes: knownTotalBytes,
+                existingStagedBytes: existingStagedBytes,
+                settings: settings
+            )
+            if !spaceOK {
+                var updatedParts = initialParts
+                for idx in updatedParts.indices where updatedParts[idx].status != .succeeded {
+                    updatedParts[idx].status = .failed
+                    updatedParts[idx].speedBytesPerSec = 0
+                    updatedParts[idx].message = "空间不足"
+                }
+                livePartsByJob[jobID] = updatedParts
+                _ = await jobStore.updateDownloadMetadata(id: jobID, passwordHint: initialJob.passwordHint, downloadParts: updatedParts)
+                return
+            }
+        }
+
         if pendingParts.isEmpty {
             await checkAndTriggerRelayIfReady()
         } else {
@@ -811,6 +944,7 @@ package final class PipelineCoordinator {
                         let rawResolved = ResolvedDownload(
                             originalURL: part.originalURL,
                             finalURL: part.resolvedURL,
+                            mirrorURLs: part.mirrorURLs,
                             headers: part.headers,
                             suggestedFilename: part.filename,
                             useChunkedRange: part.useChunkedRange,
@@ -821,7 +955,7 @@ package final class PipelineCoordinator {
                             needsProxy: part.needsProxy,
                             resolverID: part.resolverID
                         )
-                        let refreshed = await self.refreshItemForResume(rawResolved, passwords: passwords)
+                        let refreshed = await self.refreshItemForResume(rawResolved, passwords: passwords, settings: settings)
                         guard self.acceptsProgress(for: jobID), !self.pausedTaskIDs.contains(jobID) else {
                             return (part.id, part.filename, nil)
                         }
@@ -830,7 +964,8 @@ package final class PipelineCoordinator {
                             p.status = .running
                             p.resolvedURL = refreshed.finalURL
                             p.headers = refreshed.headers
-                            p.message = "连接中"
+                            p.mirrorURLs = refreshed.mirrorURLs
+                            p.message = refreshed.rateLimitNote ?? "连接中"
                             if let total = refreshed.totalSize, p.totalBytes == nil {
                                 p.totalBytes = total
                             }
@@ -950,10 +1085,10 @@ package final class PipelineCoordinator {
                     .appendingPathComponent(GameTitle.cleanGameTitle(from: rawBase))
             }()
             for dlc in pendingDLCInstallers where acceptsProgress(for: jobID) {
-                await recordLog(taskID: jobID, module: .unpack, level: .info, message: "innoextract ▸ 正在合并 DLC: \(dlc.filename)")
+                await recordLog(taskID: jobID, module: .unpack, level: .info, message: "合并 DLC: \(dlc.filename)")
                 let merged = await services.mergeDLC(installer: dlc.path, directory: unpackedDir, taskID: dlc.partID)
                 if merged {
-                    await recordLog(taskID: jobID, module: .unpack, level: .info, message: "innoextract ▸ DLC 合并完成: \(dlc.filename)")
+                    await recordLog(taskID: jobID, module: .unpack, level: .info, message: "DLC 合并完成: \(dlc.filename)")
                 }
             }
         }
@@ -996,6 +1131,7 @@ package final class PipelineCoordinator {
                 filename: item.suggestedFilename ?? fallbackName,
                 originalURL: item.originalURL,
                 resolvedURL: item.finalURL,
+                mirrorURLs: item.mirrorURLs,
                 headers: item.headers,
                 status: .queued,
                 progress: 0,
@@ -1032,18 +1168,29 @@ package final class PipelineCoordinator {
         return list
     }
 
-    private func refreshItemForResume(_ item: ResolvedDownload, passwords: [String]) async -> ResolvedDownload {
+    private func refreshItemForResume(
+        _ item: ResolvedDownload,
+        passwords: [String],
+        settings: AppSettings
+    ) async -> ResolvedDownload {
         if item.mailRuWeblink != nil {
-            return await services.refreshDownload(item, passwords: passwords)
+            return await services.refreshDownload(item, passwords: passwords, settings: settings)
         }
         guard !item.originalURL.isEmpty, item.originalURL != item.finalURL else {
             return item
         }
-        let resolved = await services.resolveDownloadsDetailed(item.originalURL, passwords: passwords)
+        let outcome = await resolveWithMirrors(
+            item.originalURL,
+            extraMirrors: item.mirrorURLs,
+            passwords: passwords,
+            settings: settings
+        )
+        let resolved = outcome.result
         if let match = resolved.downloads.first(where: { $0.suggestedFilename == item.suggestedFilename }) ?? resolved.downloads.first {
             return ResolvedDownload(
-                originalURL: item.originalURL,
+                originalURL: match.originalURL,
                 finalURL: match.finalURL,
+                mirrorURLs: match.appendingMirrors(item.mirrorURLs).mirrorURLs,
                 headers: match.headers,
                 suggestedFilename: item.suggestedFilename ?? match.suggestedFilename,
                 useChunkedRange: match.useChunkedRange,
@@ -1052,10 +1199,11 @@ package final class PipelineCoordinator {
                 mailRuWeblink: match.mailRuWeblink ?? item.mailRuWeblink,
                 maxThreads: match.maxThreads ?? item.maxThreads,
                 needsProxy: match.needsProxy ?? item.needsProxy,
-                resolverID: match.resolverID ?? item.resolverID
+                resolverID: match.resolverID ?? item.resolverID,
+                rateLimitNote: match.rateLimitNote
             )
         }
-        return await services.refreshDownload(item, passwords: passwords)
+        return await services.refreshDownload(item, passwords: passwords, settings: settings)
     }
 
     private func handlePartProgress(
@@ -1097,9 +1245,18 @@ package final class PipelineCoordinator {
         guard acceptsProgress(for: jobID), !pausedTaskIDs.contains(jobID) else { return }
         let doneCount = parts.filter { $0.status == .succeeded }.count
         let totalCount = parts.count
-        let totalSpeed = parts.reduce(0.0) { $0 + ($1.status == .running ? $1.speedBytesPerSec : 0) }
+        let activeParts = parts.filter { $0.status == .running }
+        let totalSpeed = activeParts.reduce(0.0) { $0 + $1.speedBytesPerSec }
         let speedText = Self.formatSpeed(bytesPerSec: totalSpeed)
-        let pill = speedText != nil ? "分卷 \(doneCount)/\(totalCount) · \(speedText!)" : "分卷 \(doneCount)/\(totalCount)"
+        let rateLimitedOnly = !activeParts.isEmpty
+            && activeParts.allSatisfy { $0.message == "限速 1MB/s" }
+            && totalSpeed <= 1.3 * 1024.0 * 1024.0
+        let pill: String
+        if rateLimitedOnly {
+            pill = "限速 1MB/s"
+        } else {
+            pill = speedText ?? "分卷 \(doneCount)/\(totalCount)"
+        }
 
         let totalKnownBytes = parts.reduce(Int64(0)) { $0 + ($1.totalBytes ?? 0) }
         let rawFraction: Double
@@ -1254,6 +1411,19 @@ package final class PipelineCoordinator {
               job.status == .queued || job.status == .running || job.status == .paused,
               acceptsProgress(for: taskID), !pausedTaskIDs.contains(taskID) else { return }
 
+        if job.status != .paused && job.progress <= 0.05, let total = resolved.totalSize, total > 0 {
+            let spaceOK = await checkDiskSpacePreflight(
+                jobID: taskID,
+                knownTotalBytes: total,
+                existingStagedBytes: 0,
+                settings: settings
+            )
+            guard spaceOK else { return }
+        }
+
+        let sleepToken = beginSleepAssertion(for: taskID)
+        defer { endSleepAssertion(token: sleepToken) }
+
         let acquired = await acquireDownloadSlot(token: taskID, ownerJobID: taskID, limit: settings.download.maxConcurrentDownloads)
         guard acquired else { return }
         defer { releaseDownloadSlot(token: taskID) }
@@ -1266,9 +1436,12 @@ package final class PipelineCoordinator {
             title: currentTitle,
             input: ArtifactRef(kind: .remoteURL, value: resolved.finalURL)
         )
+        let effectiveResolved = job.mirrorURLs.isEmpty
+            ? resolved
+            : resolved.appendingMirrors(job.mirrorURLs)
         let stage = services.downloadStage(
             title: currentTitle,
-            resolved: resolved,
+            resolved: effectiveResolved,
             stagingJobID: taskID,
             stagingSubkey: nil,
             settings: settings
@@ -1278,7 +1451,7 @@ package final class PipelineCoordinator {
             stageID: stage.id,
             jobID: taskID,
             module: .download,
-            input: ArtifactRef(kind: .remoteURL, value: resolved.finalURL),
+            input: ArtifactRef(kind: .remoteURL, value: effectiveResolved.finalURL),
             progressRange: progressRange ?? (settings.autoRelay && !suppressAutoRelay ? (0.0...1.0 / 3.0) : nil)
         )
         if pausedTaskIDs.contains(taskID) { return }
@@ -1305,7 +1478,7 @@ package final class PipelineCoordinator {
                     rightText: services.fileSize(outputPath)
                         .map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? rightText ?? ""
                 ), transitioned.status == .running, acceptsProgress(for: taskID) else { return }
-                await recordLog(taskID: taskID, module: .unpack, level: .info, message: "relay ▸ 自动流转至解压: \(finalTitle)")
+                await recordLog(taskID: taskID, module: .unpack, level: .info, message: "自动解压: \(finalTitle)")
                 let passwords = Self.candidatePasswords(hint: job.passwordHint, settings: settings)
                 await runUnpackTask(
                     taskID: taskID,
@@ -1368,10 +1541,14 @@ package final class PipelineCoordinator {
         cancelledTaskIDs.remove(taskID)
         workers[taskID] = Task { [weak self] in
             guard let self else { return }
+            let sleepToken = self.beginSleepAssertion(for: taskID)
+            defer {
+                self.endSleepAssertion(token: sleepToken)
+                self.workers[taskID] = nil
+            }
             await self.addJob(job)
-            await self.recordLog(taskID: taskID, module: .unpack, level: .info, message: "unpack ▸ 准备解压 \(filename)")
+            await self.recordLog(taskID: taskID, module: .unpack, level: .info, message: "开始解压: \(filename)")
             await self.runUnpackTask(taskID: taskID, archivePath: archivePath, candidatePasswords: [""] + settings.passwords, settings: settings)
-            self.workers[taskID] = nil
         }
     }
 
@@ -1402,6 +1579,8 @@ package final class PipelineCoordinator {
         guard let job = await jobStore.job(for: taskID), job.kind == .unpack,
               job.status == .queued || job.status == .running,
               acceptsProgress(for: taskID) else { return }
+        let sleepToken = beginSleepAssertion(for: taskID)
+        defer { endSleepAssertion(token: sleepToken) }
         await updateJob(taskID, status: .running)
         let stage = services.unpackStage(passwords: candidatePasswords, deleteArchive: settings.deleteArchiveAfterUnpack)
         let result = await execute(
@@ -1432,7 +1611,8 @@ package final class PipelineCoordinator {
                     rightText: "处理中",
                     expanded: true
                 ), transitioned.status == .running, acceptsProgress(for: taskID) else { return }
-                await recordLog(taskID: taskID, module: .patch, level: .info, message: "relay ▸ 自动流转至补丁: \(title)")
+                clearSleepAssertions(for: taskID)
+                await recordLog(taskID: taskID, module: .patch, level: .info, message: "自动补丁: \(title)")
                 await runPatchTask(
                     taskID: taskID,
                     folderPath: outputPath,
@@ -1706,5 +1886,173 @@ package final class PipelineCoordinator {
         if lhs.listPosition != rhs.listPosition { return lhs.listPosition < rhs.listPosition }
         if lhs.createdAt == rhs.createdAt { return lhs.id.uuidString < rhs.id.uuidString }
         return lhs.createdAt > rhs.createdAt
+    }
+
+    private func beginSleepAssertion(for jobID: UUID) -> UUID {
+        let token = UUID()
+        activeSleepTokens[token] = jobID
+        syncIdleSleepAssertion()
+        return token
+    }
+
+    private func endSleepAssertion(token: UUID) {
+        activeSleepTokens.removeValue(forKey: token)
+        syncIdleSleepAssertion()
+    }
+
+    private func clearSleepAssertions(for jobID: UUID) {
+        activeSleepTokens = activeSleepTokens.filter { $0.value != jobID }
+        syncIdleSleepAssertion()
+    }
+
+    private func syncIdleSleepAssertion() {
+        let shouldPrevent = !activeSleepTokens.isEmpty
+        guard shouldPrevent != isIdleSleepPrevented else { return }
+        isIdleSleepPrevented = shouldPrevent
+        services.setPreventIdleSleep(shouldPrevent)
+    }
+
+    private func checkDiskSpacePreflight(
+        jobID: UUID,
+        knownTotalBytes: Int64,
+        existingStagedBytes: Int64,
+        settings: AppSettings
+    ) async -> Bool {
+        guard knownTotalBytes > 0,
+              let available = services.availableDiskSpace(atDirectory: settings.download.downloadDirectory) else {
+            return true
+        }
+        let required = DiskSpacePreflight.requiredBytes(
+            totalBytes: knownTotalBytes,
+            existingStagedBytes: existingStagedBytes,
+            includeUnpackReserve: settings.autoRelay
+        )
+        guard required > available else { return true }
+        let needStr = Self.formatByteCount(required)
+        let availStr = Self.formatByteCount(available)
+        await recordLog(
+            taskID: jobID,
+            module: .download,
+            level: .error,
+            message: "磁盘空间不足: 需 \(needStr)，可用 \(availStr)"
+        )
+        await updateJob(jobID, status: .failed, message: "空间不足")
+        return false
+    }
+
+    private static func formatByteCount(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    private func resolveWithMirrors(
+        _ primaryURL: String,
+        extraMirrors: [String],
+        passwords: [String],
+        settings: AppSettings,
+        taskID: UUID? = nil
+    ) async -> (result: HostResolutionResult, usedOriginURL: String, remainingMirrors: [String]) {
+        let uniqueExtras = extraMirrors.filter { !$0.isEmpty && $0 != primaryURL }
+        let primaryRes = await services.resolveDownloadsDetailed(primaryURL, passwords: passwords, settings: settings)
+        if !primaryRes.downloads.isEmpty {
+            let mapped = primaryRes.downloads.map { $0.appendingMirrors(uniqueExtras) }
+            return (
+                HostResolutionResult(downloads: mapped, failureReason: nil, diagnostic: primaryRes.diagnostic),
+                primaryURL,
+                uniqueExtras
+            )
+        }
+
+        for (idx, mirror) in uniqueExtras.enumerated() {
+            let mirrorRes = await services.resolveDownloadsDetailed(mirror, passwords: passwords, settings: settings)
+            if !mirrorRes.downloads.isEmpty {
+                let remaining = Array(uniqueExtras.dropFirst(idx + 1))
+                if let taskID {
+                    let host = URL(string: mirror)?.host ?? mirror
+                    await recordLog(
+                        taskID: taskID,
+                        module: .download,
+                        level: .warning,
+                        message: "主源解析失败，切换备用镜像: \(host)"
+                    )
+                }
+                let mapped = mirrorRes.downloads.map { $0.appendingMirrors(remaining) }
+                return (
+                    HostResolutionResult(downloads: mapped, failureReason: nil, diagnostic: mirrorRes.diagnostic),
+                    mirror,
+                    remaining
+                )
+            }
+        }
+
+        return (primaryRes, primaryURL, uniqueExtras)
+    }
+
+    private static func coalesceMirrorDownloads(_ items: [ResolvedDownload]) -> (items: [ResolvedDownload], coalescedCount: Int) {
+        var bucketOrder: [String] = []
+        var buckets: [String: [ResolvedDownload]] = [:]
+        var unkeyed: [ResolvedDownload] = []
+
+        for item in items {
+            let candidateName = item.suggestedFilename ?? DownloadInputParser.inferFilenameFromURL(item.finalURL)
+            guard let name = candidateName?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !name.isEmpty,
+                  name.lowercased() != "download",
+                  item.suggestedFilename != nil || name.contains(".") else {
+                unkeyed.append(item)
+                continue
+            }
+            let dir = (item.subDirectory ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let key = "\(dir)|\(name.lowercased())"
+            if buckets[key] == nil {
+                bucketOrder.append(key)
+                buckets[key] = [item]
+            } else {
+                buckets[key]?.append(item)
+            }
+        }
+
+        var merged: [ResolvedDownload] = []
+        var coalescedCount = 0
+        for key in bucketOrder {
+            guard let group = buckets[key], let first = group.first else { continue }
+            if group.count == 1 {
+                merged.append(first)
+                continue
+            }
+            let primaryIndex = group.firstIndex(where: { $0.rateLimitNote == nil }) ?? 0
+            var primary = group[primaryIndex]
+            var extraMirrors: [String] = []
+            var fallbackTotalSize = primary.totalSize
+            for (idx, item) in group.enumerated() where idx != primaryIndex {
+                if !item.originalURL.isEmpty, item.originalURL != primary.originalURL {
+                    extraMirrors.append(item.originalURL)
+                }
+                for m in item.mirrorURLs where m != primary.originalURL {
+                    extraMirrors.append(m)
+                }
+                if fallbackTotalSize == nil {
+                    fallbackTotalSize = item.totalSize
+                }
+            }
+            primary = ResolvedDownload(
+                originalURL: primary.originalURL,
+                finalURL: primary.finalURL,
+                mirrorURLs: primary.appendingMirrors(extraMirrors).mirrorURLs,
+                headers: primary.headers,
+                suggestedFilename: primary.suggestedFilename,
+                useChunkedRange: primary.useChunkedRange,
+                totalSize: fallbackTotalSize,
+                subDirectory: primary.subDirectory,
+                mailRuWeblink: primary.mailRuWeblink,
+                maxThreads: primary.maxThreads,
+                needsProxy: primary.needsProxy,
+                resolverID: primary.resolverID,
+                rateLimitNote: primary.rateLimitNote
+            )
+            merged.append(primary)
+            coalescedCount += 1
+        }
+        merged.append(contentsOf: unkeyed)
+        return (merged, coalescedCount)
     }
 }

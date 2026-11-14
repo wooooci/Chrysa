@@ -246,4 +246,79 @@ struct CoreModelTests {
         #expect(!groups[1].isMultipartSet)
         #expect(groups[1].items.count == 1)
     }
+
+    @Test
+    func testProxyPolicyAccelerationCredentialsAndSecretRedaction() throws {
+        let legacyData = Data(#"{"download":{"downloadDirectory":"/tmp/dl"}}"#.utf8)
+        let legacyDecoded = try JSONDecoder().decode(AppSettings.self, from: legacyData)
+        #expect(legacyDecoded.proxyPolicy == .smart)
+        #expect(legacyDecoded.pixeldrainAPIKey == "")
+        #expect(legacyDecoded.realDebridToken == "")
+        #expect(legacyDecoded.torBoxToken == "")
+
+        var settings = AppSettings.default
+        settings.proxyPolicy = .directOnly
+        settings.pixeldrainAPIKey = "pd-secret-123"
+        settings.realDebridToken = "rd-token-456"
+        settings.torBoxToken = "tb-key-789"
+        let roundTrip = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+        #expect(roundTrip.proxyPolicy == .directOnly)
+        #expect(roundTrip.pixeldrainAPIKey == "pd-secret-123")
+        #expect(roundTrip.realDebridToken == "rd-token-456")
+        #expect(roundTrip.torBoxToken == "tb-key-789")
+        #expect(roundTrip.download.redactedSecrets.contains("pd-secret-123"))
+        #expect(roundTrip.download.redactedSecrets.contains("rd-token-456"))
+        #expect(roundTrip.download.redactedSecrets.contains("tb-key-789"))
+
+        let sanitized = try #require(
+            LogEntry.sanitizeRawOutput(
+                "Authorization: Bearer rd-token-456 / key=pd-secret-123",
+                redact: roundTrip.download.redactedSecrets
+            )
+        )
+        #expect(!sanitized.contains("rd-token-456"))
+        #expect(!sanitized.contains("pd-secret-123"))
+    }
+
+    @Test
+    func testJobAndDownloadPartMirrorURLsAndNewHostPipeParsing() throws {
+        // Legacy DownloadPart & Job JSON without mirrorURLs field decodes with []
+        let legacyJobJSON = Data(#"{"id":"11111111-1111-1111-1111-111111111111","kind":"download","title":"Game","status":"paused","progress":0.5,"mirrorURLs":null}"#.utf8)
+        // Missing mirrorURLs key case:
+        let noMirrorJobJSON = Data(#"{"id":"11111111-1111-1111-1111-111111111111","kind":"download","title":"Game","status":"paused","progress":0.5}"#.utf8)
+        let decodedNoMirror = try JSONDecoder().decode(Job.self, from: noMirrorJobJSON)
+        #expect(decodedNoMirror.mirrorURLs.isEmpty)
+        _ = try? JSONDecoder().decode(Job.self, from: legacyJobJSON)
+
+        let part = DownloadPart(
+            filename: "Game.part1.rar",
+            originalURL: "https://datanodes.to/abc/Game.part1.rar",
+            resolvedURL: "https://cdn.datanodes.to/dl/1",
+            mirrorURLs: ["https://qiwi.gg/file/m1"]
+        )
+        let job = Job(
+            kind: .download,
+            title: "Game",
+            status: .running,
+            downloadParts: [part],
+            mirrorURLs: ["https://workupload.com/file/m2"]
+        )
+        let roundTrip = try JSONDecoder().decode(Job.self, from: JSONEncoder().encode(job))
+        #expect(roundTrip.mirrorURLs == ["https://workupload.com/file/m2"])
+        #expect(roundTrip.downloadParts?.first?.mirrorURLs == ["https://qiwi.gg/file/m1"])
+
+        let input = """
+        https://datanodes.to/aaa111/Game.7z | qiwi.gg/file/bbb222 | https://workupload.com/file/ccc333
+        krakenfiles.com/view/ddd444/file.html
+        """
+        let parsed = DownloadInputParser.parse(input)
+        #expect(parsed.urls == [
+            "https://datanodes.to/aaa111/Game.7z",
+            "https://krakenfiles.com/view/ddd444/file.html"
+        ])
+        #expect(parsed.mirrorGroups["https://datanodes.to/aaa111/Game.7z"] == [
+            "https://qiwi.gg/file/bbb222",
+            "https://workupload.com/file/ccc333"
+        ])
+    }
 }

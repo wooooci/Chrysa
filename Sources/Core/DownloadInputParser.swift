@@ -3,10 +3,12 @@ import Foundation
 package struct ParsedDownloadInput: Equatable, Sendable {
     package let urls: [String]
     package let extractedPasswords: [String]
+    package let mirrorGroups: [String: [String]]
 
-    package init(urls: [String], extractedPasswords: [String]) {
+    package init(urls: [String], extractedPasswords: [String], mirrorGroups: [String: [String]] = [:]) {
         self.urls = urls
         self.extractedPasswords = extractedPasswords
+        self.mirrorGroups = mirrorGroups
     }
 
     package var primaryPassword: String? {
@@ -18,11 +20,13 @@ package struct MultipartGroupItem: Equatable, Sendable {
     package let url: String
     package let filename: String?
     package let subDirectory: String?
+    package let mirrorURLs: [String]
 
-    package init(url: String, filename: String?, subDirectory: String? = nil) {
+    package init(url: String, filename: String?, subDirectory: String? = nil, mirrorURLs: [String] = []) {
         self.url = url
         self.filename = filename
         self.subDirectory = subDirectory
+        self.mirrorURLs = mirrorURLs
     }
 }
 
@@ -51,7 +55,11 @@ package enum DownloadInputParser {
         "mediafire.com/", "www.mediafire.com/",
         "drive.google.com/",
         "fuckingfast.co/", "www.fuckingfast.co/",
-        "1fichier.com/", "www.1fichier.com/"
+        "1fichier.com/", "www.1fichier.com/",
+        "datanodes.to/", "www.datanodes.to/",
+        "qiwi.gg/", "www.qiwi.gg/",
+        "workupload.com/", "www.workupload.com/",
+        "krakenfiles.com/", "www.krakenfiles.com/"
     ]
 
     package static func normalizeSingleURL(
@@ -103,47 +111,87 @@ package enum DownloadInputParser {
 
         var urls: [String] = []
         var seenURLs: Set<String> = []
+        var mirrorGroups: [String: [String]] = [:]
 
-        func appendURL(_ rawCandidate: String) {
-            let cleaned = trimURLDelimiters(rawCandidate)
-            guard !cleaned.isEmpty else { return }
-            let lower = cleaned.lowercased()
-            guard !lower.hasPrefix("magnet:"), !isTorrentURL(lower) else { return }
-            guard URL(string: cleaned)?.host != nil else { return }
-            if !seenURLs.contains(cleaned) {
-                seenURLs.insert(cleaned)
-                urls.append(cleaned)
+        func extractURLsFromTokens(_ tokens: [String], singleTokenContext: Bool) -> [String] {
+            var found: [String] = []
+            let httpRegex = try? NSRegularExpression(pattern: #"https?://[^\s<>"'\[\]()|｜]+"#, options: .caseInsensitive)
+            for token in tokens {
+                let trimmed = trimURLDelimiters(token)
+                guard !trimmed.isEmpty else { continue }
+                let lower = trimmed.lowercased()
+                if lower.hasPrefix("magnet:") || isTorrentURL(lower) {
+                    continue
+                }
+                if let httpRegex {
+                    let ns = token as NSString
+                    let matches = httpRegex.matches(in: token, range: NSRange(location: 0, length: ns.length))
+                    if !matches.isEmpty {
+                        for m in matches {
+                            let cleaned = trimURLDelimiters(ns.substring(with: m.range))
+                            let cleanedLower = cleaned.lowercased()
+                            if !cleaned.isEmpty,
+                               !cleanedLower.hasPrefix("magnet:"),
+                               !isTorrentURL(cleanedLower),
+                               URL(string: cleaned)?.host != nil {
+                                found.append(cleaned)
+                            }
+                        }
+                        continue
+                    }
+                }
+                if knownBareDomains.contains(where: { lower.hasPrefix($0.lowercased()) }) {
+                    let candidate = "https://" + trimmed
+                    if URL(string: candidate)?.host != nil { found.append(candidate) }
+                } else if singleTokenContext, let single = normalizeSingleURL(trimmed, knownBareDomains: knownBareDomains) {
+                    if URL(string: single)?.host != nil { found.append(single) }
+                }
             }
+            return found
         }
 
-        let tokens = normalizedNewlines.components(separatedBy: .whitespacesAndNewlines)
-        let httpRegex = try? NSRegularExpression(pattern: #"https?://[^\s<>"'\[\]()]+"#, options: .caseInsensitive)
+        let totalTokens = normalizedNewlines.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+        for line in lines {
+            let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedLine.isEmpty else { continue }
 
-        for token in tokens {
-            let trimmed = trimURLDelimiters(token)
-            guard !trimmed.isEmpty else { continue }
-            let lower = trimmed.lowercased()
-            if lower.hasPrefix("magnet:") || isTorrentURL(lower) {
-                continue
-            }
-            if let httpRegex {
-                let ns = token as NSString
-                let matches = httpRegex.matches(in: token, range: NSRange(location: 0, length: ns.length))
-                if !matches.isEmpty {
-                    for m in matches {
-                        appendURL(ns.substring(with: m.range))
+            // Pipe-separated URLs on a single line represent primary | mirror1 | mirror2
+            let normalizedPipes = trimmedLine.replacingOccurrences(of: "｜", with: "|")
+            if normalizedPipes.contains("|") {
+                let pipeSegments = normalizedPipes.components(separatedBy: "|")
+                var groupURLs: [String] = []
+                for seg in pipeSegments {
+                    let segTokens = seg.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+                    groupURLs.append(contentsOf: extractURLsFromTokens(segTokens, singleTokenContext: segTokens.count == 1))
+                }
+                if let primary = groupURLs.first {
+                    if !seenURLs.contains(primary) {
+                        seenURLs.insert(primary)
+                        urls.append(primary)
+                    }
+                    let mirrors = groupURLs.dropFirst().filter { $0 != primary }
+                    if !mirrors.isEmpty {
+                        var existing = mirrorGroups[primary] ?? []
+                        for m in mirrors where !existing.contains(m) {
+                            existing.append(m)
+                            seenURLs.insert(m)
+                        }
+                        mirrorGroups[primary] = existing
                     }
                     continue
                 }
             }
-            if knownBareDomains.contains(where: { lower.hasPrefix($0.lowercased()) }) {
-                appendURL("https://" + trimmed)
-            } else if tokens.count == 1, let single = normalizeSingleURL(trimmed, knownBareDomains: knownBareDomains) {
-                appendURL(single)
+
+            let lineTokens = trimmedLine.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+            for u in extractURLsFromTokens(lineTokens, singleTokenContext: totalTokens.count == 1) {
+                if !seenURLs.contains(u) {
+                    seenURLs.insert(u)
+                    urls.append(u)
+                }
             }
         }
 
-        return ParsedDownloadInput(urls: urls, extractedPasswords: passwords)
+        return ParsedDownloadInput(urls: urls, extractedPasswords: passwords, mirrorGroups: mirrorGroups)
     }
 
     private static func trimURLDelimiters(_ raw: String) -> String {

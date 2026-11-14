@@ -86,9 +86,24 @@ package struct StageLog: Sendable, Equatable {
     package init(_ message: String, highlight: Bool) {
         let lower = message.lowercased()
         let inferred: LogLevel
-        if lower.hasPrefix("error") || lower.contains("失败") || lower.contains("异常") {
+        if lower.hasPrefix("error")
+            || lower.contains("失败")
+            || lower.contains("异常")
+            || lower.contains("空间不足")
+            || lower.contains("拦截假包")
+            || lower.contains("无法")
+            || lower.contains("无效")
+            || lower.contains("越出")
+            || lower.contains("未找到")
+            || lower.contains("未生成")
+            || lower.contains("已中止") {
             inferred = .error
-        } else if lower.hasPrefix("warning") || lower.hasPrefix("unar ▸") {
+        } else if lower.hasPrefix("warning")
+                    || lower.hasPrefix("unar")
+                    || lower.contains("限速")
+                    || lower.contains("过期")
+                    || lower.contains("切换备")
+                    || lower.contains("回退代理") {
             inferred = .warning
         } else {
             inferred = .info

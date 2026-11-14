@@ -9,6 +9,7 @@ struct SettingsView: View {
     @Environment(\.appTheme) private var theme
 
     @State private var hoveredSettingsCategory: SettingsCategory? = nil
+    @State private var selectedCredentialKind: AccelerationCredentialKind = .pixeldrain
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Secondary Category Menu Bar with Magpie `.seg > .thumb` shared gliding capsule
@@ -235,6 +236,98 @@ struct SettingsView: View {
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
+                }
+            }
+
+            t3SettingRow(title: "代理策略") {
+                let policy = vm.settingsStore.settings.proxyPolicy
+                if isSnapshotMode {
+                    T3OutlinedPill(text: policy.displayName)
+                } else {
+                    HStack(spacing: 2) {
+                        ForEach(ProxyPolicy.allCases) { option in
+                            let selected = (policy == option)
+                            Button(action: { vm.setProxyPolicy(option) }) {
+                                Text(option.displayName)
+                                    .font(.system(size: 11.5, weight: selected ? .semibold : .regular))
+                                    .foregroundColor(selected ? .white : .t3TextSub)
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 3.5)
+                                    .background(
+                                        Capsule(style: .continuous)
+                                            .fill(selected ? theme.accent : Color.clear)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(2)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(Color.t3TopBoxBg)
+                    )
+                }
+            }
+
+            t3SettingRow(title: "加速凭证") {
+                if isSnapshotMode {
+                    let configured = AccelerationCredentialKind.allCases
+                        .filter { !vm.accelerationCredential(for: $0).isEmpty }
+                        .map(\.displayName)
+                    T3OutlinedPill(text: configured.isEmpty ? "未配置" : configured.joined(separator: " / "))
+                } else {
+                    HStack(spacing: 8) {
+                        Menu {
+                            ForEach(AccelerationCredentialKind.allCases) { kind in
+                                Button(action: { selectedCredentialKind = kind }) {
+                                    HStack {
+                                        Text(kind.displayName)
+                                        if !vm.accelerationCredential(for: kind).isEmpty {
+                                            Text("已填")
+                                        }
+                                        if selectedCredentialKind == kind {
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            T3OutlinedPill(text: selectedCredentialKind.displayName)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+
+                        HStack(spacing: 4) {
+                            SecureField(
+                                selectedCredentialKind.placeholder,
+                                text: Binding(
+                                    get: { vm.accelerationCredential(for: selectedCredentialKind) },
+                                    set: { vm.setAccelerationCredential($0, for: selectedCredentialKind) }
+                                )
+                            )
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(.t3TextMain)
+
+                            if !vm.accelerationCredential(for: selectedCredentialKind).isEmpty {
+                                Button(action: {
+                                    vm.setAccelerationCredential("", for: selectedCredentialKind)
+                                }) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.t3TextMuted)
+                                }
+                                .buttonStyle(.plain)
+                                .help("清除")
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .frame(width: 175, height: 26)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color.t3TopBoxBg)
+                        )
+                    }
                 }
             }
         }

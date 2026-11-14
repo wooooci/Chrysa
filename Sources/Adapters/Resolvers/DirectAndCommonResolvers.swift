@@ -15,17 +15,24 @@ package struct VikingFileResolver: HostResolver {
     package func proxyNeeds() -> Bool { false }
     package func maxThreads() -> Int { 8 }
 
-    package func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult {
+    package func resolveDetailed(
+        input: String,
+        url: URL,
+        passwords: [String],
+        settings: DownloadSettings
+    ) async -> HostResolutionResult {
         var dURL = input
         let parts = url.pathComponents.filter { $0 != "/" }
         if parts.count >= 2 && parts[0] == "f" {
             dURL = "https://vikingfile.com/d/\(parts[1])"
         }
 
-        guard let headRes = await ResolverHTTPHelper.fetch(
+        let useProxy = ResolverHTTPHelper.effectiveUseProxy(policy: settings.proxyPolicy, defaultNeedsProxy: proxyNeeds())
+        guard let headRes = await ResolverHTTPHelper.fetchWithPolicy(
             urlString: dURL,
             method: "HEAD",
-            useProxy: false,
+            policy: settings.proxyPolicy,
+            preferDirect: true,
             followRedirects: false,
             timeoutSeconds: 15
         ) else {
@@ -39,14 +46,19 @@ package struct VikingFileResolver: HostResolver {
 
         guard let resolvedCDN = headRes.headers["location"], !resolvedCDN.isEmpty else {
             // Check GET body in case page returned an HTML error or captcha
-            if let getRes = await ResolverHTTPHelper.fetch(urlString: dURL, useProxy: false, timeoutSeconds: 15),
+            if let getRes = await ResolverHTTPHelper.fetchWithPolicy(
+                urlString: dURL,
+                policy: settings.proxyPolicy,
+                preferDirect: true,
+                timeoutSeconds: 15
+            ),
                let reason = ResolverHTTPHelper.classifyFailure(statusCode: getRes.statusCode, contentType: getRes.contentType, body: getRes.bodyString) {
                 return HostResolutionResult(downloads: [], failureReason: reason)
             }
             return HostResolutionResult(downloads: [], failureReason: "链接已失效")
         }
 
-        let probe = await ResolverHTTPHelper.probeDirectURL(resolvedCDN, useProxy: false)
+        let probe = await ResolverHTTPHelper.probeDirectURL(resolvedCDN, useProxy: useProxy)
         let fname = probe?.contentDispositionFilename
             ?? URL(string: resolvedCDN)?.lastPathComponent
             ?? url.lastPathComponent
@@ -79,9 +91,24 @@ package struct PixeldrainResolver: HostResolver {
     package func matchesCDNHost(_ host: String) -> Bool {
         host.contains("pixeldrain.com")
     }
+    package func proxyNeeds() -> Bool { false }
     package func maxThreads() -> Int { 4 }
 
-    package func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult {
+    package static func basicAuthHeaderValue(for apiKey: String) -> String? {
+        let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let encoded = ":\(trimmed)".data(using: .utf8)?.base64EncodedString() else {
+            return nil
+        }
+        return "Basic \(encoded)"
+    }
+
+    package func resolveDetailed(
+        input: String,
+        url: URL,
+        passwords: [String],
+        settings: DownloadSettings
+    ) async -> HostResolutionResult {
         let parts = url.pathComponents.filter { $0 != "/" }
         guard parts.count >= 2 else {
             return HostResolutionResult(downloads: [], failureReason: "链接格式无效")
@@ -89,10 +116,17 @@ package struct PixeldrainResolver: HostResolver {
         let kind = parts[0].lowercased()
         let itemID = parts[1]
 
+        let basicAuth = Self.basicAuthHeaderValue(for: settings.pixeldrainAPIKey)
+        let reqHeaders: [String: String] = basicAuth.map { ["Authorization": $0] } ?? [:]
+        let itemHeaders: [String] = basicAuth.map { ["Authorization: \($0)"] } ?? []
+        let hasKey = basicAuth != nil
+
         if kind == "l" {
-            guard let listResp = await ResolverHTTPHelper.fetch(
+            guard let listResp = await ResolverHTTPHelper.fetchWithPolicy(
                 urlString: "https://pixeldrain.com/api/list/\(itemID)",
-                useProxy: proxyNeeds(),
+                headers: reqHeaders,
+                policy: settings.proxyPolicy,
+                preferDirect: true,
                 timeoutSeconds: 20
             ) else {
                 return HostResolutionResult(downloads: [], failureReason: "无法连接 Pixeldrain")
@@ -101,56 +135,108 @@ package struct PixeldrainResolver: HostResolver {
                 let reason = ResolverHTTPHelper.classifyFailure(statusCode: listResp.statusCode, contentType: listResp.contentType, body: listResp.bodyString) ?? "链接已失效"
                 return HostResolutionResult(downloads: [], failureReason: reason)
             }
-            return Self.parseListJSON(listResp.bodyData, listID: itemID, originalInput: input)
+            return Self.parseListJSON(
+                listResp.bodyData,
+                listID: itemID,
+                originalInput: input,
+                authHeaders: itemHeaders,
+                hasAPIKey: hasKey
+            )
         }
 
         let direct = "https://pixeldrain.com/api/file/\(itemID)?download"
         var realName: String? = nil
         var fileSize: Int64? = nil
-        if let infoResp = await ResolverHTTPHelper.fetch(
+        var rateLimitNote: String? = nil
+
+        if let infoResp = await ResolverHTTPHelper.fetchWithPolicy(
             urlString: "https://pixeldrain.com/api/file/\(itemID)/info",
-            useProxy: proxyNeeds(),
+            headers: reqHeaders,
+            policy: settings.proxyPolicy,
+            preferDirect: true,
             timeoutSeconds: 15
         ) {
+            if infoResp.statusCode == 401 && hasKey {
+                return HostResolutionResult(downloads: [], failureReason: "Pixeldrain API Key 无效")
+            }
             if infoResp.statusCode == 404 || infoResp.statusCode == 410 {
                 return HostResolutionResult(downloads: [], failureReason: "链接已失效")
             }
             if infoResp.statusCode == 429 {
                 return HostResolutionResult(downloads: [], failureReason: "今日额度已满")
             }
-            if let json = try? JSONSerialization.jsonObject(with: infoResp.bodyData) as? [String: Any] {
-                if (json["success"] as? Bool) == false {
-                    let val = (json["value"] as? String)?.lowercased() ?? ""
-                    if val.contains("not_found") {
-                        return HostResolutionResult(downloads: [], failureReason: "链接已失效")
-                    }
-                    if val.contains("limit") || val.contains("quota") {
-                        return HostResolutionResult(downloads: [], failureReason: "今日额度已满")
-                    }
-                }
-                if let n = json["name"] as? String, !n.isEmpty {
-                    realName = n
-                }
-                fileSize = (json["size"] as? NSNumber)?.int64Value
+            let parsedInfo = Self.parseFileInfoJSON(infoResp.bodyData, hasAPIKey: hasKey)
+            if let failure = parsedInfo.failureReason {
+                return HostResolutionResult(downloads: [], failureReason: failure)
             }
+            realName = parsedInfo.name
+            fileSize = parsedInfo.size
+            rateLimitNote = parsedInfo.rateLimitNote
         }
 
         return HostResolutionResult(downloads: [
             ResolvedDownload(
                 originalURL: input,
                 finalURL: direct,
-                headers: [],
+                headers: itemHeaders,
                 suggestedFilename: realName ?? "pixeldrain_\(itemID).7z",
                 useChunkedRange: false,
                 totalSize: fileSize,
-                maxThreads: maxThreads(),
-                needsProxy: proxyNeeds(),
-                resolverID: id
+                maxThreads: hasKey ? 8 : maxThreads(),
+                needsProxy: false,
+                resolverID: id,
+                rateLimitNote: rateLimitNote
             )
         ])
     }
 
-    package static func parseListJSON(_ data: Data, listID: String, originalInput: String) -> HostResolutionResult {
+    package static func parseFileInfoJSON(
+        _ data: Data,
+        hasAPIKey: Bool = false
+    ) -> (name: String?, size: Int64?, rateLimitNote: String?, failureReason: String?) {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return (nil, nil, nil, nil)
+        }
+        if (json["success"] as? Bool) == false {
+            let val = (json["value"] as? String)?.lowercased() ?? ""
+            if val.contains("not_found") {
+                return (nil, nil, nil, "链接已失效")
+            }
+            if val.contains("limit") || val.contains("quota") {
+                return (nil, nil, nil, "今日额度已满")
+            }
+        }
+
+        let avail = (json["availability"] as? String)?.lowercased() ?? ""
+        let canDownload = (json["can_download"] as? Bool) ?? true
+        if !hasAPIKey {
+            if !canDownload && avail.contains("captcha") {
+                return (nil, nil, "限速 1MB/s", "今日额度已满")
+            }
+            if avail.contains("virus") && !canDownload {
+                return (nil, nil, nil, "含网页盾·请用浏览器下载")
+            }
+        }
+
+        let speedLimit = (json["download_speed_limit"] as? NSNumber)?.intValue ?? 0
+        var rateNote: String? = nil
+        if !hasAPIKey && (speedLimit > 0 || avail.contains("rate_limited")) {
+            rateNote = "限速 1MB/s"
+        }
+
+        let rawName = (json["name"] as? String)
+        let name = (rawName?.isEmpty == false) ? rawName : nil
+        let size = (json["size"] as? NSNumber)?.int64Value
+        return (name, size, rateNote, nil)
+    }
+
+    package static func parseListJSON(
+        _ data: Data,
+        listID: String,
+        originalInput: String,
+        authHeaders: [String] = [],
+        hasAPIKey: Bool = false
+    ) -> HostResolutionResult {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return HostResolutionResult(downloads: [], failureReason: "解析列表失败")
         }
@@ -178,18 +264,22 @@ package struct PixeldrainResolver: HostResolver {
             guard let fid = file["id"] as? String, !fid.isEmpty else { continue }
             let name = (file["name"] as? String) ?? "pixeldrain_\(fid)"
             let size = (file["size"] as? NSNumber)?.int64Value
+            let speedLimit = (file["download_speed_limit"] as? NSNumber)?.intValue ?? 0
+            let avail = (file["availability"] as? String)?.lowercased() ?? ""
+            let rateNote = (!hasAPIKey && (speedLimit > 0 || avail.contains("rate_limited"))) ? "限速 1MB/s" : nil
             results.append(
                 ResolvedDownload(
                     originalURL: "https://pixeldrain.com/u/\(fid)",
                     finalURL: "https://pixeldrain.com/api/file/\(fid)?download",
-                    headers: [],
+                    headers: authHeaders,
                     suggestedFilename: name,
                     useChunkedRange: false,
                     totalSize: size,
                     subDirectory: subDir,
-                    maxThreads: 4,
-                    needsProxy: true,
-                    resolverID: "pixeldrain"
+                    maxThreads: hasAPIKey ? 8 : 4,
+                    needsProxy: false,
+                    resolverID: "pixeldrain",
+                    rateLimitNote: rateNote
                 )
             )
         }
@@ -213,16 +303,27 @@ package struct BuzzheavierResolver: HostResolver {
     }
     package func proxyNeeds() -> Bool { false }
 
-    package func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult {
+    package func resolveDetailed(
+        input: String,
+        url: URL,
+        passwords: [String],
+        settings: DownloadSettings
+    ) async -> HostResolutionResult {
         let parts = url.pathComponents.filter { $0 != "/" }
         guard let fileID = parts.first, !fileID.isEmpty else {
             return HostResolutionResult(downloads: [], failureReason: "链接格式无效")
         }
         let hostName = url.host ?? "buzzheavier.com"
+        let useProxy = ResolverHTTPHelper.effectiveUseProxy(policy: settings.proxyPolicy, defaultNeedsProxy: false)
 
         // 1. Fetch landing page HTML to extract title/filename and catch 404/challenge
         var pageFilename: String? = nil
-        if let pageResp = await ResolverHTTPHelper.fetch(urlString: input, useProxy: false, timeoutSeconds: 15) {
+        if let pageResp = await ResolverHTTPHelper.fetchWithPolicy(
+            urlString: input,
+            policy: settings.proxyPolicy,
+            preferDirect: true,
+            timeoutSeconds: 15
+        ) {
             if pageResp.statusCode >= 400 {
                 let reason = ResolverHTTPHelper.classifyFailure(statusCode: pageResp.statusCode, contentType: pageResp.contentType, body: pageResp.bodyString) ?? "链接已失效"
                 return HostResolutionResult(downloads: [], failureReason: reason)
@@ -237,13 +338,14 @@ package struct BuzzheavierResolver: HostResolver {
 
         // 2. Request `/<id>/download` with HX-Request to get HX-Redirect / Location
         let dlEndpoint = "https://\(hostName)/\(fileID)/download"
-        guard let dlResp = await ResolverHTTPHelper.fetch(
+        guard let dlResp = await ResolverHTTPHelper.fetchWithPolicy(
             urlString: dlEndpoint,
             headers: [
                 "HX-Request": "true",
                 "Referer": input
             ],
-            useProxy: false,
+            policy: settings.proxyPolicy,
+            preferDirect: true,
             followRedirects: false,
             timeoutSeconds: 15
         ) else {
@@ -273,7 +375,7 @@ package struct BuzzheavierResolver: HostResolver {
         let probe = await ResolverHTTPHelper.probeDirectURL(
             finalRedirect,
             headers: ["Referer": input],
-            useProxy: false
+            useProxy: useProxy
         )
         let urlName = URL(string: probe?.finalURL ?? finalRedirect)?.lastPathComponent
         let urlNameHasExt = urlName.map { $0.contains(".") && $0 != fileID } ?? false
@@ -338,8 +440,18 @@ package struct MediaFireResolver: HostResolver {
         host.contains("mediafire.com")
     }
 
-    package func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult {
-        guard let resp = await ResolverHTTPHelper.fetch(urlString: input, useProxy: proxyNeeds(), timeoutSeconds: 20),
+    package func resolveDetailed(
+        input: String,
+        url: URL,
+        passwords: [String],
+        settings: DownloadSettings
+    ) async -> HostResolutionResult {
+        guard let resp = await ResolverHTTPHelper.fetchWithPolicy(
+            urlString: input,
+            policy: settings.proxyPolicy,
+            preferDirect: false,
+            timeoutSeconds: 20
+        ),
               let html = resp.bodyString else {
             return HostResolutionResult(downloads: [], failureReason: "无法连接 MediaFire")
         }
@@ -382,15 +494,21 @@ package struct GoogleDriveResolver: HostResolver {
         host.contains("drive.google.com") || host.contains("googleusercontent.com")
     }
 
-    package func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult {
+    package func resolveDetailed(
+        input: String,
+        url: URL,
+        passwords: [String],
+        settings: DownloadSettings
+    ) async -> HostResolutionResult {
         guard let fileID = Self.extractFileID(from: url) else {
             return HostResolutionResult(downloads: [], failureReason: "链接格式无效")
         }
 
         let probeURL = "https://drive.usercontent.google.com/download?id=\(fileID)&export=download"
-        guard let resp = await ResolverHTTPHelper.fetch(
+        guard let resp = await ResolverHTTPHelper.fetchWithPolicy(
             urlString: probeURL,
-            useProxy: proxyNeeds(),
+            policy: settings.proxyPolicy,
+            preferDirect: false,
             rangeHeader: "bytes=0-0",
             timeoutSeconds: 20
         ) else {
@@ -423,15 +541,17 @@ package struct GoogleDriveResolver: HostResolver {
         }
 
         // Large file (>100MB) virus scan confirmation HTML or error HTML
-        let fullResp = await ResolverHTTPHelper.fetch(
+        let fullResp = await ResolverHTTPHelper.fetchWithPolicy(
             urlString: "https://drive.google.com/uc?export=download&id=\(fileID)",
-            useProxy: proxyNeeds(),
+            policy: settings.proxyPolicy,
+            preferDirect: false,
             timeoutSeconds: 20
         ) ?? resp
         let html = fullResp.bodyString ?? resp.bodyString ?? ""
 
         if let parsed = Self.parseVirusScanForm(html: html, fallbackID: fileID) {
-            let headProbe = await ResolverHTTPHelper.probeDirectURL(parsed.finalURL, useProxy: proxyNeeds())
+            let useProxy = ResolverHTTPHelper.effectiveUseProxy(policy: settings.proxyPolicy, defaultNeedsProxy: proxyNeeds())
+            let headProbe = await ResolverHTTPHelper.probeDirectURL(parsed.finalURL, useProxy: useProxy)
             let filename = headProbe?.contentDispositionFilename ?? parsed.filename
             return HostResolutionResult(downloads: [
                 ResolvedDownload(

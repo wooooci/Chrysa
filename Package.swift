@@ -12,7 +12,11 @@ let package = Package(
             name: "ChrysaAdapters",
             dependencies: ["ChrysaCore", "ChrysaApplication"],
             path: "Sources/Adapters",
-            linkerSettings: [.linkedFramework("JavaScriptCore"), .linkedFramework("CryptoKit")]
+            linkerSettings: [
+                .linkedFramework("JavaScriptCore"),
+                .linkedFramework("CryptoKit"),
+                .linkedFramework("IOKit")
+            ]
         ),
         .target(
             name: "ChrysaPresentation",

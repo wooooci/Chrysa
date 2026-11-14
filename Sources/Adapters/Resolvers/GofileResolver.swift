@@ -17,12 +17,17 @@ package struct GofileResolver: HostResolver {
         host.contains("gofile.io")
     }
 
-    package func resolveDetailed(input: String, url: URL, passwords: [String]) async -> HostResolutionResult {
+    package func resolveDetailed(
+        input: String,
+        url: URL,
+        passwords: [String],
+        settings: DownloadSettings
+    ) async -> HostResolutionResult {
         let parts = url.pathComponents.filter { $0 != "/" }
         guard parts.count >= 2 && parts[0] == "d" else {
             return HostResolutionResult(downloads: [], failureReason: "链接格式无效")
         }
-        return await Self.resolveGofileDetailed(contentId: parts[1], passwords: passwords)
+        return await Self.resolveGofileDetailed(contentId: parts[1], passwords: passwords, policy: settings.proxyPolicy)
     }
 
     package func proxyNeeds() -> Bool { true }
@@ -32,13 +37,16 @@ package struct GofileResolver: HostResolver {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func mintGuestToken(ua: String) async -> String? {
-        guard let accURL = URL(string: "https://api.gofile.io/accounts") else { return nil }
-        var accReq = URLRequest(url: accURL)
-        accReq.httpMethod = "POST"
-        accReq.setValue(ua, forHTTPHeaderField: "User-Agent")
-        guard let (accData, _) = try? await URLSession.shared.data(for: accReq),
-              let accJson = try? JSONSerialization.jsonObject(with: accData) as? [String: Any],
+    private static func mintGuestToken(ua: String, policy: ProxyPolicy) async -> String? {
+        guard let resp = await ResolverHTTPHelper.fetchWithPolicy(
+            urlString: "https://api.gofile.io/accounts",
+            method: "POST",
+            headers: ["User-Agent": ua],
+            policy: policy,
+            preferDirect: false,
+            timeoutSeconds: 15
+        ),
+              let accJson = try? JSONSerialization.jsonObject(with: resp.bodyData) as? [String: Any],
               let dataDict = accJson["data"] as? [String: Any],
               let token = dataDict["token"] as? String, !token.isEmpty else {
             return nil
@@ -47,21 +55,23 @@ package struct GofileResolver: HostResolver {
         return token
     }
 
-    private static func generateWT(token: String, ua: String, lang: String) async -> String {
+    private static func generateWT(token: String, ua: String, lang: String, policy: ProxyPolicy) async -> String {
         let now = Date().timeIntervalSince1970
         var wtScript = UserDefaults.standard.string(forKey: "sf_gofile_wt_script")
         let savedTS = UserDefaults.standard.double(forKey: "sf_gofile_wt_ts")
         if wtScript == nil || (now - savedTS) > 7200 {
-            if let wtURL = URL(string: "https://gofile.io/js/wt.obf.js") {
-                var req = URLRequest(url: wtURL)
-                req.setValue(ua, forHTTPHeaderField: "User-Agent")
-                if let (data, _) = try? await URLSession.shared.data(for: req),
-                   let text = String(data: data, encoding: .utf8),
-                   text.contains("generateWT") {
-                    wtScript = text
-                    UserDefaults.standard.set(text, forKey: "sf_gofile_wt_script")
-                    UserDefaults.standard.set(now, forKey: "sf_gofile_wt_ts")
-                }
+            if let resp = await ResolverHTTPHelper.fetchWithPolicy(
+                urlString: "https://gofile.io/js/wt.obf.js",
+                headers: ["User-Agent": ua],
+                policy: policy,
+                preferDirect: false,
+                timeoutSeconds: 15
+            ),
+               let text = resp.bodyString,
+               text.contains("generateWT") {
+                wtScript = text
+                UserDefaults.standard.set(text, forKey: "sf_gofile_wt_script")
+                UserDefaults.standard.set(now, forKey: "sf_gofile_wt_ts")
             }
         }
         if let script = wtScript, let ctx = JSContext() {
@@ -83,45 +93,60 @@ package struct GofileResolver: HostResolver {
         wt: String,
         ua: String,
         lang: String,
+        policy: ProxyPolicy,
         passwordHash: String? = nil
     ) async -> (Int, [String: Any]?) {
         var urlStr = "https://api.gofile.io/contents/\(contentId)?page=1&pageSize=100&sortField=name&sortDirection=1"
         if let pw = passwordHash, !pw.isEmpty {
             urlStr += "&password=\(pw)"
         }
-        guard let contentURL = URL(string: urlStr) else { return (0, nil) }
-        var cReq = URLRequest(url: contentURL)
-        cReq.setValue(ua, forHTTPHeaderField: "User-Agent")
-        cReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        cReq.setValue(wt, forHTTPHeaderField: "X-Website-Token")
-        cReq.setValue(lang, forHTTPHeaderField: "X-BL")
-        guard let (cData, resp) = try? await URLSession.shared.data(for: cReq) else {
+        guard let resp = await ResolverHTTPHelper.fetchWithPolicy(
+            urlString: urlStr,
+            headers: [
+                "User-Agent": ua,
+                "Authorization": "Bearer \(token)",
+                "X-Website-Token": wt,
+                "X-BL": lang
+            ],
+            policy: policy,
+            preferDirect: false,
+            timeoutSeconds: 20
+        ) else {
             return (0, nil)
         }
-        let code = (resp as? HTTPURLResponse)?.statusCode ?? 200
-        let json = try? JSONSerialization.jsonObject(with: cData) as? [String: Any]
-        return (code, json)
+        let json = try? JSONSerialization.jsonObject(with: resp.bodyData) as? [String: Any]
+        return (resp.statusCode, json)
     }
 
-    package static func resolveGofileList(contentId: String, passwords: [String], depth: Int = 0) async -> [ResolvedDownload] {
-        await resolveGofileDetailed(contentId: contentId, passwords: passwords, depth: depth).downloads
+    package static func resolveGofileList(
+        contentId: String,
+        passwords: [String],
+        depth: Int = 0,
+        policy: ProxyPolicy = .smart
+    ) async -> [ResolvedDownload] {
+        await resolveGofileDetailed(contentId: contentId, passwords: passwords, depth: depth, policy: policy).downloads
     }
 
-    package static func resolveGofileDetailed(contentId: String, passwords: [String], depth: Int = 0) async -> HostResolutionResult {
+    package static func resolveGofileDetailed(
+        contentId: String,
+        passwords: [String],
+        depth: Int = 0,
+        policy: ProxyPolicy = .smart
+    ) async -> HostResolutionResult {
         guard depth <= 2 else { return HostResolutionResult(downloads: [], failureReason: "目录层级过深") }
         let ua = ResolverHTTPHelper.browserUserAgent
         let lang = "en-US"
 
         var token = UserDefaults.standard.string(forKey: "sf_gofile_guest_token") ?? "qmMkk3QlGAVUbei1YkhSfPaCAUqLKgsm"
-        var wt = await generateWT(token: token, ua: ua, lang: lang)
+        var wt = await generateWT(token: token, ua: ua, lang: lang, policy: policy)
 
-        var (httpCode, cJson) = await fetchContentsJSON(contentId: contentId, token: token, wt: wt, ua: ua, lang: lang)
+        var (httpCode, cJson) = await fetchContentsJSON(contentId: contentId, token: token, wt: wt, ua: ua, lang: lang, policy: policy)
         let apiStatus = cJson?["status"] as? String
         if httpCode == 401 || httpCode == 403 || apiStatus == "error-wrongToken" || apiStatus == "error-token" {
-            if let freshToken = await mintGuestToken(ua: ua) {
+            if let freshToken = await mintGuestToken(ua: ua, policy: policy) {
                 token = freshToken
-                wt = await generateWT(token: token, ua: ua, lang: lang)
-                (httpCode, cJson) = await fetchContentsJSON(contentId: contentId, token: token, wt: wt, ua: ua, lang: lang)
+                wt = await generateWT(token: token, ua: ua, lang: lang, policy: policy)
+                (httpCode, cJson) = await fetchContentsJSON(contentId: contentId, token: token, wt: wt, ua: ua, lang: lang, policy: policy)
             }
         }
 
@@ -134,7 +159,7 @@ package struct GofileResolver: HostResolver {
         }
 
         guard var cRoot = cJson?["data"] as? [String: Any] else {
-            return HostResolutionResult(downloads: [], failureReason: "链接已失效")
+            return HostResolutionResult(downloads: [], failureReason: httpCode == 0 ? "无法连接 Gofile" : "链接已失效")
         }
 
         // Automatically unlock password-protected Gofile shares using user's live password dictionary
@@ -142,7 +167,15 @@ package struct GofileResolver: HostResolver {
             var unlocked = false
             for candidate in passwords where !candidate.isEmpty {
                 let pwHash = sha256HexString(candidate)
-                let (_, pwJson) = await fetchContentsJSON(contentId: contentId, token: token, wt: wt, ua: ua, lang: lang, passwordHash: pwHash)
+                let (_, pwJson) = await fetchContentsJSON(
+                    contentId: contentId,
+                    token: token,
+                    wt: wt,
+                    ua: ua,
+                    lang: lang,
+                    policy: policy,
+                    passwordHash: pwHash
+                )
                 if let unlockedRoot = pwJson?["data"] as? [String: Any],
                    (unlockedRoot["canAccess"] as? Bool) == true,
                    (unlockedRoot["children"] != nil || (unlockedRoot["type"] as? String) == "file") {
@@ -185,7 +218,7 @@ package struct GofileResolver: HostResolver {
             let childType = (child["type"] as? String) ?? "file"
             if childType == "folder",
                let subId = (child["code"] as? String) ?? (child["id"] as? String) {
-                let subItems = await resolveGofileList(contentId: subId, passwords: passwords, depth: depth + 1)
+                let subItems = await resolveGofileList(contentId: subId, passwords: passwords, depth: depth + 1, policy: policy)
                 list.append(contentsOf: subItems)
                 continue
             }

@@ -218,9 +218,20 @@ package actor JobStore: JobRepository {
         passwordHint: String?,
         downloadParts: [DownloadPart]?
     ) -> Job? {
+        updateDownloadMetadata(id: id, passwordHint: passwordHint, downloadParts: downloadParts, mirrorURLs: nil)
+    }
+
+    @discardableResult
+    package func updateDownloadMetadata(
+        id: UUID,
+        passwordHint: String?,
+        downloadParts: [DownloadPart]?,
+        mirrorURLs: [String]?
+    ) -> Job? {
         guard var job = jobs[id] else { return nil }
         if let passwordHint { job.passwordHint = passwordHint }
         if let downloadParts { job.downloadParts = downloadParts }
+        if let mirrorURLs { job.mirrorURLs = mirrorURLs }
         job.updatedAt = Date()
         jobs[id] = job
         persist()

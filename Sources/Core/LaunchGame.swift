@@ -128,15 +128,29 @@ package struct LaunchGame: Identifiable, Codable, Equatable, Sendable {
 
     package static func isIgnoredHelperExecutable(_ path: String?) -> Bool {
         guard let path, !path.isEmpty else { return false }
-        let relLower = path.lowercased()
-        let lower = (path as NSString).lastPathComponent.lowercased()
-        return relLower.contains("__redist")
-            || relLower.contains("/redist/")
+        let normalized = path.lowercased().replacingOccurrences(of: "\\", with: "/")
+        let components = normalized.split(separator: "/").map(String.init)
+        let dirComponents = components.dropLast()
+        let lower = components.last ?? (path as NSString).lastPathComponent.lowercased()
+        let isInRedistDirectory = normalized.contains("__redist")
+            || normalized.contains("_commonredist")
+            || dirComponents.contains { component in
+                component == "redist"
+                    || component == "_commonredist"
+                    || component == "__redist"
+                    || component == "commonredist"
+                    || component == "redistributables"
+                    || component == "directx"
+            }
+        return isInRedistDirectory
             || lower.contains("scriptinterpreter")
             || lower.contains("unitycrashhandler")
             || lower.contains("unins")
             || lower.contains("vc_redist")
+            || lower.contains("vcredist")
             || lower.contains("dxsetup")
+            || lower.contains("dxwebsetup")
+            || lower.contains("physx")
             || lower.contains("crashreport")
             || lower.contains("crs-handler")
             || lower.contains("goggalaxy")

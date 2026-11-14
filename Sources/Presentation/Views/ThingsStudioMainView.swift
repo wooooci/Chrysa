@@ -46,12 +46,14 @@ package struct ThingsStudioMainView: View {
                 .environment(\.appTheme, vm.themePalette)
                 .tint(vm.themePalette.accent)
         }
-        .alert(item: $vm.launchErrorAlert) { notice in
-            Alert(
-                title: Text("无法启动「\(notice.title)」"),
-                message: Text(notice.message),
-                dismissButton: .default(Text("好"))
-            )
+        .alert(
+            vm.launchErrorAlert.map { "无法启动「\($0.title)」" } ?? "无法启动",
+            isPresented: $vm.launchErrorAlert.isPresent(),
+            presenting: vm.launchErrorAlert
+        ) { _ in
+            Button("好") {}
+        } message: { notice in
+            Text(notice.message)
         }
     }
 

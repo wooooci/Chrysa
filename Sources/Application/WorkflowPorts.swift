@@ -34,6 +34,12 @@ package protocol JobRepository: Sendable {
         passwordHint: String?,
         downloadParts: [DownloadPart]?
     ) async -> Job?
+    @discardableResult func updateDownloadMetadata(
+        id: UUID,
+        passwordHint: String?,
+        downloadParts: [DownloadPart]?,
+        mirrorURLs: [String]?
+    ) async -> Job?
     @discardableResult func reopenForResume(
         id: UUID,
         status: JobStatus,
@@ -51,6 +57,15 @@ package extension JobRepository {
         downloadParts: [DownloadPart]?
     ) async -> Job? {
         await job(for: id)
+    }
+
+    @discardableResult func updateDownloadMetadata(
+        id: UUID,
+        passwordHint: String?,
+        downloadParts: [DownloadPart]?,
+        mirrorURLs: [String]?
+    ) async -> Job? {
+        await updateDownloadMetadata(id: id, passwordHint: passwordHint, downloadParts: downloadParts)
     }
 
     @discardableResult func reopenForResume(
@@ -189,9 +204,14 @@ package protocol WorkflowServices: Sendable {
     func initialDownloadMessage(for input: String) -> String?
     func suggestedDownloadName(_ input: String) -> String?
     func resolveDownloads(_ input: String, passwords: [String]) async -> [ResolvedDownload]
+    func resolveDownloads(_ input: String, passwords: [String], settings: AppSettings) async -> [ResolvedDownload]
     func resolveDownloadsDetailed(_ input: String, passwords: [String]) async -> HostResolutionResult
+    func resolveDownloadsDetailed(_ input: String, passwords: [String], settings: AppSettings) async -> HostResolutionResult
     func refreshDownload(_ item: ResolvedDownload) async -> ResolvedDownload
     func refreshDownload(_ item: ResolvedDownload, passwords: [String]) async -> ResolvedDownload
+    func refreshDownload(_ item: ResolvedDownload, passwords: [String], settings: AppSettings) async -> ResolvedDownload
+    func availableDiskSpace(atDirectory path: String) -> Int64?
+    func setPreventIdleSleep(_ active: Bool)
     func isArchiveFile(_ path: String) -> Bool
     func normalizeArchivePath(_ path: String) -> String
     func fileSize(_ path: String) -> Int64?
@@ -226,14 +246,30 @@ package extension WorkflowServices {
         DownloadInputParser.defaultKnownBareDomains
     }
 
+    func resolveDownloads(_ input: String, passwords: [String], settings: AppSettings) async -> [ResolvedDownload] {
+        await resolveDownloads(input, passwords: passwords)
+    }
+
     func resolveDownloadsDetailed(_ input: String, passwords: [String]) async -> HostResolutionResult {
         let items = await resolveDownloads(input, passwords: passwords)
         return HostResolutionResult(downloads: items, failureReason: items.isEmpty ? "无法获取直链" : nil)
     }
 
+    func resolveDownloadsDetailed(_ input: String, passwords: [String], settings: AppSettings) async -> HostResolutionResult {
+        await resolveDownloadsDetailed(input, passwords: passwords)
+    }
+
     func refreshDownload(_ item: ResolvedDownload, passwords: [String]) async -> ResolvedDownload {
         await refreshDownload(item)
     }
+
+    func refreshDownload(_ item: ResolvedDownload, passwords: [String], settings: AppSettings) async -> ResolvedDownload {
+        await refreshDownload(item, passwords: passwords)
+    }
+
+    func availableDiskSpace(atDirectory path: String) -> Int64? { nil }
+
+    func setPreventIdleSleep(_ active: Bool) {}
 
     func cleanupStaging(for jobID: UUID, downloadDirectory: String) {}
 }

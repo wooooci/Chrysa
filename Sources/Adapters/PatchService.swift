@@ -28,18 +28,14 @@ package actor PatchService {
         onLog: @escaping @Sendable (String, Bool) -> Void
     ) async throws -> PatchResultPayload {
         let fm = FileManager.default
-        var existingSteamDLLs: [(String, Bool)] = []
-        var candidateEXEs: [String] = []
-        var unityDataDirs: [String] = []
-        var unrealSteamworksDirs: [String] = []
-        var existingAppID: String? = nil
-        var discoveredGameTitle: String? = nil
-        var hasD3D12 = false
-        var hasWinHTTP = false
 
-        func cancellationRequested() async -> Bool {
+        @Sendable func cancellationRequested() async -> Bool {
             if Task.isCancelled { return true }
             return await isCancelled()
+        }
+
+        func checkCancellation() async throws {
+            if await cancellationRequested() { throw CancellationError() }
         }
 
         try await checkCancellation()
@@ -48,139 +44,22 @@ package actor PatchService {
         guard rootValues.isDirectory == true, rootValues.isReadable == true else {
             throw CocoaError(.fileReadNoPermission)
         }
-        // Read the root explicitly so missing or inaccessible input cannot become an empty successful scan.
-        let topItems = try fm.contentsOfDirectory(atPath: folderPath).filter { !$0.hasPrefix(".") }
         let writer = PatchFileWriter(root: root)
 
-        func checkCancellation() async throws {
-            if await cancellationRequested() { throw CancellationError() }
-        }
+        let inspection = try await GameDirectoryInspector.inspect(
+            directory: folderPath,
+            fallbackTitle: cleanTitle,
+            cancellationRequested: cancellationRequested
+        )
+        let existingSteamDLLs = inspection.existingSteamDLLs
+        let unityDataDirs = inspection.unityDataDirectories
+        let unrealSteamworksDirs = inspection.unrealSteamworksDirectories
+        var hasD3D12 = inspection.hasD3D12
+        let hasWinHTTP = inspection.hasWinHTTP
+        let mainEXE = inspection.mainExecutable
+        let effectiveTitle = inspection.resolvedTitle
 
-        // 1. CSF standard layout: steamapps/common/<GameName>
-        let commonDir = (folderPath as NSString).appendingPathComponent("steamapps/common")
-        if let items = try? fm.contentsOfDirectory(atPath: commonDir) {
-            for item in items where !item.hasPrefix(".") {
-                try await checkCancellation()
-                var isDir: ObjCBool = false
-                let fullSub = (commonDir as NSString).appendingPathComponent(item)
-                if fm.fileExists(atPath: fullSub, isDirectory: &isDir), isDir.boolValue {
-                    discoveredGameTitle = item
-                    break
-                }
-            }
-        }
-
-        // 2. Single top-level game subfolder
-        if discoveredGameTitle == nil,
-           topItems.count == 1 {
-            try await checkCancellation()
-            let singleSub = (folderPath as NSString).appendingPathComponent(topItems[0])
-            var isDir: ObjCBool = false
-            if fm.fileExists(atPath: singleSub, isDirectory: &isDir), isDir.boolValue,
-               topItems[0].lowercased() != "steamapps" && !topItems[0].lowercased().hasSuffix("_data") {
-                discoveredGameTitle = GameTitle.cleanGameTitle(from: topItems[0])
-            }
-        }
-
-        if let enumerator = fm.enumerator(atPath: folderPath) {
-            while let rel = enumerator.nextObject() as? String {
-                try await checkCancellation()
-                let relLower = rel.lowercased()
-                let lastComp = (rel as NSString).lastPathComponent
-                let lower = lastComp.lowercased()
-                let full = (folderPath as NSString).appendingPathComponent(rel)
-
-                if lower == "steam_api64.dll" {
-                    existingSteamDLLs.append((full, true))
-                } else if lower == "steam_api.dll" {
-                    existingSteamDLLs.append((full, false))
-                } else if lower == "winhttp.dll" {
-                    hasWinHTTP = true
-                } else if lower.hasSuffix("_data") {
-                    var isDir: ObjCBool = false
-                    if fm.fileExists(atPath: full, isDirectory: &isDir), isDir.boolValue {
-                        unityDataDirs.append(full)
-                    }
-                } else if relLower.contains("engine/binaries/thirdparty/steamworks") {
-                    var isDir: ObjCBool = false
-                    if fm.fileExists(atPath: full, isDirectory: &isDir), isDir.boolValue {
-                        unrealSteamworksDirs.append(full)
-                    }
-                } else if lower == "steam_appid.txt" {
-                    if let content = try? String(contentsOfFile: full, encoding: .utf8)
-                        .trimmingCharacters(in: .whitespacesAndNewlines),
-                       !content.isEmpty {
-                        existingAppID = content
-                    }
-                } else if lower.hasPrefix("appmanifest_") && lower.hasSuffix(".acf") {
-                    if let m = try? NSRegularExpression(pattern: #"appmanifest_([0-9]+)\.acf"#).firstMatch(
-                        in: lower, range: NSRange(lower.startIndex..., in: lower)
-                    ), let r = Range(m.range(at: 1), in: lower) {
-                        existingAppID = String(lower[r])
-                    }
-                    if let acfText = try? String(contentsOfFile: full, encoding: .utf8),
-                       let nmMatch = try? NSRegularExpression(pattern: #""name"\s+"([^"]+)""#).firstMatch(
-                        in: acfText, range: NSRange(acfText.startIndex..., in: acfText)
-                       ), let nr = Range(nmMatch.range(at: 1), in: acfText) {
-                        discoveredGameTitle = String(acfText[nr])
-                    }
-                } else if lower == "d3d12" || lower == "d3d12core.dll" {
-                    hasD3D12 = true
-                } else if lower.hasSuffix(".exe")
-                            && !relLower.contains("__redist")
-                            && !relLower.contains("/redist/")
-                            && !lower.contains("scriptinterpreter")
-                            && !lower.contains("unitycrashhandler")
-                            && !lower.contains("unins")
-                            && !lower.contains("vc_redist")
-                            && !lower.contains("dxsetup")
-                            && !lower.contains("crashreport")
-                            && !lower.contains("crs-handler")
-                            && !lower.contains("goggalaxy")
-                            && !lower.contains("dosbox")
-                            && !lower.hasPrefix("setup_") {
-                    candidateEXEs.append(full)
-                }
-            }
-        }
-
-        // Priority 1: Exact Unity <Name>_Data -> <Name>.exe match
-        var matchedUnityEXE: String? = nil
-        for dataDir in unityDataDirs {
-            try await checkCancellation()
-            let dirName = (dataDir as NSString).lastPathComponent
-            if dirName.lowercased().hasSuffix("_data") {
-                let prefix = String(dirName.dropLast("_data".count))
-                let parent = (dataDir as NSString).deletingLastPathComponent
-                let expectedEXE = (parent as NSString).appendingPathComponent("\(prefix).exe")
-                if fm.fileExists(atPath: expectedEXE) {
-                    matchedUnityEXE = expectedEXE
-                    break
-                }
-                if let ciMatch = candidateEXEs.first(where: {
-                    (($0 as NSString).lastPathComponent as NSString).deletingPathExtension.caseInsensitiveCompare(prefix) == .orderedSame
-                }) {
-                    matchedUnityEXE = ciMatch
-                    break
-                }
-            }
-        }
-
-        // Priority 2: Shallowest directory depth first, then largest file size
-        let mainEXE = matchedUnityEXE ?? candidateEXEs.max { a, b in
-            let depthA = a.components(separatedBy: "/").count
-            let depthB = b.components(separatedBy: "/").count
-            if depthA != depthB {
-                return depthA > depthB
-            }
-            let sa = (try? fm.attributesOfItem(atPath: a)[.size] as? Int64) ?? 0
-            let sb = (try? fm.attributesOfItem(atPath: b)[.size] as? Int64) ?? 0
-            return sa < sb
-        }
-
-        let effectiveTitle = discoveredGameTitle ?? cleanTitle
-
-        var resolvedAppID = existingAppID
+        var resolvedAppID = inspection.existingAppID
         if resolvedAppID == nil {
             let folderName = (folderPath as NSString).lastPathComponent
             if let m = try? NSRegularExpression(pattern: #"^([0-9]{4,8})"#).firstMatch(
@@ -192,6 +71,12 @@ package actor PatchService {
         if resolvedAppID == nil {
             try await checkCancellation()
             resolvedAppID = await SteamAppIDLookup.fetch(for: effectiveTitle)
+            if resolvedAppID == nil,
+               let hint = inspection.executableTitleHint,
+               hint.caseInsensitiveCompare(effectiveTitle) != .orderedSame,
+               !GameDirectoryInspector.genericExecutableStems.contains(hint.lowercased()) {
+                resolvedAppID = await SteamAppIDLookup.fetch(for: hint)
+            }
             try await checkCancellation()
         }
         let finalAppID = resolvedAppID ?? "480"

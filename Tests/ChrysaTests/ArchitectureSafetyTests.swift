@@ -797,4 +797,445 @@ struct ArchitectureSafetyTests {
         #expect(loadedJob.progress == 0.42)
         #expect(loadedJob.message == "已暂停")
     }
+
+    @Test
+    func testGameDirectoryInspectorResolvesAnkerGamesRepackAndOverridesStaleSpacewarAppID() async throws {
+        let fm = FileManager.default
+        let tmpDir = fm.temporaryDirectory
+            .appendingPathComponent("chrysa-inspector-test-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tmpDir) }
+
+        #expect(LaunchGame.isIgnoredHelperExecutable("Redist/PhysX_9.08.14_9.09.0814_SystemSoftware.exe"))
+        #expect(LaunchGame.isIgnoredHelperExecutable("Redist/vcredist_x86.exe"))
+        #expect(LaunchGame.isIgnoredHelperExecutable("Redist/DXWebSetup.exe"))
+        #expect(!LaunchGame.isIgnoredHelperExecutable("Pentiment/Pentiment.exe"))
+
+        let releaseRoot = tmpDir.appendingPathComponent("Pentiment-AnkerGames", isDirectory: true)
+        let redistDir = releaseRoot.appendingPathComponent("Redist", isDirectory: true)
+        let innerGameDir = releaseRoot.appendingPathComponent("Pentiment", isDirectory: true)
+        let pluginDir = innerGameDir.appendingPathComponent("Pentiment_Data/Plugins/x86_64", isDirectory: true)
+        try fm.createDirectory(at: redistDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: pluginDir, withIntermediateDirectories: true)
+
+        try Data("URL=https://example.invalid\n".utf8)
+            .write(to: releaseRoot.appendingPathComponent("AnkerGames - Free Pre-installed PC Games.url"))
+        try Data("readme".utf8).write(to: releaseRoot.appendingPathComponent("Read Me.txt"))
+        try Data("@echo off\n".utf8).write(to: releaseRoot.appendingPathComponent("Run Me!.bat"))
+
+        // Deliberately large redistributable installer to ensure helper filtering beats file size.
+        try Data(repeating: 0x5A, count: 8192)
+            .write(to: redistDir.appendingPathComponent("PhysX_9.08.14_9.09.0814_SystemSoftware.exe"))
+        try Data(repeating: 0x5A, count: 4096).write(to: redistDir.appendingPathComponent("vcredist_x86.exe"))
+        try Data(repeating: 0x5A, count: 4096).write(to: redistDir.appendingPathComponent("DXWebSetup.exe"))
+
+        let expectedEXE = innerGameDir.appendingPathComponent("Pentiment.exe")
+        try Data(repeating: 0x4D, count: 64).write(to: expectedEXE)
+        try Data("480\n".utf8).write(to: innerGameDir.appendingPathComponent("steam_appid.txt"))
+        try Data("[Settings]\n;AppId=999999\nAppId=1205520\nUserName=AnkerGames\n".utf8)
+            .write(to: pluginDir.appendingPathComponent("steam_emu.ini"))
+
+        let inspection = try #require(GameDirectoryInspector.inspect(directory: releaseRoot.path))
+        #expect(inspection.resolvedTitle == "Pentiment")
+        #expect(inspection.existingAppID == "1205520")
+        #expect(inspection.mainExecutable == expectedEXE.path)
+        #expect(!inspection.candidateExecutables.contains(where: { $0.contains("Redist") }))
+
+        let imported = try #require(
+            await DefaultWorkflowServices().inspectGameForImport(
+                at: releaseRoot,
+                bottlesDirectory: tmpDir.appendingPathComponent("Bottles").path
+            )
+        )
+        #expect(imported.title == "Pentiment")
+        #expect(imported.appID == "1205520")
+        #expect(imported.exePath == expectedEXE.path)
+    }
+
+    @Test
+    func testGameDirectoryInspectorHandlesFlatUnityUnrealAndPreservesDistinctTitles() throws {
+        let fm = FileManager.default
+        let tmpDir = fm.temporaryDirectory
+            .appendingPathComponent("chrysa-inspector-variants-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tmpDir) }
+
+        // 1. Unreal layout with sibling Engine/ and Binaries/Win64
+        let unrealRoot = tmpDir.appendingPathComponent("CoolGame-SomeGroup", isDirectory: true)
+        let unrealBinDir = unrealRoot.appendingPathComponent("CoolGame/Binaries/Win64", isDirectory: true)
+        try fm.createDirectory(at: unrealRoot.appendingPathComponent("Engine", isDirectory: true), withIntermediateDirectories: true)
+        try fm.createDirectory(at: unrealBinDir, withIntermediateDirectories: true)
+        let unrealEXE = unrealBinDir.appendingPathComponent("CoolGame-Win64-Shipping.exe")
+        try Data("exe".utf8).write(to: unrealEXE)
+        let unrealInspection = try #require(GameDirectoryInspector.inspect(directory: unrealRoot.path))
+        #expect(unrealInspection.resolvedTitle == "CoolGame")
+        #expect(unrealInspection.mainExecutable == unrealEXE.path)
+
+        // 2. Flat Unity folder with trailing repack tag + MonoBleedingEdge dir
+        let flatUnity = tmpDir.appendingPathComponent("Hollow Knight-RepackTeam", isDirectory: true)
+        try fm.createDirectory(at: flatUnity.appendingPathComponent("hollow_knight_Data", isDirectory: true), withIntermediateDirectories: true)
+        try fm.createDirectory(at: flatUnity.appendingPathComponent("MonoBleedingEdge", isDirectory: true), withIntermediateDirectories: true)
+        try Data("exe".utf8).write(to: flatUnity.appendingPathComponent("hollow_knight.exe"))
+        let flatInspection = try #require(GameDirectoryInspector.inspect(directory: flatUnity.path))
+        #expect(flatInspection.resolvedTitle == "Hollow Knight")
+
+        // 3. Multi-word clean folder title with mismatched exe stem + Content/MonoBleedingEdge folders
+        let sinkingRoot = tmpDir.appendingPathComponent("Order of the Sinking Star", isDirectory: true)
+        try fm.createDirectory(at: sinkingRoot.appendingPathComponent("MonoBleedingEdge", isDirectory: true), withIntermediateDirectories: true)
+        try fm.createDirectory(at: sinkingRoot.appendingPathComponent("Content", isDirectory: true), withIntermediateDirectories: true)
+        try Data("exe".utf8).write(to: sinkingRoot.appendingPathComponent("sinking_star.exe"))
+        let sinkingInspection = try #require(GameDirectoryInspector.inspect(directory: sinkingRoot.path))
+        #expect(sinkingInspection.resolvedTitle == "Order of the Sinking Star")
+
+        // 4. Explicit Spacewar 480 + generic "Game.exe" preservation
+        let manualRoot = tmpDir.appendingPathComponent("Manual Game", isDirectory: true)
+        try fm.createDirectory(at: manualRoot, withIntermediateDirectories: true)
+        try Data("exe".utf8).write(to: manualRoot.appendingPathComponent("Game.exe"))
+        try Data("480\n".utf8).write(to: manualRoot.appendingPathComponent("steam_appid.txt"))
+        let manualInspection = try #require(GameDirectoryInspector.inspect(directory: manualRoot.path))
+        #expect(manualInspection.resolvedTitle == "Manual Game")
+        #expect(manualInspection.existingAppID == "480")
+
+        // 5. INI comment skipping + inline comment trimming
+        let codexINI = manualRoot.appendingPathComponent("codex.ini")
+        try Data(";AppId=999999\n#AppId=888888\n[Settings]\nAppId = 367520 ; Hollow Knight\n".utf8).write(to: codexINI)
+        #expect(GameDirectoryInspector.parseEmulatorINIAppID(atPath: codexINI.path) == "367520")
+    }
+
+    @Test
+    func testNewHostResolversPixeldrainAccelerationAndHTTPProbeGuard() throws {
+        // 1. Bare URL normalization for newly added shield-free hosts
+        #expect(HostResolverRegistry.normalizeDownloadInput("datanodes.to/abc123/Game.7z") == "https://datanodes.to/abc123/Game.7z")
+        #expect(HostResolverRegistry.normalizeDownloadInput("qiwi.gg/file/xyz987") == "https://qiwi.gg/file/xyz987")
+        #expect(HostResolverRegistry.normalizeDownloadInput("workupload.com/file/AbCd1234") == "https://workupload.com/file/AbCd1234")
+        #expect(HostResolverRegistry.normalizeDownloadInput("krakenfiles.com/view/hAsH01/file.html") == "https://krakenfiles.com/view/hAsH01/file.html")
+
+        // 2. DataNodes HTML form + direct link parsing
+        let dnHTML = """
+        <html><head><title>Download Elder_Pack.7z | DataNodes</title></head>
+        <body>
+        <form method="POST" action="https://datanodes.to/download">
+          <input type="hidden" name="op" value="download2">
+          <input type="hidden" name="id" value="abc123">
+          <input type="hidden" name="rand" value="r99">
+          <input type="hidden" name="method_free" value="Free Download">
+        </form>
+        </body></html>
+        """
+        let dnURL = try #require(URL(string: "https://datanodes.to/abc123/Elder_Pack.7z"))
+        #expect(DataNodesResolver.extractFilename(from: dnHTML) == "Elder_Pack.7z")
+        let dnForm = try #require(DataNodesResolver.parseDownloadForm(html: dnHTML, baseURL: dnURL.absoluteString, url: dnURL))
+        #expect(dnForm.actionURL == "https://datanodes.to/download")
+        #expect(dnForm.formBody.contains("op=download2"))
+        #expect(dnForm.formBody.contains("id=abc123"))
+        #expect(
+            DataNodesResolver.extractDirectLink(fromJSONOrHTML: #"{"url":"https://dl3.datanodes.to/d/tok123/Elder_Pack.7z"}"#)
+                == "https://dl3.datanodes.to/d/tok123/Elder_Pack.7z"
+        )
+
+        // 3. Qiwi.gg HTML / Spyderrock candidate parsing
+        let qiwiHTML = """
+        <html><head><title>Indie_Build.rar - qiwi.gg</title></head>
+        <body><h1 class="TextHeading">Indie_Build.rar</h1>
+        <script>{"slug":"abcSlug9","downloadUrl":"https://spyderrock.com/abcSlug9.rar"}</script>
+        </body></html>
+        """
+        let qiwiURL = try #require(URL(string: "https://qiwi.gg/file/abcSlug9"))
+        let qiwiParsed = QiwiResolver.parsePage(html: qiwiHTML, originalURL: qiwiURL)
+        #expect(qiwiParsed.filename == "Indie_Build.rar")
+        #expect(qiwiParsed.candidateURLs.contains("https://spyderrock.com/abcSlug9.rar"))
+
+        // 4. Workupload ID + server JSON + filename parsing
+        let wuURL = try #require(URL(string: "https://workupload.com/file/WU9876"))
+        #expect(WorkuploadResolver.extractFileID(from: wuURL) == "WU9876")
+        let wuJSON = Data(#"{"success":true,"data":{"url":"https://srv12.workupload.com/download/WU9876/token99"}}"#.utf8)
+        #expect(WorkuploadResolver.parseDownloadServerJSON(wuJSON) == "https://srv12.workupload.com/download/WU9876/token99")
+        #expect(WorkuploadResolver.extractFilename(from: "<html><title>ModPack.zip - workupload</title></html>") == "ModPack.zip")
+
+        // 5. KrakenFiles form token + JSON download URL parsing
+        let kfHTML = """
+        <html><head><title>Soundtrack.zip - Krakenfiles</title></head>
+        <body><form id="dl-form" action="/download/kHash42" method="post">
+          <input type="hidden" name="token" value="tok-kf-888">
+        </form></body></html>
+        """
+        let kfURL = try #require(URL(string: "https://krakenfiles.com/view/kHash42/file.html"))
+        let kfParsed = try #require(KrakenFilesResolver.parseLandingPage(html: kfHTML, url: kfURL))
+        #expect(kfParsed.actionURL == "https://krakenfiles.com/download/kHash42")
+        #expect(kfParsed.token == "tok-kf-888")
+        #expect(kfParsed.filename == "Soundtrack.zip")
+        #expect(
+            KrakenFilesResolver.parseDownloadJSON(Data(#"{"status":"ok","url":"//s5.krakenfiles.com/get/kHash42/dl"}"#.utf8))
+                == "https://s5.krakenfiles.com/get/kHash42/dl"
+        )
+
+        // 6. Pixeldrain rate-limit detection + Basic Auth header & Real-Debrid parsing
+        let pdLimited = PixeldrainResolver.parseFileInfoJSON(
+            Data(#"{"name":"Demo.7z","size":2048,"availability":"file_rate_limited","download_speed_limit":1048576}"#.utf8),
+            hasAPIKey: false
+        )
+        #expect(pdLimited.name == "Demo.7z")
+        #expect(pdLimited.rateLimitNote == "限速 1MB/s")
+        #expect(pdLimited.failureReason == nil)
+
+        let pdWithKey = PixeldrainResolver.parseFileInfoJSON(
+            Data(#"{"name":"Demo.7z","size":2048,"availability":"file_rate_limited","download_speed_limit":1048576}"#.utf8),
+            hasAPIKey: true
+        )
+        #expect(pdWithKey.rateLimitNote == nil)
+        #expect(PixeldrainResolver.basicAuthHeaderValue(for: "secret")?.hasPrefix("Basic ") == true)
+
+        let rdResolved = try #require(
+            DebridAccelerator.parseRealDebridJSON(
+                Data(#"{"filename":"RD_Game.7z","filesize":999999,"download":"https://rd.example/d/RD_Game.7z"}"#.utf8),
+                originalURL: "https://1fichier.com/?rd1"
+            )
+        )
+        #expect(rdResolved.finalURL == "https://rd.example/d/RD_Game.7z")
+        #expect(rdResolved.suggestedFilename == "RD_Game.7z")
+
+        // 7. Proxy env sanitization & fake-payload probe guard
+        let cleanedEnv = ResolverHTTPHelper.cleanedDirectEnvironment()
+        #expect(cleanedEnv["http_proxy"] == nil)
+        #expect(cleanedEnv["https_proxy"] == nil)
+        #expect(cleanedEnv["all_proxy"] == nil)
+        #expect(cleanedEnv["HTTP_PROXY"] == nil)
+        #expect(cleanedEnv["HTTPS_PROXY"] == nil)
+        #expect(cleanedEnv["ALL_PROXY"] == nil)
+
+        let rawHTMLCurlDump = Data("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><title>Just a moment...</title></html>\n__CHRYSA_EFFECTIVE_URL__:https://example.invalid/dl__CHRYSA_STATUS__:200".utf8)
+        let htmlFakeProbe = try #require(
+            ResolverHTTPHelper.parseCurlDumpedOutput(rawHTMLCurlDump, fallbackURL: "https://example.invalid/dl")
+        )
+        #expect(ResolverHTTPHelper.validateDownloadProbe(htmlFakeProbe) != nil)
+    }
+
+    @Test
+    func testDownloadServiceExpiredDirectLinkRefreshAndMirrorFallbackEndToEnd() async throws {
+        guard ToolchainLocator.locateDownloadEngineBinary() != nil else { return }
+
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chrysa-dl-e2e-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let portFile = tmpDir.appendingPathComponent("port.txt")
+        let serverScript = """
+        import http.server, socketserver, sys
+        payload = b'CHRYSA_PAYLOAD_' * 512
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_HEAD(self):
+                if self.path == '/expired.bin':
+                    self.send_response(403); self.end_headers()
+                elif self.path == '/quota.bin':
+                    self.send_response(429); self.end_headers()
+                elif self.path == '/aria_expired.bin':
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(payload)))
+                    self.send_header('Accept-Ranges', 'bytes')
+                    self.end_headers()
+                elif self.path in ('/fresh.bin', '/mirror_ok.bin'):
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(payload)))
+                    self.send_header('Accept-Ranges', 'bytes')
+                    self.end_headers()
+                else:
+                    self.send_response(404); self.end_headers()
+            def do_GET(self):
+                if self.path == '/expired.bin':
+                    self.send_response(403); self.end_headers()
+                elif self.path == '/quota.bin':
+                    self.send_response(429); self.end_headers()
+                elif self.path == '/aria_expired.bin':
+                    if self.headers.get('Range') == 'bytes=0-0':
+                        self.send_response(206)
+                        self.send_header('Content-Length', '1')
+                        self.send_header('Content-Range', f'bytes 0-0/{len(payload)}')
+                        self.end_headers()
+                        self.wfile.write(payload[:1])
+                    else:
+                        self.send_response(403); self.end_headers()
+                elif self.path in ('/fresh.bin', '/mirror_ok.bin'):
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(payload)))
+                    self.send_header('Accept-Ranges', 'bytes')
+                    self.end_headers()
+                    self.wfile.write(payload)
+                else:
+                    self.send_response(404); self.end_headers()
+        with socketserver.TCPServer(('127.0.0.1', 0), Handler) as httpd:
+            with open(sys.argv[1], 'w') as f:
+                f.write(str(httpd.server_address[1]))
+            httpd.serve_forever()
+        """
+        let scriptURL = tmpDir.appendingPathComponent("mock_server.py")
+        try serverScript.write(to: scriptURL, atomically: true, encoding: .utf8)
+
+        let server = Process()
+        server.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        server.arguments = [scriptURL.path, portFile.path]
+        try server.run()
+        defer { if server.isRunning { server.terminate() } }
+
+        var port: Int?
+        let deadline = Date().addingTimeInterval(5)
+        while port == nil && Date() < deadline {
+            if let s = try? String(contentsOf: portFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+               let p = Int(s), p > 0 {
+                port = p
+                break
+            }
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        let listenPort = try #require(port)
+
+        // Direct connectivity pre-probe under smart routing against local server
+        let routeCheck = await ResolverHTTPHelper.resolveProxyRoute(
+            for: "http://127.0.0.1:\(listenPort)/fresh.bin",
+            policy: .smart
+        )
+        #expect(routeCheck.route == .direct)
+        #expect(routeCheck.probe?.statusCode == 200)
+        #expect(routeCheck.probe?.contentLength == Int64("CHRYSA_PAYLOAD_".utf8.count * 512))
+
+        let dlDir = tmpDir.appendingPathComponent("downloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: dlDir, withIntermediateDirectories: true)
+        var settings = AppSettings.default
+        settings.downloadDirectory = dlDir.path
+        settings.proxyPolicy = .directOnly
+        settings.maxConcurrentConnections = 2
+
+        let service = DownloadService()
+
+        // Scenario A: 403 expired direct link triggers auto-refresh via originalURL
+        let refreshLogs = ActorBox<String>([])
+        let refreshDiags = ActorBox<String>([])
+        let resA = await service.executeDownload(
+            taskID: UUID(),
+            currentTitle: "refresh_test.bin",
+            resolved: ResolvedDownload(
+                originalURL: "https://origin.example/share-refresh",
+                finalURL: "http://127.0.0.1:\(listenPort)/expired.bin",
+                headers: [],
+                suggestedFilename: "refresh_test.bin"
+            ),
+            settings: settings,
+            stagingJobID: UUID(),
+            stagingSubkey: nil,
+            refreshHandler: { item, _ in
+                HostResolutionResult(downloads: [
+                    ResolvedDownload(
+                        originalURL: item.originalURL,
+                        finalURL: "http://127.0.0.1:\(listenPort)/fresh.bin",
+                        headers: [],
+                        suggestedFilename: "refresh_test.bin"
+                    )
+                ])
+            },
+            isCancelled: { false },
+            onProgress: { _ in },
+            onLog: { msg, _ in await refreshLogs.append(msg) },
+            onDiagnostic: { diag in await refreshDiags.append(diag.message) }
+        )
+        switch resA {
+        case .completed(let outPath, _, _):
+            let data = try Data(contentsOf: URL(fileURLWithPath: outPath))
+            #expect(data.count == "CHRYSA_PAYLOAD_".utf8.count * 512)
+            #expect(String(data: data.prefix(15), encoding: .utf8) == "CHRYSA_PAYLOAD_")
+        default:
+            Issue.record("Expected expired 403 link to auto-refresh and succeed")
+        }
+        #expect(await refreshDiags.snapshot().contains(where: { $0.contains("正在从原分享页刷新") }))
+        #expect(await refreshLogs.snapshot().contains(where: { $0.contains("直链已刷新") }))
+
+        // Scenario B: 429 quota/rate-limit falls back automatically to backup mirror
+        let mirrorDiags = ActorBox<String>([])
+        let resB = await service.executeDownload(
+            taskID: UUID(),
+            currentTitle: "mirror_test.bin",
+            resolved: ResolvedDownload(
+                originalURL: "http://127.0.0.1:\(listenPort)/quota.bin",
+                finalURL: "http://127.0.0.1:\(listenPort)/quota.bin",
+                mirrorURLs: ["https://mirror.example/file-ok"],
+                headers: [],
+                suggestedFilename: "mirror_test.bin"
+            ),
+            settings: settings,
+            stagingJobID: UUID(),
+            stagingSubkey: nil,
+            mirrorResolveHandler: { mirrorURL, _ in
+                if mirrorURL == "https://mirror.example/file-ok" {
+                    return HostResolutionResult(downloads: [
+                        ResolvedDownload(
+                            originalURL: mirrorURL,
+                            finalURL: "http://127.0.0.1:\(listenPort)/mirror_ok.bin",
+                            headers: [],
+                            suggestedFilename: "mirror_test.bin"
+                        )
+                    ])
+                }
+                return HostResolutionResult(downloads: [])
+            },
+            isCancelled: { false },
+            onProgress: { _ in },
+            onLog: { _, _ in },
+            onDiagnostic: { diag in await mirrorDiags.append(diag.message) }
+        )
+        switch resB {
+        case .completed(let outPath, _, _):
+            let data = try Data(contentsOf: URL(fileURLWithPath: outPath))
+            #expect(data.count == "CHRYSA_PAYLOAD_".utf8.count * 512)
+        default:
+            Issue.record("Expected 429 primary to switch to backup mirror and succeed")
+        }
+        #expect(await mirrorDiags.snapshot().contains(where: { $0.contains("切换备用镜像") }))
+
+        // Scenario C: aria2c itself hits 403 mid-download -> preserves staging dir & auto-refreshes
+        let ariaRefreshLogs = ActorBox<String>([])
+        let ariaRefreshDiags = ActorBox<String>([])
+        let resC = await service.executeDownload(
+            taskID: UUID(),
+            currentTitle: "aria_refresh_test.bin",
+            resolved: ResolvedDownload(
+                originalURL: "https://origin.example/aria-share",
+                finalURL: "http://127.0.0.1:\(listenPort)/aria_expired.bin",
+                headers: [],
+                suggestedFilename: "aria_refresh_test.bin"
+            ),
+            settings: settings,
+            stagingJobID: UUID(),
+            stagingSubkey: nil,
+            refreshHandler: { item, _ in
+                HostResolutionResult(downloads: [
+                    ResolvedDownload(
+                        originalURL: item.originalURL,
+                        finalURL: "http://127.0.0.1:\(listenPort)/fresh.bin",
+                        headers: [],
+                        suggestedFilename: "aria_refresh_test.bin"
+                    )
+                ])
+            },
+            isCancelled: { false },
+            onProgress: { _ in },
+            onLog: { msg, _ in await ariaRefreshLogs.append(msg) },
+            onDiagnostic: { diag in await ariaRefreshDiags.append(diag.message) }
+        )
+        switch resC {
+        case .completed(let outPath, _, _):
+            let data = try Data(contentsOf: URL(fileURLWithPath: outPath))
+            #expect(data.count == "CHRYSA_PAYLOAD_".utf8.count * 512)
+        default:
+            Issue.record("Expected aria2c 403 exit to trigger direct link auto-refresh and succeed")
+        }
+        #expect(await ariaRefreshDiags.snapshot().contains(where: { $0.contains("正在从原分享页刷新并延续进度") }))
+        #expect(await ariaRefreshLogs.snapshot().contains(where: { $0.contains("沿用 .aria2 进度继续续传") }))
+    }
+}
+
+private actor ActorBox<T: Sendable> {
+    private var items: [T]
+    init(_ items: [T]) { self.items = items }
+    func append(_ item: T) { items.append(item) }
+    func snapshot() -> [T] { items }
 }

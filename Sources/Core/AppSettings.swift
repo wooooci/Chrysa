@@ -46,23 +46,76 @@ package struct AppearanceSettings: Codable, Equatable, Sendable {
     }
 }
 
+package enum ProxyPolicy: String, CaseIterable, Codable, Equatable, Sendable, Identifiable {
+    case smart = "smart"
+    case systemProxy = "systemProxy"
+    case directOnly = "directOnly"
+
+    package var id: String { rawValue }
+
+    package var displayName: String {
+        switch self {
+        case .smart: return "智能分流"
+        case .systemProxy: return "系统代理"
+        case .directOnly: return "仅直连"
+        }
+    }
+}
+
+package enum AccelerationCredentialKind: String, CaseIterable, Codable, Equatable, Sendable, Identifiable {
+    case pixeldrain = "pixeldrain"
+    case realDebrid = "realDebrid"
+    case torBox = "torBox"
+
+    package var id: String { rawValue }
+
+    package var displayName: String {
+        switch self {
+        case .pixeldrain: return "Pixeldrain"
+        case .realDebrid: return "Real-Debrid"
+        case .torBox: return "TorBox"
+        }
+    }
+
+    package var placeholder: String {
+        switch self {
+        case .pixeldrain: return "API Key（可选）"
+        case .realDebrid: return "API Token（可选）"
+        case .torBox: return "API Key（可选）"
+        }
+    }
+}
+
 package struct DownloadSettings: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case downloadDirectory, maxConcurrentConnections, maxConcurrentDownloads
+        case proxyPolicy, pixeldrainAPIKey, realDebridToken, torBoxToken
     }
 
     package var downloadDirectory: String
     package var maxConcurrentConnections: Int
     package var maxConcurrentDownloads: Int
+    package var proxyPolicy: ProxyPolicy
+    package var pixeldrainAPIKey: String
+    package var realDebridToken: String
+    package var torBoxToken: String
 
     package init(
         downloadDirectory: String = ("~/Downloads" as NSString).expandingTildeInPath,
         maxConcurrentConnections: Int = 16,
-        maxConcurrentDownloads: Int = 2
+        maxConcurrentDownloads: Int = 2,
+        proxyPolicy: ProxyPolicy = .smart,
+        pixeldrainAPIKey: String = "",
+        realDebridToken: String = "",
+        torBoxToken: String = ""
     ) {
         self.downloadDirectory = downloadDirectory
         self.maxConcurrentConnections = maxConcurrentConnections
         self.maxConcurrentDownloads = Self.clampedConcurrentDownloads(maxConcurrentDownloads)
+        self.proxyPolicy = proxyPolicy
+        self.pixeldrainAPIKey = pixeldrainAPIKey
+        self.realDebridToken = realDebridToken
+        self.torBoxToken = torBoxToken
     }
 
     package init(from decoder: Decoder) throws {
@@ -72,6 +125,42 @@ package struct DownloadSettings: Codable, Equatable, Sendable {
         maxConcurrentConnections = try container.decodeIfPresent(Int.self, forKey: .maxConcurrentConnections) ?? defaults.maxConcurrentConnections
         let rawConcurrent = try container.decodeIfPresent(Int.self, forKey: .maxConcurrentDownloads) ?? defaults.maxConcurrentDownloads
         maxConcurrentDownloads = Self.clampedConcurrentDownloads(rawConcurrent)
+        proxyPolicy = (try? container.decodeIfPresent(ProxyPolicy.self, forKey: .proxyPolicy)) ?? defaults.proxyPolicy
+        pixeldrainAPIKey = try container.decodeIfPresent(String.self, forKey: .pixeldrainAPIKey) ?? defaults.pixeldrainAPIKey
+        realDebridToken = try container.decodeIfPresent(String.self, forKey: .realDebridToken) ?? defaults.realDebridToken
+        torBoxToken = try container.decodeIfPresent(String.self, forKey: .torBoxToken) ?? defaults.torBoxToken
+    }
+
+    package var redactedSecrets: [String] {
+        var secrets: [String] = []
+        let pd = pixeldrainAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !pd.isEmpty {
+            secrets.append(pd)
+            if let encoded = ":\(pd)".data(using: .utf8)?.base64EncodedString(), !encoded.isEmpty {
+                secrets.append(encoded)
+            }
+        }
+        let rd = realDebridToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !rd.isEmpty { secrets.append(rd) }
+        let tb = torBoxToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !tb.isEmpty { secrets.append(tb) }
+        return secrets
+    }
+
+    package func credentialValue(for kind: AccelerationCredentialKind) -> String {
+        switch kind {
+        case .pixeldrain: return pixeldrainAPIKey
+        case .realDebrid: return realDebridToken
+        case .torBox: return torBoxToken
+        }
+    }
+
+    package mutating func setCredentialValue(_ value: String, for kind: AccelerationCredentialKind) {
+        switch kind {
+        case .pixeldrain: pixeldrainAPIKey = value
+        case .realDebrid: realDebridToken = value
+        case .torBox: torBoxToken = value
+        }
     }
 
     package static func clampedConcurrentDownloads(_ value: Int) -> Int {
@@ -171,6 +260,26 @@ package struct AppSettings: Codable, Equatable, Sendable {
         set { download.maxConcurrentDownloads = DownloadSettings.clampedConcurrentDownloads(newValue) }
     }
 
+    package var proxyPolicy: ProxyPolicy {
+        get { download.proxyPolicy }
+        set { download.proxyPolicy = newValue }
+    }
+
+    package var pixeldrainAPIKey: String {
+        get { download.pixeldrainAPIKey }
+        set { download.pixeldrainAPIKey = newValue }
+    }
+
+    package var realDebridToken: String {
+        get { download.realDebridToken }
+        set { download.realDebridToken = newValue }
+    }
+
+    package var torBoxToken: String {
+        get { download.torBoxToken }
+        set { download.torBoxToken = newValue }
+    }
+
     package var deleteArchiveAfterUnpack: Bool {
         get { unpack.deleteArchiveAfterUnpack }
         set { unpack.deleteArchiveAfterUnpack = newValue }
@@ -222,6 +331,10 @@ package struct AppSettings: Codable, Equatable, Sendable {
         downloadDirectory: String,
         maxConcurrentConnections: Int,
         maxConcurrentDownloads: Int = 2,
+        proxyPolicy: ProxyPolicy = .smart,
+        pixeldrainAPIKey: String = "",
+        realDebridToken: String = "",
+        torBoxToken: String = "",
         deleteArchiveAfterUnpack: Bool,
         bottlesDirectory: String,
         defaultLanguage: SteamLanguageOption,
@@ -238,7 +351,11 @@ package struct AppSettings: Codable, Equatable, Sendable {
         self.download = DownloadSettings(
             downloadDirectory: downloadDirectory,
             maxConcurrentConnections: maxConcurrentConnections,
-            maxConcurrentDownloads: maxConcurrentDownloads
+            maxConcurrentDownloads: maxConcurrentDownloads,
+            proxyPolicy: proxyPolicy,
+            pixeldrainAPIKey: pixeldrainAPIKey,
+            realDebridToken: realDebridToken,
+            torBoxToken: torBoxToken
         )
         self.unpack = UnpackSettings(autoRelay: autoRelay, deleteArchiveAfterUnpack: deleteArchiveAfterUnpack, passwords: passwords)
         self.patch = PatchSettings(bottlesDirectory: bottlesDirectory, defaultLanguage: defaultLanguage)
@@ -264,6 +381,10 @@ package struct AppSettings: Codable, Equatable, Sendable {
         let maxConn = try container.decodeIfPresent(Int.self, forKey: .maxConcurrentConnections)
             ?? decodedDownload?.maxConcurrentConnections ?? defaults.maxConcurrentConnections
         let maxDl = decodedDownload?.maxConcurrentDownloads ?? defaults.maxConcurrentDownloads
+        let proxyPol = decodedDownload?.proxyPolicy ?? defaults.proxyPolicy
+        let pdKey = decodedDownload?.pixeldrainAPIKey ?? defaults.pixeldrainAPIKey
+        let rdTok = decodedDownload?.realDebridToken ?? defaults.realDebridToken
+        let tbTok = decodedDownload?.torBoxToken ?? defaults.torBoxToken
 
         let relay = try container.decodeIfPresent(Bool.self, forKey: .autoRelay)
             ?? decodedUnpack?.autoRelay ?? defaults.autoRelay
@@ -282,6 +403,10 @@ package struct AppSettings: Codable, Equatable, Sendable {
             downloadDirectory: dlDir,
             maxConcurrentConnections: maxConn,
             maxConcurrentDownloads: maxDl,
+            proxyPolicy: proxyPol,
+            pixeldrainAPIKey: pdKey,
+            realDebridToken: rdTok,
+            torBoxToken: tbTok,
             deleteArchiveAfterUnpack: delArchive,
             bottlesDirectory: bottlesDir,
             defaultLanguage: lang,

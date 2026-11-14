@@ -94,20 +94,32 @@ package enum ToolchainLocator {
         guard let text = String(data: data, encoding: .utf8) else {
             return nil
         }
-        var enabled = false
-        var host: String? = nil
-        var port: String? = nil
+        var httpEnabled = false
+        var httpHost: String?
+        var httpPort: String?
+        var httpsEnabled = false
+        var httpsHost: String?
+        var httpsPort: String?
         for raw in text.components(separatedBy: .newlines) {
             let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if line.hasPrefix("HTTPEnable :") && line.hasSuffix("1") {
-                enabled = true
+                httpEnabled = true
             } else if line.hasPrefix("HTTPProxy :") {
-                host = line.components(separatedBy: ":").last?.trimmingCharacters(in: .whitespacesAndNewlines)
+                httpHost = line.components(separatedBy: ":").last?.trimmingCharacters(in: .whitespacesAndNewlines)
             } else if line.hasPrefix("HTTPPort :") {
-                port = line.components(separatedBy: ":").last?.trimmingCharacters(in: .whitespacesAndNewlines)
+                httpPort = line.components(separatedBy: ":").last?.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else if line.hasPrefix("HTTPSEnable :") && line.hasSuffix("1") {
+                httpsEnabled = true
+            } else if line.hasPrefix("HTTPSProxy :") {
+                httpsHost = line.components(separatedBy: ":").last?.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else if line.hasPrefix("HTTPSPort :") {
+                httpsPort = line.components(separatedBy: ":").last?.trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
-        if enabled, let h = host, let p = port, !h.isEmpty, !p.isEmpty {
+        if httpEnabled, let h = httpHost, let p = httpPort, !h.isEmpty, !p.isEmpty {
+            return "http://\(h):\(p)"
+        }
+        if httpsEnabled, let h = httpsHost, let p = httpsPort, !h.isEmpty, !p.isEmpty {
             return "http://\(h):\(p)"
         }
         return nil

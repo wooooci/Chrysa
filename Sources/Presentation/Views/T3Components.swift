@@ -248,4 +248,17 @@ struct SettingsCategoryBoundsKey: PreferenceKey {
     }
 }
 
+extension Binding {
+    /// Maps an optional binding to a presentation flag that clears the wrapped value when dismissed.
+    package func isPresent<Wrapped>() -> Binding<Bool> where Value == Wrapped? {
+        Binding<Bool>(
+            get: { wrappedValue != nil },
+            set: { isPresented in
+                if !isPresented {
+                    wrappedValue = nil
+                }
+            }
+        )
+    }
+}
 

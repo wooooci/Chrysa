@@ -26,7 +26,7 @@ struct EditTaskSheetView: View {
                 Text("项目名称")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.t3TextSub)
-                TextField("输入项目名称...", text: $vm.editTitleInput)
+                TextField("名称...", text: $vm.editTitleInput)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12.5))
             }
@@ -36,7 +36,7 @@ struct EditTaskSheetView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.t3TextSub)
                 HStack(spacing: 6) {
-                    TextField("输入链接或本地路径...", text: $vm.editPathOrURLInput)
+                    TextField("链接或路径...", text: $vm.editPathOrURLInput)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12.5, design: .monospaced))
                     Button("粘贴") {
