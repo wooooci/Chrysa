@@ -118,14 +118,20 @@ struct PageHeaderView: View {
     }
 }
 
-struct TaskListSectionView: View {
+package struct TaskListSectionView: View {
     @ObservedObject var vm: StudioViewModel
     let isSnapshotMode: Bool
     @State private var pendingDeletion: PendingDeletion?
     @Environment(\.appTheme) private var theme
-    private struct PendingDeletion {
-        let task: StudioTask
-        let deleteLocalFile: Bool
+
+    package struct PendingDeletion {
+        package let task: StudioTask
+        package let deleteLocalFile: Bool
+
+        package init(task: StudioTask, deleteLocalFile: Bool) {
+            self.task = task
+            self.deleteLocalFile = deleteLocalFile
+        }
 
         var alertTitle: String {
             deleteLocalFile ? "删除记录及本地文件？" : "删除记录？"
@@ -138,7 +144,17 @@ struct TaskListSectionView: View {
         }
     }
 
-    var body: some View {
+    package init(
+        vm: StudioViewModel,
+        isSnapshotMode: Bool,
+        initialPendingDeletion: PendingDeletion? = nil
+    ) {
+        self.vm = vm
+        self.isSnapshotMode = isSnapshotMode
+        self._pendingDeletion = State(initialValue: initialPendingDeletion)
+    }
+
+    package var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             topDropZone
                 .padding(.bottom, 16)

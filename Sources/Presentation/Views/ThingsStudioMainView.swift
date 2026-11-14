@@ -46,15 +46,7 @@ package struct ThingsStudioMainView: View {
                 .environment(\.appTheme, vm.themePalette)
                 .tint(vm.themePalette.accent)
         }
-        .alert(
-            vm.launchErrorAlert.map { "无法启动「\($0.title)」" } ?? "无法启动",
-            isPresented: $vm.launchErrorAlert.isPresent(),
-            presenting: vm.launchErrorAlert
-        ) { _ in
-            Button("好") {}
-        } message: { notice in
-            Text(notice.message)
-        }
+        .launchErrorAlert($vm.launchErrorAlert)
     }
 
     private var mainCanvasView: some View {
@@ -157,5 +149,20 @@ package struct ThingsStudioMainView: View {
         .foregroundColor(.t3TextSub)
         .frame(maxWidth: .infinity)
         .frame(height: 38)
+    }
+}
+
+extension View {
+    /// Presents launch errors using SwiftUI's non-legacy alert API so nested child alerts are never shadowed on macOS.
+    package func launchErrorAlert(_ alert: Binding<StudioViewModel.LaunchErrorNotice?>) -> some View {
+        self.alert(
+            alert.wrappedValue.map { "无法启动「\($0.title)」" } ?? "无法启动",
+            isPresented: alert.isPresent(),
+            presenting: alert.wrappedValue
+        ) { _ in
+            Button("好") {}
+        } message: { notice in
+            Text(notice.message)
+        }
     }
 }
