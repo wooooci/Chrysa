@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CryptoKit
 import ImageIO
 import SwiftUI
 import Testing
@@ -1230,6 +1231,176 @@ struct ArchitectureSafetyTests {
         }
         #expect(await ariaRefreshDiags.snapshot().contains(where: { $0.contains("正在从原分享页刷新并延续进度") }))
         #expect(await ariaRefreshLogs.snapshot().contains(where: { $0.contains("沿用 .aria2 进度继续续传") }))
+    }
+
+    @Test
+    func testSteamDLLAuthenticodeTriagePreservesPreCrackedAndDRMFreeBuilds() async throws {
+        func writeU16LE(_ v: UInt16, into buf: inout Data, at off: Int) {
+            buf[off] = UInt8(v & 0xFF)
+            buf[off + 1] = UInt8((v >> 8) & 0xFF)
+        }
+        func writeU32LE(_ v: UInt32, into buf: inout Data, at off: Int) {
+            buf[off] = UInt8(v & 0xFF)
+            buf[off + 1] = UInt8((v >> 8) & 0xFF)
+            buf[off + 2] = UInt8((v >> 16) & 0xFF)
+            buf[off + 3] = UInt8((v >> 24) & 0xFF)
+        }
+        func makeSyntheticPE64(imageSize: Int = 65_536, signerText: String? = nil, extraMarker: String? = nil) -> Data {
+            var img = Data(repeating: 0, count: max(imageSize, 0x600))
+            let peOff = 0x80
+            let optStart = peOff + 24
+            let checksumOff = optStart + 64
+            let certDirOff = optStart + 112 + 32
+
+            writeU16LE(0x5A4D, into: &img, at: 0)              // "MZ"
+            writeU32LE(UInt32(peOff), into: &img, at: 0x3C)    // e_lfanew
+            writeU32LE(0x0000_4550, into: &img, at: peOff)     // "PE\0\0"
+            writeU16LE(1, into: &img, at: peOff + 6)           // NumberOfSections = 1
+            writeU16LE(240, into: &img, at: peOff + 20)        // SizeOfOptionalHeader = 240
+            writeU16LE(0x020B, into: &img, at: optStart)       // PE32+
+            writeU32LE(16, into: &img, at: optStart + 108)     // NumberOfRvaAndSizes = 16
+
+            // Single .text section at file offset 0x200
+            let secOff = optStart + 240
+            writeU32LE(0x200, into: &img, at: secOff + 8)      // VirtualSize
+            writeU32LE(0x1000, into: &img, at: secOff + 12)    // VirtualAddress
+            writeU32LE(0x200, into: &img, at: secOff + 16)     // SizeOfRawData
+            writeU32LE(0x200, into: &img, at: secOff + 20)     // PointerToRawData
+            img[0x200] = 0xC3                                  // ret instruction
+
+            if let marker = extraMarker {
+                let mBytes = Data(marker.utf8)
+                img.replaceSubrange(0x240 ..< (0x240 + mBytes.count), with: mBytes)
+            }
+
+            guard let signerText else {
+                return img
+            }
+
+            var sha = SHA256()
+            sha.update(data: img[0 ..< checksumOff])
+            sha.update(data: img[(checksumOff + 4) ..< certDirOff])
+            sha.update(data: img[(certDirOff + 8) ..< img.count])
+            let digest = Data(sha.finalize())
+
+            var certBody = Data(signerText.utf8)
+            certBody.append(0)
+            certBody.append(digest)
+            while (8 + certBody.count) % 8 != 0 {
+                certBody.append(0)
+            }
+            let certTotalLen = 8 + certBody.count
+            let certFileOff = img.count
+            writeU32LE(UInt32(certFileOff), into: &img, at: certDirOff)
+            writeU32LE(UInt32(certTotalLen), into: &img, at: certDirOff + 4)
+
+            var certHeader = Data(repeating: 0, count: 8)
+            writeU32LE(UInt32(certTotalLen), into: &certHeader, at: 0)
+            writeU16LE(0x0200, into: &certHeader, at: 4)
+            writeU16LE(0x0002, into: &certHeader, at: 6)       // WIN_CERT_TYPE_PKCS_SIGNED_DATA
+            img.append(certHeader)
+            img.append(certBody)
+            return img
+        }
+
+        // 1. Binary signature triage unit checks
+        let genuineValveDLL = makeSyntheticPE64(signerText: "CN=Valve Corp., O=Valve Corp., Issuer=DigiCert Trusted G4 Code Signing RSA4096")
+        #expect(PEBinaryInspector.classifySteamDLL(data: genuineValveDLL) == .officialValve)
+
+        var tamperedValveDLL = genuineValveDLL
+        tamperedValveDLL[0x200] ^= 0xFF // Modify 1 byte in .text while keeping Valve PKCS#7 trailer intact
+        #expect(PEBinaryInspector.classifySteamDLL(data: tamperedValveDLL) == .thirdPartyEmulator)
+
+        let selfSignedFakeValve = makeSyntheticPE64(signerText: "CN=Valve Corp., Issuer=SelfSigned Local")
+        #expect(PEBinaryInspector.classifySteamDLL(data: selfSignedFakeValve) == .thirdPartyEmulator)
+
+        let unsignedRuneDLL = makeSyntheticPE64(imageSize: 380_000)
+        #expect(PEBinaryInspector.classifySteamDLL(data: unsignedRuneDLL) == .thirdPartyEmulator)
+
+        let gbeSignedDLL = makeSyntheticPE64(signerText: "CN=GSE1, O=GSE0")
+        #expect(PEBinaryInspector.classifySteamDLL(data: gbeSignedDLL) == .goldberg)
+
+        // 2. End-to-end PatchService triage: Pre-cracked RUNE / TENOKE folder preserves DLL & syncs INI language
+        let fm = FileManager.default
+        let tmpRoot = fm.temporaryDirectory.appendingPathComponent("chrysa-triage-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: tmpRoot, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tmpRoot) }
+
+        var settings = AppSettings.default
+        settings.patch.defaultLanguage = .schinese
+        settings.patch.bottlesDirectory = tmpRoot.appendingPathComponent("absent-bottles").path
+        let patchSvc = PatchService()
+
+        let runeDir = tmpRoot.appendingPathComponent("Ghost of Tsushima", isDirectory: true)
+        try fm.createDirectory(at: runeDir, withIntermediateDirectories: true)
+        try makeSyntheticPE64(imageSize: 90_000, extraMarker: "steam_api64.dll").write(to: runeDir.appendingPathComponent("GhostOfTsushima.exe"))
+        let runeDLLURL = runeDir.appendingPathComponent("steam_api64.dll")
+        try unsignedRuneDLL.write(to: runeDLLURL)
+        try "[Settings]\r\nAppId=2215430\r\nLanguage=english\r\n".write(
+            to: runeDir.appendingPathComponent("steam_emu.ini"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "language = \"english\" # default locale\n".write(
+            to: runeDir.appendingPathComponent("tenoke.ini"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let runeResult = try await patchSvc.executePatch(
+            taskID: UUID(),
+            folderPath: runeDir.path,
+            cleanTitle: "Ghost of Tsushima",
+            settings: settings,
+            onLog: { _, _ in }
+        )
+        #expect(runeResult.pill == "原包已修补 x64")
+        #expect(runeResult.appID == "2215430")
+        #expect(try Data(contentsOf: runeDLLURL) == unsignedRuneDLL)
+        #expect(!fm.fileExists(atPath: runeDir.appendingPathComponent("steam_api64.dll.bak").path))
+        #expect(!fm.fileExists(atPath: runeDir.appendingPathComponent("steam_settings").path))
+        let updatedRuneINI = try String(contentsOf: runeDir.appendingPathComponent("steam_emu.ini"), encoding: .utf8)
+        #expect(updatedRuneINI.contains("Language=schinese\r\n"))
+        let updatedTenokeINI = try String(contentsOf: runeDir.appendingPathComponent("tenoke.ini"), encoding: .utf8)
+        #expect(updatedTenokeINI == "language = \"schinese\" # default locale\n")
+
+        // 3. End-to-end PatchService triage: DRM-free / GOG standalone game skips unnecessary DLL injection
+        let gogDir = tmpRoot.appendingPathComponent("Cyberpunk DRMFree", isDirectory: true)
+        try fm.createDirectory(at: gogDir, withIntermediateDirectories: true)
+        try makeSyntheticPE64(imageSize: 80_000).write(to: gogDir.appendingPathComponent("Cyberpunk2077.exe"))
+
+        let gogResult = try await patchSvc.executePatch(
+            taskID: UUID(),
+            folderPath: gogDir.path,
+            cleanTitle: "Cyberpunk 2077",
+            settings: settings,
+            onLog: { _, _ in }
+        )
+        #expect(gogResult.pill == "免补丁直装 x64")
+        #expect(!fm.fileExists(atPath: gogDir.appendingPathComponent("steam_api64.dll").path))
+        #expect(!fm.fileExists(atPath: gogDir.appendingPathComponent("steam_settings").path))
+
+        // 4. Genuine Valve-signed DLL is backed up and replaced when Goldberg runtime DLL is present
+        if ToolchainLocator.locateGbeDLL(is64Bit: true) != nil {
+            let csfDir = tmpRoot.appendingPathComponent("Hades II CSF", isDirectory: true)
+            try fm.createDirectory(at: csfDir, withIntermediateDirectories: true)
+            try makeSyntheticPE64(imageSize: 80_000, extraMarker: "steam_api64.dll").write(to: csfDir.appendingPathComponent("Hades2.exe"))
+            let csfDLLURL = csfDir.appendingPathComponent("steam_api64.dll")
+            try genuineValveDLL.write(to: csfDLLURL)
+            try "1145350\n".write(to: csfDir.appendingPathComponent("steam_appid.txt"), atomically: true, encoding: .utf8)
+
+            let csfResult = try await patchSvc.executePatch(
+                taskID: UUID(),
+                folderPath: csfDir.path,
+                cleanTitle: "Hades II",
+                settings: settings,
+                onLog: { _, _ in }
+            )
+            #expect(csfResult.pill == "Goldberg x64")
+            #expect(try Data(contentsOf: csfDir.appendingPathComponent("steam_api64.dll.bak")) == genuineValveDLL)
+            #expect(try Data(contentsOf: csfDLLURL) != genuineValveDLL)
+            #expect(fm.fileExists(atPath: csfDir.appendingPathComponent("steam_settings/configs.user.ini").path))
+        }
     }
 }
 

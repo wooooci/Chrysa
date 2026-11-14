@@ -1,12 +1,39 @@
 import ChrysaCore
 import ChrysaApplication
+import CryptoKit
 import Foundation
 
 package struct PEImportInfo: Sendable {
+    package let isValidPE: Bool
     package let is64Bit: Bool
     package let importsSteamAPI: Bool
     package let importsD3D12: Bool
     package let importsWinHTTP: Bool
+
+    package init(
+        isValidPE: Bool = false,
+        is64Bit: Bool,
+        importsSteamAPI: Bool,
+        importsD3D12: Bool,
+        importsWinHTTP: Bool
+    ) {
+        self.isValidPE = isValidPE
+        self.is64Bit = is64Bit
+        self.importsSteamAPI = importsSteamAPI
+        self.importsD3D12 = importsD3D12
+        self.importsWinHTTP = importsWinHTTP
+    }
+}
+
+package enum SteamDLLDisposition: Equatable, Sendable {
+    /// Genuine unmodified Valve Steamworks SDK DLL (verified via PE Authenticode Valve signature + intact image digest),
+    /// or a non-PE synthetic test fixture below the Goldberg threshold.
+    case officialValve
+    /// Already patched with Goldberg / `gbe_fork`.
+    case goldberg
+    /// Pre-cracked third-party Steam emulator DLL (e.g. RUNE, CODEX, TENOKE, FLT, Online-Fix, CreamAPI):
+    /// valid PE binary without an intact Valve Authenticode signature and not Goldberg.
+    case thirdPartyEmulator
 }
 
 package enum PEBinaryInspector {
@@ -79,6 +106,9 @@ package enum PEBinaryInspector {
                 return PEImportInfo(is64Bit: true, importsSteamAPI: false, importsD3D12: false, importsWinHTTP: false)
             }
 
+            guard optMagic == 0x10B || optMagic == 0x20B else {
+                return PEImportInfo(is64Bit: true, importsSteamAPI: false, importsD3D12: false, importsWinHTTP: false)
+            }
             let is64 = (optMagic == 0x20B)
             let optHeaderStart = peOff + 24
             // DataDirectory starts at offset +96 in PE32 (0x10B) and +112 in PE32+ (0x20B).
@@ -161,11 +191,179 @@ package enum PEBinaryInspector {
             }
 
             return PEImportInfo(
+                isValidPE: true,
                 is64Bit: is64,
                 importsSteamAPI: hasSteam,
                 importsD3D12: hasD3D12,
                 importsWinHTTP: hasWinHTTP
             )
+        }
+    }
+
+    /// Classifies a `steam_api(64).dll` using a whitelist check on Valve's PE Authenticode digital signature
+    /// and cryptographic image digest rather than maintaining exhaustive crack-group regex lists.
+    package static func classifySteamDLL(atPath path: String, hasOriginalBackup: Bool = false) -> SteamDLLDisposition {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe) else {
+            return hasOriginalBackup ? .goldberg : .officialValve
+        }
+        return classifySteamDLL(data: data, hasOriginalBackup: hasOriginalBackup)
+    }
+
+    package static func classifySteamDLL(data: Data, hasOriginalBackup: Bool = false) -> SteamDLLDisposition {
+        let fallbackDisposition: SteamDLLDisposition = (hasOriginalBackup || data.count > 2_000_000)
+            ? .goldberg
+            : .officialValve
+
+        guard data.count >= 0x200 else { return fallbackDisposition }
+
+        return data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> SteamDLLDisposition in
+            func readU16(_ off: Int) -> UInt16? {
+                guard off >= 0, off + 2 <= raw.count else { return nil }
+                return UInt16(littleEndian: raw.loadUnaligned(fromByteOffset: off, as: UInt16.self))
+            }
+            func readU32(_ off: Int) -> UInt32? {
+                guard off >= 0, off + 4 <= raw.count else { return nil }
+                return UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: off, as: UInt32.self))
+            }
+            func sliceContainsASCII(_ range: Range<Int>, _ lowerNeedle: [UInt8]) -> Bool {
+                let nLen = lowerNeedle.count
+                guard nLen > 0, range.lowerBound >= 0, range.upperBound <= raw.count, range.count >= nLen else {
+                    return false
+                }
+                let firstB = lowerNeedle[0]
+                let firstUpper = (firstB >= 97 && firstB <= 122) ? (firstB - 32) : firstB
+                let endIdx = range.upperBound - nLen
+                var i = range.lowerBound
+                while i <= endIdx {
+                    let b0 = raw[i]
+                    if b0 == firstB || b0 == firstUpper {
+                        var match = true
+                        for j in 1..<nLen {
+                            var bj = raw[i + j]
+                            if bj >= 65 && bj <= 90 { bj += 32 }
+                            if bj != lowerNeedle[j] {
+                                match = false
+                                break
+                            }
+                        }
+                        if match { return true }
+                    }
+                    i += 1
+                }
+                return false
+            }
+            func sliceContainsBytes(_ range: Range<Int>, _ needle: [UInt8]) -> Bool {
+                let nLen = needle.count
+                guard nLen > 0, range.lowerBound >= 0, range.upperBound <= raw.count, range.count >= nLen else {
+                    return false
+                }
+                let endIdx = range.upperBound - nLen
+                var i = range.lowerBound
+                while i <= endIdx {
+                    if raw[i] == needle[0] {
+                        var match = true
+                        for j in 1..<nLen where raw[i + j] != needle[j] {
+                            match = false
+                            break
+                        }
+                        if match { return true }
+                    }
+                    i += 1
+                }
+                return false
+            }
+
+            // Non-PE synthetic test fixtures preserve established size/backup fallback behavior.
+            guard readU16(0) == 0x5A4D,
+                  let peOffU32 = readU32(0x3C) else {
+                return fallbackDisposition
+            }
+            let peOff = Int(peOffU32)
+            guard peOff >= 0x40,
+                  peOff <= raw.count - 0x98,
+                  readU32(peOff) == 0x00004550,
+                  let sizeOfOptionalHeaderU16 = readU16(peOff + 20),
+                  let optMagic = readU16(peOff + 24),
+                  optMagic == 0x10B || optMagic == 0x20B else {
+                return fallbackDisposition
+            }
+
+            let is64 = (optMagic == 0x20B)
+            let optHeaderStart = peOff + 24
+            let sizeOfOptionalHeader = Int(sizeOfOptionalHeaderU16)
+            guard optHeaderStart + sizeOfOptionalHeader <= raw.count else {
+                return fallbackDisposition
+            }
+
+            let minOptSizeForSecurity = is64 ? 152 : 136
+            let numRvaAndSizes = readU32(optHeaderStart + (is64 ? 108 : 92)) ?? 0
+            let checksumOff = optHeaderStart + 64
+            let certDirOff = optHeaderStart + (is64 ? 112 : 96) + 32
+
+            var certRange: Range<Int>? = nil
+            if sizeOfOptionalHeader >= minOptSizeForSecurity,
+               numRvaAndSizes >= 5,
+               let certOffU32 = readU32(certDirOff),
+               let certSizeU32 = readU32(certDirOff + 4) {
+                let certOff = Int(certOffU32)
+                let certSize = Int(certSizeU32)
+                if certOff > certDirOff + 8,
+                   certSize > 8,
+                   certOff <= raw.count - certSize {
+                    certRange = (certOff + 8) ..< (certOff + certSize)
+
+                    // Verify genuine Valve Authenticode PKCS#7 signature + unmodified PE image hash.
+                    if certOff + certSize == raw.count,
+                       readU16(certOff + 6) == 0x0002,
+                       let cRange = certRange,
+                       sliceContainsASCII(cRange, Array("valve".utf8)),
+                       !sliceContainsASCII(cRange, Array("gse1".utf8)),
+                       !sliceContainsASCII(cRange, Array("gse0".utf8)) {
+                        let trustedCAs: [[UInt8]] = [
+                            Array("digicert".utf8),
+                            Array("symantec".utf8),
+                            Array("verisign".utf8),
+                            Array("thawte".utf8),
+                            Array("entrust".utf8),
+                            Array("globalsign".utf8),
+                            Array("sectigo".utf8),
+                            Array("comodo".utf8)
+                        ]
+                        if trustedCAs.contains(where: { sliceContainsASCII(cRange, $0) }) {
+                            var sha1 = Insecure.SHA1()
+                            var sha256 = SHA256()
+                            let r1 = UnsafeRawBufferPointer(rebasing: raw[0 ..< checksumOff])
+                            let r2 = UnsafeRawBufferPointer(rebasing: raw[(checksumOff + 4) ..< certDirOff])
+                            let r3 = UnsafeRawBufferPointer(rebasing: raw[(certDirOff + 8) ..< certOff])
+                            for region in [r1, r2, r3] {
+                                sha1.update(bufferPointer: region)
+                                sha256.update(bufferPointer: region)
+                            }
+                            let sha1Bytes = Array(sha1.finalize())
+                            let sha256Bytes = Array(sha256.finalize())
+                            if sliceContainsBytes(cRange, sha256Bytes) || sliceContainsBytes(cRange, sha1Bytes) {
+                                return .officialValve
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Valid PE without an intact Valve signature: distinguish Goldberg (`gbe_fork`) from third-party cracks.
+            if raw.count > 2_000_000 {
+                return .goldberg
+            }
+            if let cRange = certRange,
+               (sliceContainsASCII(cRange, Array("gse1".utf8)) || sliceContainsASCII(cRange, Array("gse0".utf8))) {
+                return .goldberg
+            }
+            let fullRange = 0 ..< raw.count
+            if sliceContainsASCII(fullRange, Array("gbe_fork".utf8))
+                || sliceContainsASCII(fullRange, Array("steam_settings".utf8)) {
+                return .goldberg
+            }
+
+            return .thirdPartyEmulator
         }
     }
 

@@ -88,24 +88,56 @@ package actor PatchService {
             return path
         }
 
-        // Inspect PE Import Table on main EXE and UnityPlayer.dll
+        // Inspect PE Import Table on main EXE, UnityPlayer.dll, and IL2CPP GameAssembly.dll
         var peInfo = PEImportInfo(is64Bit: true, importsSteamAPI: false, importsD3D12: false, importsWinHTTP: false)
+        var gameAssemblyImportsSteam = false
         if let exe = mainEXE {
             try await checkCancellation()
             peInfo = PEBinaryInspector.inspect(exePath: exe)
             if peInfo.importsD3D12 { hasD3D12 = true }
-            let unityPlayerPath = ((exe as NSString).deletingLastPathComponent as NSString).appendingPathComponent("UnityPlayer.dll")
+            let exeDir = (exe as NSString).deletingLastPathComponent
+            let unityPlayerPath = (exeDir as NSString).appendingPathComponent("UnityPlayer.dll")
             if fm.fileExists(atPath: unityPlayerPath) {
                 try await checkCancellation()
                 let upInfo = PEBinaryInspector.inspect(exePath: unityPlayerPath)
                 if upInfo.importsD3D12 { hasD3D12 = true }
             }
+            let gameAssemblyPath = (exeDir as NSString).appendingPathComponent("GameAssembly.dll")
+            if fm.fileExists(atPath: gameAssemblyPath) {
+                try await checkCancellation()
+                let gaInfo = PEBinaryInspector.inspect(exePath: gameAssemblyPath)
+                if gaInfo.importsSteamAPI { gameAssemblyImportsSteam = true }
+            }
         }
 
+        let unityManagedUsesSteam = unityDataDirs.contains { dataDir in
+            let managedDir = (dataDir as NSString).appendingPathComponent("Managed")
+            guard let files = try? fm.contentsOfDirectory(atPath: managedDir) else { return false }
+            return files.contains { $0.lowercased().contains("steam") }
+        }
+        let requiresSteamWhenDLLMissing = !peInfo.isValidPE
+            || peInfo.importsSteamAPI
+            || gameAssemblyImportsSteam
+            || unityManagedUsesSteam
+            || !unrealSteamworksDirs.isEmpty
+            || inspection.existingAppID != nil
+
+        enum PatchRoutingMode {
+            case goldberg
+            case preservedThirdPartyCrack(syncedINI: Bool)
+            case drmFreePassthrough
+        }
+
+        let langValue = settings.patch.defaultLanguage.rawValue
+        let countryValue = settings.patch.defaultLanguage.ipCountry
+        let langShort = settings.patch.defaultLanguage.shortLabel
+
+        var routingMode: PatchRoutingMode = .goldberg
         var patchModePill = "Goldberg x64"
         var targetDLLDirs: [String] = []
 
         if !existingSteamDLLs.isEmpty {
+            var classified: [(path: String, is64: Bool, size: Int64, disposition: SteamDLLDisposition)] = []
             for (dllPath, is64) in existingSteamDLLs {
                 try await checkCancellation()
                 let dllSize = (try? fm.attributesOfItem(atPath: dllPath)[.size] as? Int64) ?? 0
@@ -113,20 +145,44 @@ package actor PatchService {
                     let backup = dllPath + suffix
                     return fm.fileExists(atPath: backup) && !fm.contentsEqual(atPath: dllPath, andPath: backup)
                 }
-                let isAlreadyGoldberg = hasOrigBackup || dllSize > 2_000_000
-
-                if isAlreadyGoldberg {
-                    patchModePill = dllSize > 10_000_000 ? "Goldberg Overlay" : (is64 ? "Goldberg x64" : "Goldberg x86")
-                    targetDLLDirs.append((dllPath as NSString).deletingLastPathComponent)
-                } else {
-                    let src = try requiredDLL(is64Bit: is64)
-                    try writer.backUpDLL(at: dllPath)
-                    try writer.installDLL(from: src, to: dllPath)
-                    patchModePill = is64 ? "Goldberg x64" : "Goldberg x86"
-                    targetDLLDirs.append((dllPath as NSString).deletingLastPathComponent)
-                }
+                let disposition = PEBinaryInspector.classifySteamDLL(atPath: dllPath, hasOriginalBackup: hasOrigBackup)
+                classified.append((dllPath, is64, dllSize, disposition))
             }
-            onLog("gbe_fork ▸ [\(effectiveTitle)] 已就绪 (\(patchModePill), AppID: \(finalAppID))", true)
+
+            if classified.contains(where: { $0.disposition == .thirdPartyEmulator }) {
+                let primaryIs64 = classified.contains(where: \.is64)
+                patchModePill = primaryIs64 ? "原包已修补 x64" : "原包已修补 x86"
+                var candidateINIDirs: [String] = classified.map { ($0.path as NSString).deletingLastPathComponent }
+                if let exe = mainEXE {
+                    candidateINIDirs.append((exe as NSString).deletingLastPathComponent)
+                }
+                let syncedINI = try syncExistingEmulatorINILanguage(
+                    inDirectories: candidateINIDirs,
+                    language: langValue,
+                    writer: writer
+                )
+                routingMode = .preservedThirdPartyCrack(syncedINI: syncedINI)
+                onLog("passthrough ▸ [\(effectiveTitle)] 检测到非 Valve 官方签名 DLL，已保留原包补丁直通 (\(patchModePill))", true)
+            } else {
+                for item in classified {
+                    try await checkCancellation()
+                    if item.disposition == .goldberg {
+                        patchModePill = item.size > 10_000_000 ? "Goldberg Overlay" : (item.is64 ? "Goldberg x64" : "Goldberg x86")
+                        targetDLLDirs.append((item.path as NSString).deletingLastPathComponent)
+                    } else {
+                        let src = try requiredDLL(is64Bit: item.is64)
+                        try writer.backUpDLL(at: item.path)
+                        try writer.installDLL(from: src, to: item.path)
+                        patchModePill = item.is64 ? "Goldberg x64" : "Goldberg x86"
+                        targetDLLDirs.append((item.path as NSString).deletingLastPathComponent)
+                    }
+                }
+                onLog("gbe_fork ▸ [\(effectiveTitle)] 已就绪 (\(patchModePill), AppID: \(finalAppID))", true)
+            }
+        } else if mainEXE != nil && !requiresSteamWhenDLLMissing {
+            routingMode = .drmFreePassthrough
+            patchModePill = peInfo.is64Bit ? "免补丁直装 x64" : "免补丁直装 x86"
+            onLog("passthrough ▸ [\(effectiveTitle)] 未检测到 Steam API 依赖，跳过补丁直接配置容器 (\(patchModePill))", true)
         } else if let firstUnityData = unityDataDirs.first {
             try await checkCancellation()
             let is64 = peInfo.is64Bit
@@ -169,51 +225,49 @@ package actor PatchService {
             onLog("pe-scan ▸ 检测到 .exe 导入 \(dllName) 但原包缺失，已自动补全 Goldberg DLL！", true)
         }
 
-        if let exe = mainEXE {
-            let exeDir = (exe as NSString).deletingLastPathComponent
-            if !targetDLLDirs.contains(exeDir) {
-                targetDLLDirs.append(exeDir)
+        if case .goldberg = routingMode {
+            if let exe = mainEXE {
+                let exeDir = (exe as NSString).deletingLastPathComponent
+                if !targetDLLDirs.contains(exeDir) {
+                    targetDLLDirs.append(exeDir)
+                }
             }
-        }
 
-        let langValue = settings.patch.defaultLanguage.rawValue
-        let countryValue = settings.patch.defaultLanguage.ipCountry
-        let langShort = settings.patch.defaultLanguage.shortLabel
+            for dir in targetDLLDirs {
+                try await checkCancellation()
+                let settingsDir = (dir as NSString).appendingPathComponent("steam_settings")
+                try writer.createDirectory(at: settingsDir)
+                let appIdFile1 = (settingsDir as NSString).appendingPathComponent("steam_appid.txt")
+                let appIdFile2 = (dir as NSString).appendingPathComponent("steam_appid.txt")
+                let cfgFile = (settingsDir as NSString).appendingPathComponent("configs.user.ini")
+                try await checkCancellation()
+                try writer.write("\(finalAppID)\n", to: appIdFile1)
+                try await checkCancellation()
+                try writer.write("\(finalAppID)\n", to: appIdFile2)
 
-        for dir in targetDLLDirs {
-            try await checkCancellation()
-            let settingsDir = (dir as NSString).appendingPathComponent("steam_settings")
-            try writer.createDirectory(at: settingsDir)
-            let appIdFile1 = (settingsDir as NSString).appendingPathComponent("steam_appid.txt")
-            let appIdFile2 = (dir as NSString).appendingPathComponent("steam_appid.txt")
-            let cfgFile = (settingsDir as NSString).appendingPathComponent("configs.user.ini")
-            try await checkCancellation()
-            try writer.write("\(finalAppID)\n", to: appIdFile1)
-            try await checkCancellation()
-            try writer.write("\(finalAppID)\n", to: appIdFile2)
-
-            var existingCfg = try writer.readConfiguration(at: cfgFile)
-            if !existingCfg.isEmpty {
-                if let langRegex = try? NSRegularExpression(pattern: #"(?m)^language\s*=\s*[^\r\n]+"#) {
-                    let range = NSRange(existingCfg.startIndex..., in: existingCfg)
-                    if langRegex.firstMatch(in: existingCfg, range: range) != nil {
-                        existingCfg = langRegex.stringByReplacingMatches(in: existingCfg, range: range, withTemplate: "language=\(langValue)")
-                    } else {
-                        existingCfg += "\nlanguage=\(langValue)\n"
+                var existingCfg = try writer.readConfiguration(at: cfgFile)
+                if !existingCfg.isEmpty {
+                    if let langRegex = try? NSRegularExpression(pattern: #"(?m)^language\s*=\s*[^\r\n]+"#) {
+                        let range = NSRange(existingCfg.startIndex..., in: existingCfg)
+                        if langRegex.firstMatch(in: existingCfg, range: range) != nil {
+                            existingCfg = langRegex.stringByReplacingMatches(in: existingCfg, range: range, withTemplate: "language=\(langValue)")
+                        } else {
+                            existingCfg += "\nlanguage=\(langValue)\n"
+                        }
                     }
-                }
-                if let countryRegex = try? NSRegularExpression(pattern: #"(?m)^ip_country\s*=\s*[^\r\n]+"#) {
-                    let range = NSRange(existingCfg.startIndex..., in: existingCfg)
-                    if countryRegex.firstMatch(in: existingCfg, range: range) != nil {
-                        existingCfg = countryRegex.stringByReplacingMatches(in: existingCfg, range: range, withTemplate: "ip_country=\(countryValue)")
-                    } else {
-                        existingCfg += (existingCfg.hasSuffix("\n") ? "" : "\n") + "ip_country=\(countryValue)\n"
+                    if let countryRegex = try? NSRegularExpression(pattern: #"(?m)^ip_country\s*=\s*[^\r\n]+"#) {
+                        let range = NSRange(existingCfg.startIndex..., in: existingCfg)
+                        if countryRegex.firstMatch(in: existingCfg, range: range) != nil {
+                            existingCfg = countryRegex.stringByReplacingMatches(in: existingCfg, range: range, withTemplate: "ip_country=\(countryValue)")
+                        } else {
+                            existingCfg += (existingCfg.hasSuffix("\n") ? "" : "\n") + "ip_country=\(countryValue)\n"
+                        }
                     }
+                    try writer.write(existingCfg, to: cfgFile)
+                } else {
+                    let iniContent = "[user::general]\nlanguage=\(langValue)\nip_country=\(countryValue)\n"
+                    try writer.write(iniContent, to: cfgFile)
                 }
-                try writer.write(existingCfg, to: cfgFile)
-            } else {
-                let iniContent = "[user::general]\nlanguage=\(langValue)\nip_country=\(countryValue)\n"
-                try writer.write(iniContent, to: cfgFile)
             }
         }
 
@@ -237,17 +291,33 @@ package actor PatchService {
         let gfxDesc = hasD3D12 ? "D3DMetal" : "DXMT"
         let dllOverrideDesc = hasWinHTTP ? " + winhttp" : ""
         let primaryDLLLabel = patchModePill.hasSuffix("x86") ? "steam_api.dll" : "steam_api64.dll"
-        let checklist: [CheckItem] = isStandalonePatchPack
-            ? [
-                CheckItem(title: "Goldberg 补丁 (\(finalAppID)) · 已切换\(langShort)配置", isChecked: true),
-                CheckItem(title: "独立补丁包 (不含主程序 .exe，请覆盖至游戏目录)", isChecked: true)
-            ]
-            : [
-                CheckItem(title: "\(primaryDLLLabel) ➔ Goldberg (\(finalAppID)) · \(langShort)", isChecked: true),
+        let checklist: [CheckItem]
+        switch routingMode {
+        case .goldberg:
+            checklist = isStandalonePatchPack
+                ? [
+                    CheckItem(title: "Goldberg 补丁 (\(finalAppID)) · 已切换\(langShort)配置", isChecked: true),
+                    CheckItem(title: "独立补丁包 (不含主程序 .exe，请覆盖至游戏目录)", isChecked: true)
+                ]
+                : [
+                    CheckItem(title: "\(primaryDLLLabel) ➔ Goldberg (\(finalAppID)) · \(langShort)", isChecked: true),
+                    CheckItem(title: "CrossOver 容器环境 (\(gfxDesc) + MSync\(dllOverrideDesc))", isChecked: bottleReady)
+                ]
+            onLog("config ▸ [\(effectiveTitle)] 已写入 AppID=\(finalAppID)、\(langShort)配置及 [\(configuredBottle)]", false)
+        case .preservedThirdPartyCrack(let syncedINI):
+            let langNote = syncedINI ? " · 已同步\(langShort)配置" : " · 免覆盖直通"
+            checklist = [
+                CheckItem(title: "保留原包补丁 (\(primaryDLLLabel))\(langNote)", isChecked: true),
                 CheckItem(title: "CrossOver 容器环境 (\(gfxDesc) + MSync\(dllOverrideDesc))", isChecked: bottleReady)
             ]
-
-        onLog("config ▸ [\(effectiveTitle)] 已写入 AppID=\(finalAppID)、\(langShort)配置及 [\(configuredBottle)]", false)
+            onLog("config ▸ [\(effectiveTitle)] 已保留原包补丁并配置容器 [\(configuredBottle)]", false)
+        case .drmFreePassthrough:
+            checklist = [
+                CheckItem(title: "免加密原版 · 无需替换 Steam DLL", isChecked: true),
+                CheckItem(title: "CrossOver 容器环境 (\(gfxDesc) + MSync\(dllOverrideDesc))", isChecked: bottleReady)
+            ]
+            onLog("config ▸ [\(effectiveTitle)] 已完成免补丁直通容器配置 [\(configuredBottle)]", false)
+        }
 
         return PatchResultPayload(
             displayTitle: effectiveTitle,
@@ -258,6 +328,116 @@ package actor PatchService {
             bottleName: isStandalonePatchPack ? nil : configuredBottle,
             checklist: checklist
         )
+    }
+
+    /// Gently updates `Language=` / `language = "..."` in any existing shallow `.ini` file alongside a third-party
+    /// Steam emulator DLL without maintaining crack-group filename lists or creating new config files.
+    private func syncExistingEmulatorINILanguage(
+        inDirectories directories: [String],
+        language: String,
+        writer: PatchFileWriter
+    ) throws -> Bool {
+        let fm = FileManager.default
+        var seenDirs = Set<String>()
+        var updatedAny = false
+
+        for dir in directories where seenDirs.insert(dir).inserted {
+            guard let entries = try? fm.contentsOfDirectory(atPath: dir) else { continue }
+            for entry in entries where entry.lowercased().hasSuffix(".ini") {
+                let fullPath = (dir as NSString).appendingPathComponent(entry)
+                let rawURL = URL(fileURLWithPath: fullPath)
+                let values = try? rawURL.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey, .fileSizeKey])
+                if values?.isSymbolicLink == true {
+                    _ = try writer.destination(fullPath)
+                    continue
+                }
+                guard values?.isRegularFile == true,
+                      let fileSize = values?.fileSize,
+                      fileSize > 0,
+                      fileSize <= 262_144 else {
+                    continue
+                }
+                let safeURL = try writer.destination(fullPath)
+                let usedLatin1: Bool
+                let original: String
+                if let utf8 = try? String(contentsOf: safeURL, encoding: .utf8) {
+                    original = utf8
+                    usedLatin1 = false
+                } else if let latin1 = try? String(contentsOf: safeURL, encoding: .isoLatin1) {
+                    original = latin1
+                    usedLatin1 = true
+                } else {
+                    continue
+                }
+
+                guard let rewritten = Self.rewriteINILanguageValue(in: original, to: language),
+                      rewritten != original else {
+                    continue
+                }
+                let encoding: String.Encoding = usedLatin1 ? .isoLatin1 : .utf8
+                try rewritten.write(to: safeURL, atomically: true, encoding: encoding)
+                updatedAny = true
+            }
+        }
+        return updatedAny
+    }
+
+    private static func rewriteINILanguageValue(in text: String, to newLanguage: String) -> String? {
+        let usesCRLF = text.contains("\r\n")
+        let lineBreak = usesCRLF ? "\r\n" : "\n"
+        let normalized = usesCRLF ? text.replacingOccurrences(of: "\r\n", with: "\n") : text
+        var lines = normalized.components(separatedBy: "\n")
+        var changed = false
+
+        for idx in lines.indices {
+            let line = lines[idx]
+            let trimmed = line.replacingOccurrences(of: "\u{FEFF}", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix(";") || trimmed.hasPrefix("#") || trimmed.hasPrefix("[") || trimmed.hasPrefix("//") {
+                continue
+            }
+            guard let eqIdx = line.firstIndex(of: "=") else { continue }
+            let rawKey = line[..<eqIdx]
+                .replacingOccurrences(of: "\u{FEFF}", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            guard rawKey.lowercased() == "language" else { continue }
+
+            let prefix = String(line[...eqIdx])
+            let rhs = String(line[line.index(after: eqIdx)...])
+
+            // Split value portion from any trailing inline `;` or `#` comment outside quotes
+            var inQuotes = false
+            var commentStart: String.Index? = nil
+            for cIdx in rhs.indices {
+                let ch = rhs[cIdx]
+                if ch == "\"" {
+                    inQuotes.toggle()
+                } else if !inQuotes && (ch == ";" || ch == "#") {
+                    commentStart = cIdx
+                    break
+                }
+            }
+
+            let valueSegment = commentStart.map { String(rhs[..<$0]) } ?? rhs
+            let commentSegment = commentStart.map { String(rhs[$0...]) } ?? ""
+
+            let leadingWSCount = valueSegment.prefix(while: { $0 == " " || $0 == "\t" }).count
+            let trailingWSCount = valueSegment.reversed().prefix(while: { $0 == " " || $0 == "\t" }).count
+            let leadingWS = String(valueSegment.prefix(leadingWSCount))
+            let trailingWS = trailingWSCount > 0 && trailingWSCount < valueSegment.count
+                ? String(valueSegment.suffix(trailingWSCount))
+                : ""
+            let coreValue = valueSegment.trimmingCharacters(in: .whitespaces)
+            let isQuoted = coreValue.count >= 2 && coreValue.hasPrefix("\"") && coreValue.hasSuffix("\"")
+            let replacementCore = isQuoted ? "\"\(newLanguage)\"" : newLanguage
+            let rebuilt = prefix + leadingWS + replacementCore + trailingWS + commentSegment
+            if rebuilt != line {
+                lines[idx] = rebuilt
+                changed = true
+            }
+        }
+
+        return changed ? lines.joined(separator: lineBreak) : nil
     }
 }
 
