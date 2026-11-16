@@ -10,6 +10,7 @@ package struct PatchResultPayload: Sendable {
     package let appID: String
     package let bottleName: String?
     package let checklist: [CheckItem]
+    package let defaultLaunchArguments: String?
 }
 
 package actor PatchService {
@@ -156,11 +157,13 @@ package actor PatchService {
                 if let exe = mainEXE {
                     candidateINIDirs.append((exe as NSString).deletingLastPathComponent)
                 }
+                candidateINIDirs.append(root.path)
                 let syncedINI = try syncExistingEmulatorINILanguage(
                     inDirectories: candidateINIDirs,
                     language: langValue,
                     writer: writer
                 )
+                targetDLLDirs.append(contentsOf: candidateINIDirs)
                 routingMode = .preservedThirdPartyCrack(syncedINI: syncedINI)
                 onLog("passthrough ▸ [\(effectiveTitle)] 检测到非 Valve 官方签名 DLL，已保留原包补丁直通 (\(patchModePill))", true)
             } else {
@@ -225,6 +228,15 @@ package actor PatchService {
             onLog("pe-scan ▸ 检测到 .exe 导入 \(dllName) 但原包缺失，已自动补全 Goldberg DLL！", true)
         }
 
+        let fetchedDLCs: [SteamDLCItem]
+        switch routingMode {
+        case .goldberg, .preservedThirdPartyCrack:
+            try await checkCancellation()
+            fetchedDLCs = (finalAppID != "480") ? await SteamAppIDLookup.fetchDLCs(appID: finalAppID) : []
+        case .drmFreePassthrough:
+            fetchedDLCs = []
+        }
+
         if case .goldberg = routingMode {
             if let exe = mainEXE {
                 let exeDir = (exe as NSString).deletingLastPathComponent
@@ -269,6 +281,40 @@ package actor PatchService {
                     try writer.write(iniContent, to: cfgFile)
                 }
             }
+            let syncedDLCCount = try writeGoldbergAppDLCs(
+                inDirectories: targetDLLDirs,
+                dlcs: fetchedDLCs,
+                writer: writer,
+                requireExistingSettingsDir: false
+            )
+            if syncedDLCCount > 0 {
+                onLog("dlc ▸ 已写入 \(fetchedDLCs.count) 条 Steam DLC 解锁清单至 steam_settings/configs.app.ini", false)
+            }
+        } else if case .preservedThirdPartyCrack = routingMode, !fetchedDLCs.isEmpty {
+            let updatedDLCFiles = try syncExistingEmulatorINIDLCs(
+                inDirectories: targetDLLDirs,
+                dlcs: fetchedDLCs,
+                writer: writer
+            )
+            if updatedDLCFiles > 0 {
+                onLog("dlc ▸ 已向原包 .ini [DLC] 段增量同步 \(fetchedDLCs.count) 条 Steam DLC 信息", false)
+            }
+        }
+
+        var defaultLaunchArguments: String? = nil
+        if inspection.hasEasyAntiCheat {
+            defaultLaunchArguments = "-eac-nop-loaded"
+            if let exe = mainEXE {
+                let exeDir = (exe as NSString).deletingLastPathComponent
+                let siblingAppIDFile = (exeDir as NSString).appendingPathComponent("steam_appid.txt")
+                let existingText = (try? String(contentsOfFile: siblingAppIDFile, encoding: .utf8))?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if existingText == nil || existingText?.isEmpty == true || (existingText == "480" && finalAppID != "480") {
+                    try await checkCancellation()
+                    try writer.write("\(finalAppID)\n", to: siblingAppIDFile)
+                }
+            }
+            onLog("eac ▸ [\(effectiveTitle)] 检测到 EAC 反作弊壳，已定位真实主程序并附带 -eac-nop-loaded", true)
         }
 
         let isStandalonePatchPack = (mainEXE == nil)
@@ -278,6 +324,7 @@ package actor PatchService {
                 taskID: taskID,
                 gameTitle: effectiveTitle,
                 exePath: mainEXE,
+                gameDirectory: root.path,
                 bottlesDirectory: settings.patch.bottlesDirectory,
                 hasD3D12: hasD3D12,
                 hasWinHTTP: hasWinHTTP,
@@ -326,20 +373,19 @@ package actor PatchService {
             exePath: mainEXE,
             appID: finalAppID,
             bottleName: isStandalonePatchPack ? nil : configuredBottle,
-            checklist: checklist
+            checklist: checklist,
+            defaultLaunchArguments: isStandalonePatchPack ? nil : defaultLaunchArguments
         )
     }
 
-    /// Gently updates `Language=` / `language = "..."` in any existing shallow `.ini` file alongside a third-party
-    /// Steam emulator DLL without maintaining crack-group filename lists or creating new config files.
-    private func syncExistingEmulatorINILanguage(
+    private func forEachEmulatorINI(
         inDirectories directories: [String],
-        language: String,
-        writer: PatchFileWriter
-    ) throws -> Bool {
+        writer: PatchFileWriter,
+        transform: (String, String) -> String?
+    ) throws -> Int {
         let fm = FileManager.default
         var seenDirs = Set<String>()
-        var updatedAny = false
+        var updatedCount = 0
 
         for dir in directories where seenDirs.insert(dir).inserted {
             guard let entries = try? fm.contentsOfDirectory(atPath: dir) else { continue }
@@ -370,16 +416,344 @@ package actor PatchService {
                     continue
                 }
 
-                guard let rewritten = Self.rewriteINILanguageValue(in: original, to: language),
+                guard let rewritten = transform(entry, original),
                       rewritten != original else {
                     continue
                 }
                 let encoding: String.Encoding = usedLatin1 ? .isoLatin1 : .utf8
                 try rewritten.write(to: safeURL, atomically: true, encoding: encoding)
-                updatedAny = true
+                updatedCount += 1
             }
         }
-        return updatedAny
+        return updatedCount
+    }
+
+    /// Gently updates `Language=` / `language = "..."` in any existing shallow `.ini` file alongside a third-party
+    /// Steam emulator DLL without maintaining crack-group filename lists or creating new config files.
+    private func syncExistingEmulatorINILanguage(
+        inDirectories directories: [String],
+        language: String,
+        writer: PatchFileWriter
+    ) throws -> Bool {
+        try forEachEmulatorINI(inDirectories: directories, writer: writer) { _, original in
+            Self.rewriteINILanguageValue(in: original, to: language)
+        } > 0
+    }
+
+    private func syncExistingEmulatorINIDLCs(
+        inDirectories directories: [String],
+        dlcs: [SteamDLCItem],
+        writer: PatchFileWriter
+    ) throws -> Int {
+        guard !dlcs.isEmpty else { return 0 }
+        let knownINIs = GameDirectoryInspector.emulatorINIFileNameSet.union([
+            "rune.ini", "smartsteame.ini", "sse.ini", "lumaemu.ini", "hoodlum.ini", "empress.ini"
+        ])
+        return try forEachEmulatorINI(inDirectories: directories, writer: writer) { fileName, original in
+            let isKnown = knownINIs.contains(fileName.lowercased())
+            let looksLikeSteamINI = isKnown
+                || original.range(of: #"(?im)^\s*(AppId|UserName|AccountId|Language)\s*="#, options: .regularExpression) != nil
+            guard looksLikeSteamINI else { return nil }
+            return Self.appendMissingDLCsToEmulatorINI(text: original, dlcs: dlcs)
+        }
+    }
+
+    private func writeGoldbergAppDLCs(
+        inDirectories directories: [String],
+        dlcs: [SteamDLCItem],
+        writer: PatchFileWriter,
+        requireExistingSettingsDir: Bool
+    ) throws -> Int {
+        let fm = FileManager.default
+        var updatedCount = 0
+        for dir in directories {
+            let settingsDir = (dir as NSString).appendingPathComponent("steam_settings")
+            if requireExistingSettingsDir && !fm.fileExists(atPath: settingsDir) {
+                continue
+            }
+            let appCfgFile = (settingsDir as NSString).appendingPathComponent("configs.app.ini")
+            let existingAppCfg = try writer.readConfiguration(at: appCfgFile)
+            let mergedAppCfg = Self.mergeGoldbergAppDLCs(existing: existingAppCfg, dlcs: dlcs)
+            if mergedAppCfg != existingAppCfg {
+                try writer.write(mergedAppCfg, to: appCfgFile)
+                updatedCount += 1
+            }
+        }
+        return updatedCount
+    }
+
+    /// Re-queries Steam DLCs and updates `configs.app.ini` / third-party `[DLC]` INI sections inside an already-patched game directory.
+    package func refreshDLCConfiguration(
+        directory: String,
+        explicitAppID: String? = nil,
+        onLog: @escaping @Sendable (String, Bool) async -> Void
+    ) async {
+        guard let rootURL = try? PathSafety.existingCanonicalDirectory(directory),
+              let inspection = GameDirectoryInspector.inspect(directory: rootURL.path) else {
+            return
+        }
+        let writer = PatchFileWriter(root: rootURL)
+        let resolvedAppID = [explicitAppID, inspection.existingAppID]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty && $0 != "480" && Int($0) != nil }
+        guard let appID = resolvedAppID else { return }
+
+        let dlcs = await SteamAppIDLookup.fetchDLCs(appID: appID)
+        guard !dlcs.isEmpty else { return }
+
+        var candidateDirs = inspection.existingSteamDLLs.map { ($0.path as NSString).deletingLastPathComponent }
+        if let exe = inspection.mainExecutable {
+            candidateDirs.append((exe as NSString).deletingLastPathComponent)
+        }
+        candidateDirs.append(contentsOf: inspection.unityDataDirectories.flatMap { dataDir in
+            ["x86_64", "x86"].map { ((dataDir as NSString).appendingPathComponent("Plugins") as NSString).appendingPathComponent($0) }
+        })
+        candidateDirs.append(contentsOf: inspection.unrealSteamworksDirectories)
+        candidateDirs.append(rootURL.path)
+
+        var seen = Set<String>()
+        let uniqueDirs = candidateDirs.filter { seen.insert($0).inserted }
+
+        let goldbergUpdated = (try? writeGoldbergAppDLCs(
+            inDirectories: uniqueDirs,
+            dlcs: dlcs,
+            writer: writer,
+            requireExistingSettingsDir: true
+        )) ?? 0
+        let iniUpdated = (try? syncExistingEmulatorINIDLCs(inDirectories: uniqueDirs, dlcs: dlcs, writer: writer)) ?? 0
+        if goldbergUpdated > 0 || iniUpdated > 0 {
+            await onLog("dlc ▸ 已同步 \(dlcs.count) 条 Steam DLC 配置 (AppID \(appID))", false)
+        }
+    }
+
+    package static func mergeGoldbergAppDLCs(existing: String, dlcs: [SteamDLCItem]) -> String {
+        let usesCRLF = existing.contains("\r\n")
+        let lineBreak = usesCRLF ? "\r\n" : "\n"
+        let normalized = usesCRLF ? existing.replacingOccurrences(of: "\r\n", with: "\n") : existing
+
+        let cleanedDLCs: [(id: String, name: String)] = dlcs.compactMap { item in
+            let id = item.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard Int(id) != nil else { return nil }
+            let cleanName = item.name
+                .replacingOccurrences(of: "\r", with: " ")
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return (id, cleanName.isEmpty ? "DLC \(id)" : cleanName)
+        }
+
+        if normalized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            var lines = ["[app::dlcs]", "unlock_all=1"]
+            for dlc in cleanedDLCs {
+                lines.append("\(dlc.id)=\(dlc.name)")
+            }
+            return lines.joined(separator: lineBreak) + lineBreak
+        }
+
+        var lines = normalized.components(separatedBy: "\n")
+        if lines.last == "" {
+            lines.removeLast()
+        }
+
+        if let range = PathSafety.findSectionRange(in: lines, header: "[app::dlcs]") {
+            let bodyStart = range.start + 1
+            var existingMap: [String: String] = [:]
+            var orderedExistingIDs: [String] = []
+            var otherLines: [String] = []
+
+            for i in bodyStart..<range.end {
+                let rawLine = lines[i]
+                let stripped = rawLine.replacingOccurrences(of: "\u{FEFF}", with: "").trimmingCharacters(in: .whitespaces)
+                if stripped.isEmpty { continue }
+                if stripped.hasPrefix(";") || stripped.hasPrefix("#") || stripped.hasPrefix("//") {
+                    otherLines.append(rawLine)
+                    continue
+                }
+                if let eqIdx = rawLine.firstIndex(of: "=") {
+                    let key = rawLine[..<eqIdx].replacingOccurrences(of: "\u{FEFF}", with: "").trimmingCharacters(in: .whitespaces)
+                    let val = rawLine[rawLine.index(after: eqIdx)...].trimmingCharacters(in: .whitespaces)
+                    if key.lowercased() == "unlock_all" {
+                        continue
+                    }
+                    if Int(key) != nil {
+                        if existingMap[key] == nil {
+                            orderedExistingIDs.append(key)
+                        }
+                        existingMap[key] = val
+                        continue
+                    }
+                }
+                otherLines.append(rawLine)
+            }
+
+            for dlc in cleanedDLCs {
+                if existingMap[dlc.id] == nil {
+                    orderedExistingIDs.append(dlc.id)
+                }
+                existingMap[dlc.id] = dlc.name
+            }
+
+            var rebuiltSection = ["unlock_all=1"]
+            rebuiltSection.append(contentsOf: otherLines)
+            for id in orderedExistingIDs {
+                if let name = existingMap[id] {
+                    rebuiltSection.append("\(id)=\(name)")
+                }
+            }
+            lines.replaceSubrange(bodyStart..<range.end, with: rebuiltSection)
+        } else {
+            if !lines.isEmpty, !lines.last!.trimmingCharacters(in: .whitespaces).isEmpty {
+                lines.append("")
+            }
+            lines.append("[app::dlcs]")
+            lines.append("unlock_all=1")
+            for dlc in cleanedDLCs {
+                lines.append("\(dlc.id)=\(dlc.name)")
+            }
+        }
+
+        return lines.joined(separator: lineBreak) + lineBreak
+    }
+
+    package static func appendMissingDLCsToEmulatorINI(text: String, dlcs: [SteamDLCItem]) -> String? {
+        guard !dlcs.isEmpty else { return nil }
+        let usesCRLF = text.contains("\r\n")
+        let lineBreak = usesCRLF ? "\r\n" : "\n"
+        let normalized = usesCRLF ? text.replacingOccurrences(of: "\r\n", with: "\n") : text
+        let hadTrailingNewline = normalized.hasSuffix("\n")
+        var lines = normalized.components(separatedBy: "\n")
+        if hadTrailingNewline, lines.last == "" {
+            lines.removeLast()
+        }
+
+        guard let range = PathSafety.findSectionRange(in: lines, header: "[dlc]") else {
+            return nil
+        }
+        let bodyStart = range.start + 1
+
+        var existingDLCIDs = Set<String>()
+        var numberedPrefix: String?
+        var numberedWidth = 5
+        var maxNumberedIndex = 0
+        var separator = " = "
+        var fallbackSeparator: String?
+        var detectedDLCSeparator = false
+        var keyQuoted = false
+        var valueQuoted = false
+
+        for i in bodyStart..<range.end {
+            let line = lines[i]
+            let trimmed = line.replacingOccurrences(of: "\u{FEFF}", with: "").trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix(";") || trimmed.hasPrefix("#") || trimmed.hasPrefix("//") {
+                continue
+            }
+            guard let eqIdx = line.firstIndex(of: "=") else { continue }
+            let rawKeySide = String(line[..<eqIdx])
+            let rawValSide = String(line[line.index(after: eqIdx)...])
+            let cleanKey = rawKeySide.replacingOccurrences(of: "\u{FEFF}", with: "").trimmingCharacters(in: .whitespaces)
+            let cleanVal = rawValSide.trimmingCharacters(in: .whitespaces)
+
+            let beforeEqHasSpace = rawKeySide.last == " " || rawKeySide.last == "\t"
+            let afterEqHasSpace = rawValSide.first == " " || rawValSide.first == "\t"
+            let lineSeparator = (beforeEqHasSpace || afterEqHasSpace) ? " = " : "="
+            if fallbackSeparator == nil {
+                fallbackSeparator = lineSeparator
+            }
+
+            let unquotedKey = unquoteINIAtom(cleanKey)
+            let unquotedVal = unquoteINIAtom(cleanVal)
+
+            if Int(unquotedKey) != nil {
+                existingDLCIDs.insert(unquotedKey)
+                keyQuoted = cleanKey.hasPrefix("\"") && cleanKey.hasSuffix("\"")
+                valueQuoted = cleanVal.hasPrefix("\"") && cleanVal.hasSuffix("\"")
+                if !detectedDLCSeparator {
+                    separator = lineSeparator
+                    detectedDLCSeparator = true
+                }
+            } else if let match = parseNumberedDLCKey(unquotedKey), Int(unquotedVal) != nil {
+                existingDLCIDs.insert(unquotedVal)
+                numberedPrefix = numberedPrefix ?? match.prefix
+                numberedWidth = max(numberedWidth, match.width)
+                maxNumberedIndex = max(maxNumberedIndex, match.index)
+                valueQuoted = cleanVal.hasPrefix("\"") && cleanVal.hasSuffix("\"")
+                if !detectedDLCSeparator {
+                    separator = lineSeparator
+                    detectedDLCSeparator = true
+                }
+            }
+        }
+
+        if !detectedDLCSeparator {
+            if let fallbackSeparator {
+                separator = fallbackSeparator
+            } else {
+                for line in lines {
+                    let t = line.trimmingCharacters(in: .whitespaces)
+                    if t.isEmpty || t.hasPrefix(";") || t.hasPrefix("#") || t.hasPrefix("[") { continue }
+                    if let eq = line.firstIndex(of: "=") {
+                        let before = line[..<eq].last
+                        let after = line[line.index(after: eq)...].first
+                        separator = (before == " " || before == "\t" || after == " " || after == "\t") ? " = " : "="
+                        break
+                    }
+                }
+            }
+        }
+
+        let missingDLCs = dlcs.filter { item in
+            let id = item.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            return Int(id) != nil && !existingDLCIDs.contains(id)
+        }
+        guard !missingDLCs.isEmpty else { return nil }
+
+        var newLines: [String] = []
+        if let prefix = numberedPrefix {
+            var nextIdx = maxNumberedIndex + 1
+            for dlc in missingDLCs {
+                let padded = String(format: "%0\(numberedWidth)d", nextIdx)
+                nextIdx += 1
+                let formattedID = valueQuoted ? "\"\(dlc.id)\"" : dlc.id
+                newLines.append("\(prefix)\(padded)\(separator)\(formattedID)")
+            }
+        } else {
+            for dlc in missingDLCs {
+                let cleanName = dlc.name
+                    .replacingOccurrences(of: "\r", with: " ")
+                    .replacingOccurrences(of: "\n", with: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let finalName = cleanName.isEmpty ? "DLC \(dlc.id)" : cleanName
+                let formattedKey = keyQuoted ? "\"\(dlc.id)\"" : dlc.id
+                let formattedVal = valueQuoted ? "\"\(finalName)\"" : finalName
+                newLines.append("\(formattedKey)\(separator)\(formattedVal)")
+            }
+        }
+
+        var insertAt = bodyStart
+        for idx in (bodyStart..<range.end).reversed() {
+            if !lines[idx].trimmingCharacters(in: .whitespaces).isEmpty {
+                insertAt = idx + 1
+                break
+            }
+        }
+        lines.insert(contentsOf: newLines, at: insertAt)
+        return lines.joined(separator: lineBreak) + (hadTrailingNewline ? lineBreak : "")
+    }
+
+    private static func unquoteINIAtom(_ atom: String) -> String {
+        if atom.count >= 2 && atom.hasPrefix("\"") && atom.hasSuffix("\"") {
+            return String(atom.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces)
+        }
+        return atom
+    }
+
+    private static func parseNumberedDLCKey(_ key: String) -> (prefix: String, index: Int, width: Int)? {
+        let lower = key.lowercased()
+        for prefix in ["dlc", "app"] where lower.hasPrefix(prefix) {
+            let suffix = String(key.dropFirst(prefix.count))
+            guard !suffix.isEmpty, suffix.allSatisfy(\.isNumber), let num = Int(suffix) else { continue }
+            return (String(key.prefix(prefix.count)), num, suffix.count)
+        }
+        return nil
     }
 
     private static func rewriteINILanguageValue(in text: String, to newLanguage: String) -> String? {

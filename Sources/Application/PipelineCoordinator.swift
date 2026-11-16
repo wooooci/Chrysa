@@ -1582,7 +1582,12 @@ package final class PipelineCoordinator {
         let sleepToken = beginSleepAssertion(for: taskID)
         defer { endSleepAssertion(token: sleepToken) }
         await updateJob(taskID, status: .running)
-        let stage = services.unpackStage(passwords: candidatePasswords, deleteArchive: settings.deleteArchiveAfterUnpack)
+        let knownGames = await gameLibrary.all()
+        let stage = services.unpackStage(
+            passwords: candidatePasswords,
+            deleteArchive: settings.deleteArchiveAfterUnpack,
+            knownGames: knownGames
+        )
         let result = await execute(
             registry: StageRegistry(stages: [stage]),
             stageID: stage.id,
@@ -1700,7 +1705,9 @@ package final class PipelineCoordinator {
                 let resolvedTitle = output.metadata["title"] ?? cleanTitle
                 let rawBottle = output.metadata["bottleName"]
                 let bottleName = (rawBottle?.isEmpty == false && rawBottle != "独立补丁包" && rawBottle != "Default") ? rawBottle : nil
-                let game = LaunchGame(
+                let rawDefaultArgs = output.metadata["launchArguments"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let patchDefaultArgs = (rawDefaultArgs?.isEmpty == false) ? rawDefaultArgs : nil
+                let probe = LaunchGame(
                     title: resolvedTitle,
                     exePath: output.artifact?.value,
                     gameDirectory: folderPath,
@@ -1708,7 +1715,24 @@ package final class PipelineCoordinator {
                     appID: output.metadata["appID"],
                     source: .patchPipeline
                 )
+                let existingMatch = await gameLibrary.all().first(where: { $0.matches(probe) })
+                let existingCustomArgs = existingMatch?.launchArguments?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let effectiveLaunchArgs: String? = (existingCustomArgs?.isEmpty == false)
+                    ? existingCustomArgs
+                    : patchDefaultArgs
+                let game = LaunchGame(
+                    title: resolvedTitle,
+                    exePath: output.artifact?.value,
+                    gameDirectory: folderPath,
+                    bottleName: bottleName,
+                    appID: output.metadata["appID"],
+                    source: .patchPipeline,
+                    launchArguments: effectiveLaunchArgs
+                )
                 let stored = await gameLibrary.upsert(game, preferIncomingMetadata: true)
+                services.cleanupBaselineSnapshot(forGameID: stored.id, gameDirectory: existingMatch?.gameDirectory)
+                services.cleanupBaselineSnapshot(forGameID: stored.id, gameDirectory: stored.gameDirectory)
+                await services.invalidateLaunchGameIconCache(for: stored)
                 eventContinuation.yield(.launchGameUpdated(stored))
             }
         case .cancelled:
@@ -1728,25 +1752,61 @@ package final class PipelineCoordinator {
         return stored
     }
 
-    package func removeLaunchGame(_ id: UUID) async {
-        let existing = await gameLibrary.game(for: id)
+    @discardableResult
+    package func removeLaunchGame(
+        _ id: UUID,
+        mode: LaunchGameRemovalMode = .recordOnly,
+        settings: AppSettings? = nil
+    ) async -> LaunchGameUninstallOutcome {
+        let allGames = await gameLibrary.all()
+        let existing = allGames.first(where: { $0.id == id })
         workers[id]?.cancel()
         cancelledTaskIDs.insert(id)
         await services.cancel(taskID: id)
         await gameLibrary.remove(id: id, suppressRescan: true)
+        var outcome = LaunchGameUninstallOutcome()
         if let existing {
+            if mode == .moveToTrash {
+                outcome = await services.uninstallLaunchGameArtifacts(
+                    for: existing,
+                    knownGames: allGames,
+                    settings: settings ?? AppSettings()
+                )
+            }
+            services.cleanupBaselineSnapshot(forGameID: existing.id, gameDirectory: existing.gameDirectory)
             await services.invalidateLaunchGameIconCache(for: existing)
             await services.removeCustomLaunchGameIcon(at: existing.customIconPath)
         }
         workers[id] = nil
         eventContinuation.yield(.launchGameRemoved(id))
+        return outcome
     }
     package func resolveLaunchGameIcon(_ game: LaunchGame) async -> Data? {
         await services.resolveLaunchGameIcon(game)
     }
 
+    package func readBottleRuntimeOptions(
+        for game: LaunchGame,
+        bottlesDirectory: String
+    ) async -> CrossOverBottleRuntimeOptions? {
+        await services.readBottleRuntimeOptions(for: game, bottlesDirectory: bottlesDirectory)
+    }
+
+    package func saveBottleRuntimeOptions(
+        _ options: CrossOverBottleRuntimeOptions,
+        for game: LaunchGame,
+        bottlesDirectory: String
+    ) async throws {
+        try await services.saveBottleRuntimeOptions(options, for: game, bottlesDirectory: bottlesDirectory)
+    }
+
     @discardableResult
-    package func updateLaunchGame(_ updated: LaunchGame, previousCustomIconPath: String? = nil) async -> LaunchGame? {
+    package func updateLaunchGame(
+        _ updated: LaunchGame,
+        previousCustomIconPath: String? = nil,
+        bottlesDirectory: String? = nil,
+        bottleRuntimeOptions: CrossOverBottleRuntimeOptions? = nil
+    ) async -> LaunchGame? {
         let existing = await gameLibrary.game(for: updated.id)
         if let existing {
             await services.invalidateLaunchGameIconCache(for: existing)
@@ -1759,6 +1819,16 @@ package final class PipelineCoordinator {
             await services.removeCustomLaunchGameIcon(at: previousCustomIconPath)
         }
         if let saved {
+            if let bottlesDirectory, let bottleRuntimeOptions {
+                try? await services.saveBottleRuntimeOptions(
+                    bottleRuntimeOptions,
+                    for: saved,
+                    bottlesDirectory: bottlesDirectory
+                )
+            }
+            if let bottlesDirectory, saved.exePath != existing?.exePath {
+                await services.refreshBottleConfiguration(for: saved, bottlesDirectory: bottlesDirectory)
+            }
             eventContinuation.yield(.launchGameUpdated(saved))
         }
         return saved
@@ -1774,6 +1844,97 @@ package final class PipelineCoordinator {
 
     package func invalidateLaunchGameIconCache(for game: LaunchGame) async {
         await services.invalidateLaunchGameIconCache(for: game)
+    }
+
+    package func hasBaselineSnapshot(for game: LaunchGame) -> Bool {
+        services.hasBaselineSnapshot(for: game)
+    }
+
+    package func listCandidateExecutables(in directory: String) -> [String] {
+        services.listCandidateExecutables(in: directory)
+    }
+
+    package func applyLaunchGamePatch(
+        gameID: UUID,
+        sourceURL: URL,
+        settings: AppSettings
+    ) async -> LaunchGamePatchOutcome {
+        await applyLaunchGamePatch(gameID: gameID, sourceURLs: [sourceURL], settings: settings)
+    }
+
+    package func applyLaunchGamePatch(
+        gameID: UUID,
+        sourceURLs: [URL],
+        settings: AppSettings
+    ) async -> LaunchGamePatchOutcome {
+        guard let game = await gameLibrary.game(for: gameID) else {
+            return .failed("未找到对应游戏记录")
+        }
+        let outcome = await services.applyLaunchGamePatch(
+            game: game,
+            sourceURLs: sourceURLs,
+            settings: settings,
+            onLog: { [weak self] stageLog in
+                await self?.recordLog(
+                    taskID: gameID,
+                    module: .patch,
+                    level: stageLog.level,
+                    message: stageLog.message,
+                    rawOutput: stageLog.rawOutput
+                )
+            }
+        )
+        if case .applied(let updatedGame, let summary) = outcome {
+            if let saved = await gameLibrary.update(updatedGame) {
+                eventContinuation.yield(.launchGameUpdated(saved))
+                return .applied(updatedGame: saved, summary: summary)
+            }
+            eventContinuation.yield(.launchGameUpdated(updatedGame))
+        }
+        return outcome
+    }
+
+    package func restoreBaselineSnapshot(
+        for gameID: UUID,
+        settings: AppSettings
+    ) async -> LaunchGameRestoreOutcome {
+        guard var game = await gameLibrary.game(for: gameID) else {
+            return .failed("未找到对应游戏记录")
+        }
+        let outcome = await services.restoreBaselineSnapshot(
+            for: game,
+            settings: settings,
+            onLog: { [weak self] stageLog in
+                await self?.recordLog(
+                    taskID: gameID,
+                    module: .patch,
+                    level: stageLog.level,
+                    message: stageLog.message,
+                    rawOutput: stageLog.rawOutput
+                )
+            }
+        )
+        if case .restored(let restoredExePath, let restoredLaunchArgs, _) = outcome {
+            let priorExe = game.exePath
+            if let restoredExePath {
+                game.exePath = FileManager.default.fileExists(atPath: restoredExePath) ? restoredExePath : nil
+            } else if let existingPrior = priorExe, !FileManager.default.fileExists(atPath: existingPrior) {
+                game.exePath = nil
+            }
+            game.launchArguments = restoredLaunchArgs
+            game.updatedAt = Date()
+            if let saved = await gameLibrary.update(game) {
+                await services.invalidateLaunchGameIconCache(for: saved)
+                if saved.exePath != priorExe {
+                    await services.refreshBottleConfiguration(
+                        for: saved,
+                        bottlesDirectory: settings.patch.bottlesDirectory
+                    )
+                }
+                eventContinuation.yield(.launchGameUpdated(saved))
+            }
+        }
+        return outcome
     }
 
     package func lookupSteamAppID(for title: String) async -> String? {

@@ -94,6 +94,126 @@ struct AlertPresentationTests {
     }
 
     @MainActor
+    @Test
+    func launchLibraryRemovalAlertPresentsRecordOnlyAndTrashActions() async throws {
+        _ = NSApplication.shared
+
+        let fm = FileManager.default
+        let tempRoot = fm.temporaryDirectory
+            .appendingPathComponent("chrysa-launch-alert-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tempRoot) }
+
+        let gameFolder = tempRoot.appendingPathComponent("UninstallableGame", isDirectory: true)
+        try fm.createDirectory(at: gameFolder, withIntermediateDirectories: true)
+        let exeFile = gameFolder.appendingPathComponent("Game.exe")
+        try Data("PE".utf8).write(to: exeFile)
+
+        let game = LaunchGame(
+            title: "UninstallableGame",
+            exePath: exeFile.path,
+            gameDirectory: gameFolder.path,
+            source: .manualImport
+        )
+
+        // 1. "仅移除记录" removes library entry and keeps local directory intact
+        let library1 = LaunchGameStore(inMemoryOnly: true)
+        await library1.upsert(game, preferIncomingMetadata: true)
+        let settings1 = AppSettingsStore(inMemoryOnly: true)
+        settings1.settings.bottlesDirectory = tempRoot.appendingPathComponent("Bottles").path
+        let vm1 = StudioViewModel(
+            inMemoryOnly: false,
+            settingsStore: settings1,
+            taskStore: TaskStore(inMemoryOnly: true),
+            coordinator: PipelineCoordinator(
+                services: DefaultWorkflowServices(),
+                jobStore: JobStore(inMemoryOnly: true),
+                gameLibrary: library1
+            )
+        )
+        let loaded1 = await pumpMainRunLoop(until: { !vm1.launchGames.isEmpty }, timeout: 2.0)
+        #expect(loaded1)
+
+        let window1 = makeHostWindow(
+            rootView: LaunchLibraryView(
+                vm: vm1,
+                isSnapshotMode: false,
+                initialPendingRemoval: game
+            )
+            .frame(width: 640, height: 420)
+            .launchErrorAlert(Binding(get: { vm1.launchErrorAlert }, set: { vm1.launchErrorAlert = $0 }))
+        )
+        defer { cleanup(window: window1) }
+
+        let presented1 = await pumpMainRunLoop(until: { window1.attachedSheet != nil }, timeout: 2.0)
+        #expect(presented1)
+        if let sheetContent = window1.attachedSheet?.contentView {
+            let titles = collectButtons(in: sheetContent).map(\.title)
+            #expect(titles.contains("仅移除记录"))
+            #expect(titles.contains("彻底卸载（移入废纸篓）"))
+            #expect(titles.contains("取消"))
+            collectButtons(in: sheetContent).first { $0.title == "仅移除记录" }?.performClick(nil)
+        }
+        let settled1 = await pumpMainRunLoop(
+            until: { window1.attachedSheet == nil && vm1.launchGames.isEmpty },
+            timeout: 2.0
+        )
+        #expect(settled1)
+        #expect(fm.fileExists(atPath: gameFolder.path))
+
+        // 2. "彻底卸载（移入废纸篓）" removes library entry and trashes local directory
+        let library2 = LaunchGameStore(inMemoryOnly: true)
+        await library2.upsert(game, preferIncomingMetadata: true)
+        let vm2 = StudioViewModel(
+            inMemoryOnly: false,
+            settingsStore: settings1,
+            taskStore: TaskStore(inMemoryOnly: true),
+            coordinator: PipelineCoordinator(
+                services: DefaultWorkflowServices(),
+                jobStore: JobStore(inMemoryOnly: true),
+                gameLibrary: library2
+            )
+        )
+        let loaded2 = await pumpMainRunLoop(until: { !vm2.launchGames.isEmpty }, timeout: 2.0)
+        #expect(loaded2)
+
+        let trashDir = fm.urls(for: .trashDirectory, in: .userDomainMask).first
+        let existingTrashItems = Set((trashDir.flatMap { try? fm.contentsOfDirectory(atPath: $0.path) }) ?? [])
+        defer {
+            if let trashDir, let currentItems = try? fm.contentsOfDirectory(atPath: trashDir.path) {
+                for name in currentItems where !existingTrashItems.contains(name) && name.contains("UninstallableGame") {
+                    try? fm.removeItem(at: trashDir.appendingPathComponent(name))
+                }
+            }
+        }
+
+        let window2 = makeHostWindow(
+            rootView: LaunchLibraryView(
+                vm: vm2,
+                isSnapshotMode: false,
+                initialPendingRemoval: game
+            )
+            .frame(width: 640, height: 420)
+            .launchErrorAlert(Binding(get: { vm2.launchErrorAlert }, set: { vm2.launchErrorAlert = $0 }))
+        )
+        defer { cleanup(window: window2) }
+
+        let presented2 = await pumpMainRunLoop(until: { window2.attachedSheet != nil }, timeout: 2.0)
+        #expect(presented2)
+        collectButtons(in: window2.attachedSheet!.contentView!).first { $0.title == "彻底卸载（移入废纸篓）" }?.performClick(nil)
+
+        let settled2 = await pumpMainRunLoop(
+            until: {
+                window2.attachedSheet == nil
+                    && vm2.launchGames.isEmpty
+                    && !fm.fileExists(atPath: gameFolder.path)
+            },
+            timeout: 2.0
+        )
+        #expect(settled2)
+    }
+
+    @MainActor
     private func runDeletionAlertScenario(
         filename: String,
         deleteLocalFile: Bool,
@@ -166,6 +286,9 @@ struct AlertPresentationTests {
         if let downloadDirectory {
             settingsStore.settings.downloadDirectory = downloadDirectory
         }
+        settingsStore.settings.bottlesDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chrysa-alert-bottles-\(UUID().uuidString)")
+            .path
         return StudioViewModel(
             inMemoryOnly: true,
             settingsStore: settingsStore,
@@ -194,6 +317,7 @@ struct AlertPresentationTests {
 
         let settingsStore = AppSettingsStore(inMemoryOnly: true)
         settingsStore.settings.downloadDirectory = downloadDirectory
+        settingsStore.settings.bottlesDirectory = (downloadDirectory as NSString).appendingPathComponent("_bottles")
         let vm = StudioViewModel(
             inMemoryOnly: false,
             settingsStore: settingsStore,

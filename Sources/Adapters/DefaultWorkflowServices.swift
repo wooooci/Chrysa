@@ -10,21 +10,39 @@ package struct DefaultWorkflowServices: WorkflowServices {
     private let launcher: GameLauncher
     private let iconResolver: GameIconResolver
     private let supervisor: ProcessSupervisor
+    private let snapshotManager: GameSnapshotManager
+    private let bottleConfigurator: CrossOverBottleConfigurator
+    private let patchApplier: GamePatchApplier
 
     package init(
         download: DownloadService = DownloadService(),
         unpack: UnpackService = UnpackService(),
-        patch: PatchService = PatchService(),
-        launcher: GameLauncher = GameLauncher(),
+        patch: PatchService? = nil,
+        launcher: GameLauncher? = nil,
         iconResolver: GameIconResolver = .shared,
-        supervisor: ProcessSupervisor = .shared
+        supervisor: ProcessSupervisor = .shared,
+        snapshotManager: GameSnapshotManager = GameSnapshotManager(),
+        bottleConfigurator: CrossOverBottleConfigurator? = nil,
+        patchApplier: GamePatchApplier? = nil
     ) {
+        let configurator = bottleConfigurator ?? CrossOverBottleConfigurator(supervisor: supervisor)
+        let resolvedPatch = patch ?? PatchService(bottleConfigurator: configurator)
+        let resolvedLauncher = launcher ?? GameLauncher(bottleConfigurator: configurator, supervisor: supervisor)
         self.download = download
         self.unpack = unpack
-        self.patch = patch
-        self.launcher = launcher
+        self.patch = resolvedPatch
+        self.launcher = resolvedLauncher
         self.iconResolver = iconResolver
         self.supervisor = supervisor
+        self.snapshotManager = snapshotManager
+        self.bottleConfigurator = configurator
+        self.patchApplier = patchApplier ?? GamePatchApplier(
+            unpackService: unpack,
+            patchService: resolvedPatch,
+            snapshotManager: snapshotManager,
+            supervisor: supervisor,
+            bottleConfigurator: configurator
+        )
     }
 
     package func downloadStage(title: String, resolved: ResolvedDownload, settings: AppSettings) -> any Stage {
@@ -50,6 +68,15 @@ package struct DefaultWorkflowServices: WorkflowServices {
 
     package func unpackStage(passwords: [String], deleteArchive: Bool) -> any Stage {
         UnpackStage(service: unpack, candidatePasswords: passwords, deleteArchiveAfterUnpack: deleteArchive)
+    }
+
+    package func unpackStage(passwords: [String], deleteArchive: Bool, knownGames: [LaunchGame]) -> any Stage {
+        UnpackStage(
+            service: unpack,
+            candidatePasswords: passwords,
+            deleteArchiveAfterUnpack: deleteArchive,
+            knownGames: knownGames
+        )
     }
 
     package func patchStage(title: String, settings: AppSettings) -> any Stage {
@@ -366,5 +393,113 @@ package struct DefaultWorkflowServices: WorkflowServices {
               let values = try? contained.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
               values.isRegularFile == true, values.isSymbolicLink != true else { return nil }
         return contained
+    }
+
+    package func applyLaunchGamePatch(
+        game: LaunchGame,
+        sourceURL: URL,
+        settings: AppSettings,
+        onLog: @escaping @Sendable (StageLog) async -> Void
+    ) async -> LaunchGamePatchOutcome {
+        await applyLaunchGamePatch(game: game, sourceURLs: [sourceURL], settings: settings, onLog: onLog)
+    }
+
+    package func applyLaunchGamePatch(
+        game: LaunchGame,
+        sourceURLs: [URL],
+        settings: AppSettings,
+        onLog: @escaping @Sendable (StageLog) async -> Void
+    ) async -> LaunchGamePatchOutcome {
+        await patchApplier.apply(game: game, sourceURLs: sourceURLs, settings: settings, onLog: onLog)
+    }
+
+    package func hasBaselineSnapshot(for game: LaunchGame) -> Bool {
+        snapshotManager.hasSnapshot(for: game)
+    }
+
+    package func restoreBaselineSnapshot(
+        for game: LaunchGame,
+        settings: AppSettings,
+        onLog: @escaping @Sendable (StageLog) async -> Void
+    ) async -> LaunchGameRestoreOutcome {
+        do {
+            let outcome = try await snapshotManager.restoreBaseline(
+                for: game,
+                bottlesDirectory: settings.patch.bottlesDirectory
+            ) { msg, hi in
+                await onLog(StageLog(msg, highlight: hi))
+            }
+            return .restored(
+                restoredExePath: outcome.restoredExePath,
+                restoredLaunchArguments: outcome.restoredLaunchArguments,
+                summary: outcome.summary
+            )
+        } catch {
+            return .failed("原版恢复失败: \(error.localizedDescription)")
+        }
+    }
+
+    package func cleanupBaselineSnapshot(forGameID gameID: UUID, gameDirectory: String?) {
+        snapshotManager.cleanupSnapshot(forGameID: gameID, gameDirectory: gameDirectory)
+    }
+
+    package func listCandidateExecutables(in directory: String) -> [String] {
+        GameDirectoryInspector.inspect(directory: directory)?.candidateExecutables ?? []
+    }
+
+    package func refreshBottleConfiguration(for game: LaunchGame, bottlesDirectory: String) async {
+        guard let exePath = game.exePath, !exePath.isEmpty else { return }
+        _ = try? await bottleConfigurator.configure(
+            taskID: game.id,
+            gameTitle: game.bottleName ?? game.title,
+            exePath: exePath,
+            gameDirectory: game.gameDirectory,
+            bottlesDirectory: bottlesDirectory,
+            hasD3D12: false,
+            hasWinHTTP: false
+        )
+    }
+
+    package func readBottleRuntimeOptions(
+        for game: LaunchGame,
+        bottlesDirectory: String
+    ) async -> CrossOverBottleRuntimeOptions? {
+        guard let bottle = CrossOverRegistryHelper.resolveValidLocalBottle(
+            explicitBottleName: game.bottleName,
+            gameTitle: game.title,
+            exePath: game.exePath,
+            bottlesDirectory: bottlesDirectory
+        ) else {
+            return nil
+        }
+        return CrossOverRegistryHelper.readBottleRuntimeOptions(inBottlePath: bottle.path)
+    }
+
+    package func saveBottleRuntimeOptions(
+        _ options: CrossOverBottleRuntimeOptions,
+        for game: LaunchGame,
+        bottlesDirectory: String
+    ) async throws {
+        guard let bottle = CrossOverRegistryHelper.resolveValidLocalBottle(
+            explicitBottleName: game.bottleName,
+            gameTitle: game.title,
+            exePath: game.exePath,
+            bottlesDirectory: bottlesDirectory
+        ) else {
+            return
+        }
+        try CrossOverRegistryHelper.writeBottleRuntimeOptions(options, inBottlePath: bottle.path)
+    }
+
+    package func uninstallLaunchGameArtifacts(
+        for game: LaunchGame,
+        knownGames: [LaunchGame],
+        settings: AppSettings
+    ) async -> LaunchGameUninstallOutcome {
+        LaunchGameUninstaller.uninstall(
+            game: game,
+            knownGames: knownGames,
+            settings: settings
+        )
     }
 }

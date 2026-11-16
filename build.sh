@@ -29,6 +29,12 @@ if [[ -f "$ASSET_APP/Contents/MacOS/sf-dl" ]]; then
 fi
 
 cp "$DIR/packaging/Info.plist" "$BUNDLE/Contents/Info.plist"
+if [[ -n "${CHRYSA_VERSION:-}" ]]; then
+  /usr/bin/plutil -replace CFBundleShortVersionString -string "$CHRYSA_VERSION" "$BUNDLE/Contents/Info.plist"
+fi
+BUILD_NUMBER="${CHRYSA_BUILD_NUMBER:-$(git -C "$DIR" rev-list --count HEAD 2>/dev/null || echo 1)}"
+/usr/bin/plutil -replace CFBundleVersion -string "$BUILD_NUMBER" "$BUNDLE/Contents/Info.plist"
+SHORT_VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$BUNDLE/Contents/Info.plist")"
 cp "$BIN_DIR/Chrysa" "$BUNDLE/Contents/MacOS/Chrysa"
 chmod +x "$BUNDLE/Contents/MacOS/Chrysa"
 xattr -cr "$BUNDLE"
@@ -45,5 +51,6 @@ if ! mv "$BUNDLE" "$APP"; then
   fi
   exit 1
 fi
-echo "Built and signed $APP"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" >/dev/null 2>&1 || true
+echo "Built and signed $APP (v${SHORT_VERSION} build ${BUILD_NUMBER})"
 echo "Runtime asset source: $ASSET_APP"

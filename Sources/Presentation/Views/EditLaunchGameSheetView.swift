@@ -12,13 +12,19 @@ struct EditLaunchGameSheetView: View {
     @State private var appIDInput: String
     @State private var exePathInput: String
     @State private var gameDirectoryInput: String
+    @State private var launchArgumentsInput: String
     @State private var iconPreference: LaunchGameIconPreference
     @State private var customIconPath: String?
     @State private var createdCustomIconPaths: [String] = []
+    @State private var candidateEXEs: [String] = []
     @State private var previewImage: NSImage?
     @State private var isLookingUpAppID = false
     @State private var isLoadingPreview = false
     @State private var statusMessage: String?
+    @State private var bottleOptionsAvailable = false
+    @State private var initialBottleOptions: CrossOverBottleRuntimeOptions?
+    @State private var graphicsBackend: CrossOverGraphicsBackend = .automatic
+    @State private var retinaModeEnabled = false
 
     init(vm: StudioViewModel, game: LaunchGame) {
         self.vm = vm
@@ -27,6 +33,7 @@ struct EditLaunchGameSheetView: View {
         _appIDInput = State(initialValue: game.appID ?? "")
         _exePathInput = State(initialValue: game.exePath ?? "")
         _gameDirectoryInput = State(initialValue: game.gameDirectory ?? "")
+        _launchArgumentsInput = State(initialValue: game.launchArguments ?? "")
         _iconPreference = State(initialValue: game.iconPreference)
         _customIconPath = State(initialValue: game.customIconPath)
         _previewImage = State(initialValue: vm.launchGameIcon(for: game))
@@ -37,6 +44,7 @@ struct EditLaunchGameSheetView: View {
         let trimmedAppID = appIDInput.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedExe = exePathInput.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedDir = gameDirectoryInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedArgs = launchArgumentsInput.trimmingCharacters(in: .whitespacesAndNewlines)
         return LaunchGame(
             id: game.id,
             title: trimmedTitle.isEmpty ? game.title : trimmedTitle,
@@ -47,6 +55,7 @@ struct EditLaunchGameSheetView: View {
             source: game.source,
             customIconPath: customIconPath,
             iconPreference: iconPreference,
+            launchArguments: trimmedArgs.isEmpty ? nil : trimmedArgs,
             addedAt: game.addedAt,
             updatedAt: Date(),
             lastPlayedAt: game.lastPlayedAt
@@ -200,6 +209,32 @@ struct EditLaunchGameSheetView: View {
                     TextField("可选，.exe 或 .app 路径", text: $exePathInput)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12, design: .monospaced))
+                    let effectiveDir = gameDirectoryInput.isEmpty ? game.gameDirectory : gameDirectoryInput
+                    if candidateEXEs.count > 1 || (!candidateEXEs.isEmpty && candidateEXEs.first != exePathInput) {
+                        Menu("切换") {
+                            ForEach(candidateEXEs, id: \.self) { candidate in
+                                let label: String = {
+                                    if let effectiveDir,
+                                       let rel = LaunchGame.relativeSubpath(of: candidate, inside: effectiveDir) {
+                                        return rel
+                                    }
+                                    return (candidate as NSString).lastPathComponent
+                                }()
+                                Button(action: {
+                                    exePathInput = candidate
+                                    statusMessage = "已切换启动程序: \((candidate as NSString).lastPathComponent)"
+                                }) {
+                                    if candidate == exePathInput {
+                                        Label(label, systemImage: "checkmark")
+                                    } else {
+                                        Text(label)
+                                    }
+                                }
+                            }
+                        }
+                        .font(.system(size: 12))
+                        .fixedSize()
+                    }
                     Button("浏览...") {
                         if let picked = vm.chooseLaunchExecutable(
                             initialPath: exePathInput.isEmpty ? gameDirectoryInput : exePathInput
@@ -216,6 +251,43 @@ struct EditLaunchGameSheetView: View {
                         }
                     }
                     .font(.system(size: 12))
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("附加启动参数")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.t3TextSub)
+                TextField("可选，例如 -fileopenlog -dx11", text: $launchArgumentsInput)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+            }
+
+            if bottleOptionsAvailable {
+                VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("图形后端")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.t3TextSub)
+                        Picker("", selection: $graphicsBackend) {
+                            ForEach(CrossOverGraphicsBackend.allCases) { backend in
+                                Text(backend.displayName).tag(backend)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                    }
+
+                    HStack {
+                        Text("Retina 高分屏")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.t3TextSub)
+                        Spacer()
+                        Toggle("", isOn: $retinaModeEnabled)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                    }
                 }
             }
 
@@ -245,12 +317,36 @@ struct EditLaunchGameSheetView: View {
         }
         .padding(20)
         .frame(width: 480)
+        .task(id: gameDirectoryInput) {
+            let effectiveDir = gameDirectoryInput.isEmpty ? game.gameDirectory : gameDirectoryInput
+            candidateEXEs = vm.candidateExecutables(in: effectiveDir)
+        }
         .task(id: previewSignature) {
             isLoadingPreview = true
             let resolved = await vm.previewLaunchGameIcon(for: draftGame)
             if !Task.isCancelled {
                 previewImage = resolved
                 isLoadingPreview = false
+            }
+        }
+        .task(id: "\(game.bottleName ?? "")|\(exePathInput)|\(titleInput)") {
+            let loaded = await vm.loadBottleRuntimeOptions(for: draftGame)
+            if !Task.isCancelled {
+                if let loaded {
+                    let shouldPopulateControls = !bottleOptionsAvailable || initialBottleOptions == CrossOverBottleRuntimeOptions(
+                        graphicsBackend: graphicsBackend,
+                        retinaMode: retinaModeEnabled
+                    )
+                    bottleOptionsAvailable = true
+                    initialBottleOptions = loaded
+                    if shouldPopulateControls {
+                        graphicsBackend = loaded.graphicsBackend
+                        retinaModeEnabled = loaded.retinaMode
+                    }
+                } else {
+                    bottleOptionsAvailable = false
+                    initialBottleOptions = nil
+                }
             }
         }
     }
@@ -271,7 +367,21 @@ struct EditLaunchGameSheetView: View {
         let finalCustomPath = customIconPath
         let unused = createdCustomIconPaths.filter { $0 != finalCustomPath }
         let updated = draftGame
-        vm.saveEditedLaunchGame(updated, previousCustomIconPath: game.customIconPath)
+        let currentBottleOptions = CrossOverBottleRuntimeOptions(
+            graphicsBackend: graphicsBackend,
+            retinaMode: retinaModeEnabled
+        )
+        let changedBottleOptions: CrossOverBottleRuntimeOptions? = {
+            guard bottleOptionsAvailable, currentBottleOptions != initialBottleOptions else {
+                return nil
+            }
+            return currentBottleOptions
+        }()
+        vm.saveEditedLaunchGame(
+            updated,
+            previousCustomIconPath: game.customIconPath,
+            bottleRuntimeOptions: changedBottleOptions
+        )
         if !unused.isEmpty {
             Task {
                 for path in unused {

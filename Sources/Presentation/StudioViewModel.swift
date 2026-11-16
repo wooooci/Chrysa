@@ -23,6 +23,8 @@ package final class StudioViewModel: ObservableObject {
     @Published package var launchSearchQuery: String = ""
     @Published package var launchSortOrder: LaunchSortOrder = .lastPlayed
     @Published package var launchErrorAlert: LaunchErrorNotice? = nil
+    @Published package private(set) var patchingGameIDs: Set<UUID> = []
+    @Published package private(set) var snapshotRevision: Int = 0
     @Published package var logs: [LogEntry] = []
     @Published package var isLogDrawerPresented: Bool = false
     @Published package var logModuleFilter: LogModule? = nil
@@ -388,8 +390,24 @@ package final class StudioViewModel: ObservableObject {
         coordinator.launchGame(game, settings: settingsStore.settings)
     }
 
-    package func removeLaunchGame(_ game: LaunchGame) {
-        Task { await coordinator.removeLaunchGame(game.id) }
+    package func removeLaunchGame(_ game: LaunchGame, mode: LaunchGameRemovalMode = .recordOnly) {
+        launchGameIcons.removeValue(forKey: game.id)
+        attemptedIconSignatureByID.removeValue(forKey: game.id)
+        Task { [weak self] in
+            guard let self else { return }
+            let outcome = await coordinator.removeLaunchGame(
+                game.id,
+                mode: mode,
+                settings: settingsStore.settings
+            )
+            let trashErrors = outcome.warnings.filter { $0.contains("无法将") }
+            if !trashErrors.isEmpty {
+                self.launchErrorAlert = LaunchErrorNotice(
+                    title: "部分文件未移入废纸篓 · \(game.title)",
+                    message: trashErrors.joined(separator: "\n")
+                )
+            }
+        }
     }
 
     package func launchGameIcon(for game: LaunchGame) -> NSImage? {
@@ -428,13 +446,43 @@ package final class StudioViewModel: ObservableObject {
         }
     }
 
-    package func saveEditedLaunchGame(_ updated: LaunchGame, previousCustomIconPath: String?) {
+    package func loadBottleRuntimeOptions(for game: LaunchGame) async -> CrossOverBottleRuntimeOptions? {
+        await coordinator.readBottleRuntimeOptions(
+            for: game,
+            bottlesDirectory: settingsStore.settings.bottlesDirectory
+        )
+    }
+
+    package func saveEditedLaunchGame(
+        _ updated: LaunchGame,
+        previousCustomIconPath: String?,
+        bottleRuntimeOptions: CrossOverBottleRuntimeOptions? = nil
+    ) {
         editingLaunchGame = nil
         launchGameIcons.removeValue(forKey: updated.id)
         attemptedIconSignatureByID.removeValue(forKey: updated.id)
+        let bottlesDirectory = settingsStore.settings.bottlesDirectory
         Task { [weak self] in
             guard let self else { return }
-            if let saved = await coordinator.updateLaunchGame(updated, previousCustomIconPath: previousCustomIconPath) {
+            if let saved = await coordinator.updateLaunchGame(
+                updated,
+                previousCustomIconPath: previousCustomIconPath,
+                bottlesDirectory: bottlesDirectory
+            ) {
+                if let bottleRuntimeOptions {
+                    do {
+                        try await coordinator.saveBottleRuntimeOptions(
+                            bottleRuntimeOptions,
+                            for: saved,
+                            bottlesDirectory: bottlesDirectory
+                        )
+                    } catch {
+                        self.launchErrorAlert = LaunchErrorNotice(
+                            title: "容器配置写入失败 · \(saved.title)",
+                            message: error.localizedDescription
+                        )
+                    }
+                }
                 await loadLaunchGameIconIfNeeded(for: saved)
             }
         }
@@ -490,6 +538,137 @@ package final class StudioViewModel: ObservableObject {
 
     package func lookupSteamAppID(for title: String) async -> String? {
         await coordinator.lookupSteamAppID(for: title)
+    }
+
+    package func candidateExecutables(in directory: String?) -> [String] {
+        guard let directory, !directory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return []
+        }
+        return coordinator.listCandidateExecutables(in: directory)
+    }
+
+    package func hasBaselineSnapshot(for game: LaunchGame) -> Bool {
+        _ = snapshotRevision
+        return coordinator.hasBaselineSnapshot(for: game)
+    }
+
+    package func pickAndInstallPatchOrDLC(for game: LaunchGame) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.message = "选择补丁 / 汉化 / DLC 压缩包、文件夹、.pak 或 .exe 安装程序"
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else {
+            return
+        }
+        installPatchOrDLC(from: panel.urls, for: game)
+    }
+
+    package func installPatchOrDLC(from url: URL, for game: LaunchGame) {
+        installPatchOrDLC(from: [url], for: game)
+    }
+
+    package func installPatchOrDLC(from urls: [URL], for game: LaunchGame) {
+        guard !urls.isEmpty else { return }
+        runExclusiveGameMutation(for: game, errorTitle: "补丁安装失败 · \(game.title)") { coordinator, settings in
+            let outcome = await coordinator.applyLaunchGamePatch(
+                gameID: game.id,
+                sourceURLs: urls,
+                settings: settings
+            )
+            switch outcome {
+            case .applied:
+                return (true, nil)
+            case .cancelled:
+                return (false, nil)
+            case .failed(let message):
+                return (false, message)
+            }
+        }
+    }
+
+    package func restoreBaselineSnapshot(for game: LaunchGame) {
+        runExclusiveGameMutation(for: game, errorTitle: "恢复原版失败 · \(game.title)") { coordinator, settings in
+            let outcome = await coordinator.restoreBaselineSnapshot(
+                for: game.id,
+                settings: settings
+            )
+            switch outcome {
+            case .restored:
+                return (true, nil)
+            case .failed(let message):
+                return (false, message)
+            }
+        }
+    }
+
+    private func runExclusiveGameMutation(
+        for game: LaunchGame,
+        errorTitle: String,
+        operation: @escaping @Sendable (PipelineCoordinator, AppSettings) async -> (succeeded: Bool, errorMessage: String?)
+    ) {
+        guard !patchingGameIDs.contains(game.id) else { return }
+        patchingGameIDs.insert(game.id)
+        let coordinator = self.coordinator
+        let settings = settingsStore.settings
+        Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.patchingGameIDs.remove(game.id)
+                self.snapshotRevision &+= 1
+            }
+            let result = await operation(coordinator, settings)
+            if result.succeeded {
+                self.launchGameIcons.removeValue(forKey: game.id)
+                self.attemptedIconSignatureByID.removeValue(forKey: game.id)
+            } else if let message = result.errorMessage {
+                self.launchErrorAlert = LaunchErrorNotice(
+                    title: errorTitle,
+                    message: message
+                )
+            }
+        }
+    }
+
+    package func handleDroppedPatchProviders(_ providers: [NSItemProvider], for game: LaunchGame) -> Bool {
+        let fileProviders = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+        guard !fileProviders.isEmpty else { return false }
+
+        final class CollectedURLs: @unchecked Sendable {
+            let lock = NSLock()
+            var slots: [URL?]
+            init(count: Int) {
+                self.slots = Array(repeating: nil, count: count)
+            }
+            func set(_ url: URL?, at index: Int) {
+                lock.lock()
+                slots[index] = url
+                lock.unlock()
+            }
+            func compact() -> [URL] {
+                lock.lock()
+                defer { lock.unlock() }
+                return slots.compactMap(\.self)
+            }
+        }
+
+        let collected = CollectedURLs(count: fileProviders.count)
+        let group = DispatchGroup()
+        for (index, provider) in fileProviders.enumerated() {
+            group.enter()
+            loadDroppedFileURL(from: provider) { fileURL in
+                collected.set(fileURL, at: index)
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) { [weak self] in
+            let urls = collected.compact()
+            guard !urls.isEmpty else { return }
+            Task { @MainActor [weak self] in
+                self?.installPatchOrDLC(from: urls, for: game)
+            }
+        }
+        return true
     }
 
     package func previewLaunchGameIcon(for game: LaunchGame) async -> NSImage? {
@@ -634,17 +813,45 @@ package final class StudioViewModel: ObservableObject {
         }
     }
 
+    private func loadDroppedFileURL(
+        from provider: NSItemProvider,
+        onComplete: @escaping @Sendable (URL?) -> Void
+    ) {
+        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+            let fileURL: URL?
+            if let data = item as? Data {
+                fileURL = URL(dataRepresentation: data, relativeTo: nil)
+            } else if let directURL = item as? URL {
+                fileURL = directURL
+            } else {
+                fileURL = nil
+            }
+            onComplete(fileURL)
+        }
+    }
+
+    private func extractDroppedFileURL(
+        from provider: NSItemProvider,
+        onResolved: @escaping @MainActor (URL) -> Void
+    ) -> Bool {
+        guard provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) else {
+            return false
+        }
+        loadDroppedFileURL(from: provider) { fileURL in
+            guard let fileURL else { return }
+            Task { @MainActor in
+                onResolved(fileURL)
+            }
+        }
+        return true
+    }
+
     package func handleDroppedProviders(_ providers: [NSItemProvider]) -> Bool {
         var handled = false
         for provider in providers {
-            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                    guard let data = item as? Data,
-                          let fileURL = URL(dataRepresentation: data, relativeTo: nil) else { return }
-                    Task { @MainActor in
-                        self.routeDroppedFile(url: fileURL)
-                    }
-                }
+            if extractDroppedFileURL(from: provider, onResolved: { [weak self] fileURL in
+                self?.routeDroppedFile(url: fileURL)
+            }) {
                 handled = true
             } else if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
                 provider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { item, _ in

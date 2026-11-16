@@ -193,6 +193,7 @@ package protocol WorkflowServices: Sendable {
         settings: AppSettings
     ) -> any Stage
     func unpackStage(passwords: [String], deleteArchive: Bool) -> any Stage
+    func unpackStage(passwords: [String], deleteArchive: Bool, knownGames: [LaunchGame]) -> any Stage
     func patchStage(title: String, settings: AppSettings) -> any Stage
     func launchStage(request: GameLaunchRequest) -> any Stage
 
@@ -229,9 +230,114 @@ package protocol WorkflowServices: Sendable {
     func clearCancellation(taskID: UUID) async
     func cleanupStaging(for jobID: UUID, downloadDirectory: String)
     func deleteDownloadedFile(_ path: String, downloadDirectory: String) throws -> Bool
+    func applyLaunchGamePatch(
+        game: LaunchGame,
+        sourceURL: URL,
+        settings: AppSettings,
+        onLog: @escaping @Sendable (StageLog) async -> Void
+    ) async -> LaunchGamePatchOutcome
+    func applyLaunchGamePatch(
+        game: LaunchGame,
+        sourceURLs: [URL],
+        settings: AppSettings,
+        onLog: @escaping @Sendable (StageLog) async -> Void
+    ) async -> LaunchGamePatchOutcome
+    func hasBaselineSnapshot(for game: LaunchGame) -> Bool
+    func restoreBaselineSnapshot(
+        for game: LaunchGame,
+        settings: AppSettings,
+        onLog: @escaping @Sendable (StageLog) async -> Void
+    ) async -> LaunchGameRestoreOutcome
+    func cleanupBaselineSnapshot(forGameID gameID: UUID, gameDirectory: String?)
+    func listCandidateExecutables(in directory: String) -> [String]
+    func refreshBottleConfiguration(for game: LaunchGame, bottlesDirectory: String) async
+    func readBottleRuntimeOptions(for game: LaunchGame, bottlesDirectory: String) async -> CrossOverBottleRuntimeOptions?
+    func saveBottleRuntimeOptions(
+        _ options: CrossOverBottleRuntimeOptions,
+        for game: LaunchGame,
+        bottlesDirectory: String
+    ) async throws
+    func uninstallLaunchGameArtifacts(
+        for game: LaunchGame,
+        knownGames: [LaunchGame],
+        settings: AppSettings
+    ) async -> LaunchGameUninstallOutcome
 }
 
 package extension WorkflowServices {
+    func unpackStage(passwords: [String], deleteArchive: Bool, knownGames: [LaunchGame]) -> any Stage {
+        unpackStage(passwords: passwords, deleteArchive: deleteArchive)
+    }
+
+    func applyLaunchGamePatch(
+        game: LaunchGame,
+        sourceURL: URL,
+        settings: AppSettings,
+        onLog: @escaping @Sendable (StageLog) async -> Void
+    ) async -> LaunchGamePatchOutcome {
+        .failed("当前服务不支持安装外部补丁")
+    }
+
+    func applyLaunchGamePatch(
+        game: LaunchGame,
+        sourceURLs: [URL],
+        settings: AppSettings,
+        onLog: @escaping @Sendable (StageLog) async -> Void
+    ) async -> LaunchGamePatchOutcome {
+        guard !sourceURLs.isEmpty else {
+            return .failed("未选择任何补丁文件或文件夹")
+        }
+        var current = game
+        var summaries: [String] = []
+        for url in sourceURLs {
+            let outcome = await applyLaunchGamePatch(game: current, sourceURL: url, settings: settings, onLog: onLog)
+            switch outcome {
+            case .applied(let updated, let summary):
+                current = updated
+                summaries.append(summary)
+            case .cancelled:
+                return .cancelled
+            case .failed(let msg):
+                return .failed(msg)
+            }
+        }
+        return .applied(updatedGame: current, summary: summaries.joined(separator: "；"))
+    }
+
+    func hasBaselineSnapshot(for game: LaunchGame) -> Bool { false }
+
+    func restoreBaselineSnapshot(
+        for game: LaunchGame,
+        settings: AppSettings,
+        onLog: @escaping @Sendable (StageLog) async -> Void
+    ) async -> LaunchGameRestoreOutcome {
+        .failed("当前服务不支持原版恢复")
+    }
+
+    func cleanupBaselineSnapshot(forGameID gameID: UUID, gameDirectory: String?) {}
+
+    func listCandidateExecutables(in directory: String) -> [String] { [] }
+
+    func refreshBottleConfiguration(for game: LaunchGame, bottlesDirectory: String) async {}
+
+    func readBottleRuntimeOptions(for game: LaunchGame, bottlesDirectory: String) async -> CrossOverBottleRuntimeOptions? {
+        nil
+    }
+
+    func saveBottleRuntimeOptions(
+        _ options: CrossOverBottleRuntimeOptions,
+        for game: LaunchGame,
+        bottlesDirectory: String
+    ) async throws {}
+
+    func uninstallLaunchGameArtifacts(
+        for game: LaunchGame,
+        knownGames: [LaunchGame],
+        settings: AppSettings
+    ) async -> LaunchGameUninstallOutcome {
+        LaunchGameUninstallOutcome()
+    }
+
     func downloadStage(
         title: String,
         resolved: ResolvedDownload,

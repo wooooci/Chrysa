@@ -3,12 +3,23 @@ import ChrysaApplication
 import SwiftUI
 import AppKit
 
-struct LaunchLibraryView: View {
+package struct LaunchLibraryView: View {
     @ObservedObject var vm: StudioViewModel
     let isSnapshotMode: Bool
+    @State private var pendingRemovalGame: LaunchGame?
     @Environment(\.appTheme) private var theme
 
-    var body: some View {
+    package init(
+        vm: StudioViewModel,
+        isSnapshotMode: Bool,
+        initialPendingRemoval: LaunchGame? = nil
+    ) {
+        self.vm = vm
+        self.isSnapshotMode = isSnapshotMode
+        self._pendingRemovalGame = State(initialValue: initialPendingRemoval)
+    }
+
+    package var body: some View {
         let games = vm.filteredAndSortedLaunchGames
 
         VStack(alignment: .leading, spacing: 0) {
@@ -24,6 +35,22 @@ struct LaunchLibraryView: View {
                     gameListContent(games: games)
                 }
             }
+        }
+        // Avoid legacy `.alert(item:)` here so ancestor `.alert(item:)` in ThingsStudioMainView does not swallow it.
+        .alert(
+            pendingRemovalGame.map { "移除「\($0.title)」？" } ?? "移除游戏？",
+            isPresented: $pendingRemovalGame.isPresent(),
+            presenting: pendingRemovalGame
+        ) { pending in
+            Button("仅移除记录") {
+                vm.removeLaunchGame(pending, mode: .recordOnly)
+            }
+            Button("彻底卸载（移入废纸篓）", role: .destructive) {
+                vm.removeLaunchGame(pending, mode: .moveToTrash)
+            }
+            Button("取消", role: .cancel) {}
+        } message: { _ in
+            Text("「仅移除记录」保留本地目录与容器；「彻底卸载」会终止关联专属容器进程，并将本地目录、专属容器与快捷方式移入废纸篓。")
         }
     }
 
@@ -89,7 +116,12 @@ struct LaunchLibraryView: View {
     private func gameListContent(games: [LaunchGame]) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(games) { game in
-                LaunchGameRowView(vm: vm, game: game, isSnapshotMode: isSnapshotMode)
+                LaunchGameRowView(
+                    vm: vm,
+                    game: game,
+                    isSnapshotMode: isSnapshotMode,
+                    onRequestRemove: { pendingRemovalGame = $0 }
+                )
             }
         }
     }
@@ -99,13 +131,16 @@ private struct LaunchGameRowView: View {
     @ObservedObject var vm: StudioViewModel
     let game: LaunchGame
     let isSnapshotMode: Bool
+    let onRequestRemove: (LaunchGame) -> Void
     @Environment(\.appTheme) private var theme
 
     @State private var isHovered = false
     @State private var isPlayHovered = false
+    @State private var isDropTargeted = false
 
     var body: some View {
         let icon = vm.launchGameIcon(for: game)
+        let isPatching = vm.patchingGameIDs.contains(game.id)
 
         HStack(alignment: .center, spacing: 10) {
             LaunchGameIconView(icon: icon)
@@ -116,10 +151,16 @@ private struct LaunchGameRowView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
 
+            if isPatching {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.75)
+            }
+
             Spacer(minLength: 12)
-            Text(game.lastPlayedDisplayText())
+            Text(isPatching ? "处理中…" : (isDropTargeted ? "松开以安装补丁" : game.lastPlayedDisplayText()))
                 .font(.system(size: 11.5, weight: .regular))
-                .foregroundColor(.t3TextMuted)
+                .foregroundColor(isDropTargeted ? theme.accent : .t3TextMuted)
                 .padding(.trailing, isHovered && !isSnapshotMode ? 54 : 0)
         }
         .padding(.horizontal, 12)
@@ -158,7 +199,11 @@ private struct LaunchGameRowView: View {
         }
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(isHovered ? Color.t3TopBoxBg : Color.clear)
+                .fill(isDropTargeted ? theme.accent.opacity(0.08) : (isHovered ? Color.t3TopBoxBg : Color.clear))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(isDropTargeted ? theme.accent.opacity(0.55) : Color.clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
         .onHover { hovering in
@@ -166,6 +211,10 @@ private struct LaunchGameRowView: View {
             if !hovering {
                 isPlayHovered = false
             }
+        }
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            guard !isSnapshotMode else { return false }
+            return vm.handleDroppedPatchProviders(providers, for: game)
         }
         .onTapGesture(count: 2) {
             vm.launchGame(game)
@@ -181,8 +230,24 @@ private struct LaunchGameRowView: View {
 
     @ViewBuilder
     private var gameMenuItems: some View {
+        let isPatching = vm.patchingGameIDs.contains(game.id)
+
         Button(action: { vm.launchGame(game) }) {
             Label("启动游戏", systemImage: "play")
+        }
+
+        if vm.hasAccessibleDirectory(for: game) {
+            Button(action: { vm.pickAndInstallPatchOrDLC(for: game) }) {
+                Label("安装补丁 / DLC…", systemImage: "puzzlepiece.extension")
+            }
+            .disabled(isPatching)
+        }
+
+        if vm.hasBaselineSnapshot(for: game) {
+            Button(action: { vm.restoreBaselineSnapshot(for: game) }) {
+                Label("恢复纯净原版", systemImage: "arrow.uturn.backward")
+            }
+            .disabled(isPatching)
         }
 
         Divider()
@@ -211,8 +276,8 @@ private struct LaunchGameRowView: View {
 
         Divider()
 
-        Button(role: .destructive, action: { vm.removeLaunchGame(game) }) {
-            Label("从启动库移除记录", systemImage: "trash")
+        Button(role: .destructive, action: { onRequestRemove(game) }) {
+            Label("移除 / 卸载游戏...", systemImage: "trash")
         }
     }
 }

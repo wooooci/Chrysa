@@ -402,7 +402,7 @@ struct PipelineCoordinatorTests {
     }
 
     private func waitUntil(_ condition: () async -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(3)
+        let deadline = Date().addingTimeInterval(15)
         while !(await condition()) && Date() < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }

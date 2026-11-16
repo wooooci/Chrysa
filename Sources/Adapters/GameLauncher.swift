@@ -35,27 +35,69 @@ package actor GameLauncher {
         guard !Task.isCancelled, !(await isCancelled()) else { return .cancelled }
 
         do {
-            // Prefer the dedicated CrossOver Menu Helper when available.
-            if PathSafety.safeFilename(request.title) == request.title, fm.fileExists(atPath: shortcutApp) {
+            // Pre-launch hook sync MUST execute before shortcutApp (.app) or direct wine launch branches
+            // so newly dropped whitelist proxy DLLs take effect even when CrossOver's bottle stays resident.
+            let preSync = CrossOverBottleConfigurator.syncPreLaunchEnvironment(
+                gameTitle: request.title,
+                bottleName: request.bottleName,
+                executablePath: request.executablePath,
+                gameDirectory: request.gameDirectory,
+                bottlesDirectory: request.bottlesDirectory
+            )
+            if let preSync, !preSync.detectedProxyStems.isEmpty {
+                onLog("hook ▸ 已同步代理钩子白名单放行 [\(preSync.bottleName)]: \(preSync.detectedProxyStems.joined(separator: ", "))", false)
+            }
+
+            let parsedLaunchArgs = LaunchGame.parseLaunchArguments(request.launchArguments)
+
+            // Prefer the dedicated CrossOver Menu Helper when no custom launch arguments override it.
+            if parsedLaunchArgs.isEmpty,
+               PathSafety.safeFilename(request.title) == request.title,
+               fm.fileExists(atPath: shortcutApp) {
                 onLog("crossover ▸ 正在通过容器快捷方式启动: \(request.title).app", true)
                 try await open([shortcutApp], taskID: request.jobID)
                 return .launched
             }
 
             if let exe = request.executablePath, fm.fileExists(atPath: exe) {
-                let bottleName = try await bottleConfigurator.configure(
-                    taskID: request.jobID,
-                    gameTitle: request.title,
-                    exePath: exe,
-                    bottlesDirectory: request.bottlesDirectory,
-                    hasD3D12: false,
-                    hasWinHTTP: false,
-                    isCancelled: isCancelled
-                )
+                let bottleName: String
+                if let existingBottle = preSync?.bottleName, existingBottle != "Default" {
+                    bottleName = existingBottle
+                } else {
+                    bottleName = try await bottleConfigurator.configure(
+                        taskID: request.jobID,
+                        gameTitle: request.title,
+                        exePath: exe,
+                        gameDirectory: request.gameDirectory,
+                        bottlesDirectory: request.bottlesDirectory,
+                        hasD3D12: false,
+                        hasWinHTTP: false,
+                        isCancelled: isCancelled
+                    )
+                }
                 guard !Task.isCancelled, !(await isCancelled()) else { return .cancelled }
                 if let cxWine = ToolchainLocator.locateCrossOverBin("wine"), bottleName != "Default" {
-                    onLog("wine ▸ 正在通过容器 [\(bottleName)] 直接静默启动: \((exe as NSString).lastPathComponent)", true)
-                    try await spawnDetachedWine(executable: cxWine, bottleName: bottleName, gameEXE: exe)
+                    let bottlesRoot = (request.bottlesDirectory as NSString).expandingTildeInPath
+                    let bottlePath = (bottlesRoot as NSString).appendingPathComponent(bottleName)
+                    let windowsTarget = CrossOverRegistryHelper.windowsLaunchTarget(
+                        exePath: exe,
+                        gameDirectory: request.gameDirectory,
+                        bottlePath: bottlePath,
+                        bottleName: bottleName
+                    )
+                    let launchArgs = Self.buildWineLaunchArguments(
+                        bottleName: bottleName,
+                        gameEXE: exe,
+                        windowsTarget: windowsTarget,
+                        launchArguments: request.launchArguments
+                    )
+                    let pathDesc = windowsTarget ?? (exe as NSString).lastPathComponent
+                    onLog("wine ▸ 正在通过容器 [\(bottleName)] 直接静默启动: \(pathDesc)", true)
+                    try await spawnDetachedWine(
+                        executable: cxWine,
+                        workingDirectory: (exe as NSString).deletingLastPathComponent,
+                        arguments: launchArgs
+                    )
                 } else {
                     onLog("crossover ▸ 正在通过 CrossOver 打开: \((exe as NSString).lastPathComponent)", true)
                     try await open(["-a", "/Applications/CrossOver.app", exe], taskID: request.jobID)
@@ -88,7 +130,36 @@ package actor GameLauncher {
         }
     }
 
-    private func spawnDetachedWine(executable: String, bottleName: String, gameEXE: String) async throws {
+    package static func buildWineLaunchArguments(
+        bottleName: String,
+        gameEXE: String,
+        windowsTarget: String?,
+        launchArguments: String?
+    ) -> [String] {
+        var args = ["--bottle", bottleName, "--check", "--wait-children"]
+        if let windowsTarget, !windowsTarget.isEmpty {
+            var winWorkDir: String
+            if let lastSlash = windowsTarget.lastIndex(of: "\\"), lastSlash > windowsTarget.startIndex {
+                winWorkDir = String(windowsTarget[..<lastSlash])
+                if winWorkDir.count == 2 && winWorkDir.hasSuffix(":") {
+                    winWorkDir += "\\"
+                }
+            } else {
+                winWorkDir = "C:\\\(bottleName)"
+            }
+            args.append(contentsOf: ["--workdir", winWorkDir, windowsTarget])
+        } else {
+            args.append(gameEXE)
+        }
+        args.append(contentsOf: LaunchGame.parseLaunchArguments(launchArguments))
+        return args
+    }
+
+    private func spawnDetachedWine(
+        executable: String,
+        workingDirectory: String,
+        arguments: [String]
+    ) async throws {
         final class RollingPipeSink: @unchecked Sendable {
             private let lock = NSLock()
             private var tail = Data()
@@ -124,8 +195,8 @@ package actor GameLauncher {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
-        process.currentDirectoryURL = URL(fileURLWithPath: (gameEXE as NSString).deletingLastPathComponent)
-        process.arguments = ["--bottle", bottleName, "--check", "--wait-children", gameEXE]
+        process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory)
+        process.arguments = arguments
         process.standardOutput = pipe
         process.standardError = pipe
         try Task.checkCancellation()

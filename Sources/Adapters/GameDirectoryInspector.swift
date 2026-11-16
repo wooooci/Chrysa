@@ -11,6 +11,7 @@ package struct GameDirectoryInspection: @unchecked Sendable {
     package let existingSteamDLLs: [(path: String, is64Bit: Bool)]
     package let hasWinHTTP: Bool
     package let hasD3D12: Bool
+    package let hasEasyAntiCheat: Bool
     package let existingAppID: String?
     package let resolvedTitle: String
     package let executableTitleHint: String?
@@ -47,6 +48,8 @@ package enum GameDirectoryInspector {
         "rld.ini",
         "skidrow.ini"
     ]
+
+    package static let emulatorINIFileNameSet: Set<String> = Set(emulatorINIFileNames)
 
     package static func stripExecutableVariantSuffixes(_ raw: String) -> String {
         var value = raw
@@ -208,6 +211,7 @@ private struct DirectoryScanState {
     var unrealSteamworksDirectories: [String] = []
     var hasD3D12 = false
     var hasWinHTTP = false
+    var hasEasyAntiCheat = false
 
     var commonDirGameTitle: String? = nil
     var manifestCandidates: [ManifestCandidate] = []
@@ -291,6 +295,13 @@ private struct DirectoryScanState {
                 acfName = String(acfText[nr])
             }
             manifestCandidates.append(ManifestCandidate(appID: acfID, name: acfName))
+        } else if lower == "start_protected_game.exe" {
+            hasEasyAntiCheat = true
+        } else if lower == "easyanticheat" || lower == "easyanticheat_eos" {
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: full, isDirectory: &isDir), isDir.boolValue {
+                hasEasyAntiCheat = true
+            }
         } else if lower == "d3d12" || lower == "d3d12core.dll" {
             hasD3D12 = true
         } else if lower.hasSuffix(".exe"), !LaunchGame.isIgnoredHelperExecutable(rel) {
@@ -329,6 +340,7 @@ private struct DirectoryScanState {
             existingSteamDLLs: existingSteamDLLs,
             hasWinHTTP: hasWinHTTP,
             hasD3D12: hasD3D12,
+            hasEasyAntiCheat: hasEasyAntiCheat,
             existingAppID: existingAppID,
             resolvedTitle: resolvedTitle,
             executableTitleHint: exeStemTitle

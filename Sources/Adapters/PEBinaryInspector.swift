@@ -66,31 +66,6 @@ package enum PEBinaryInspector {
                 guard !bytes.isEmpty else { return nil }
                 return String(bytes: bytes, encoding: .ascii)
             }
-            func containsCaseInsensitiveASCII(_ lowerNeedle: [UInt8]) -> Bool {
-                let nLen = lowerNeedle.count
-                guard nLen > 0, raw.count >= nLen else { return false }
-                let firstB = lowerNeedle[0]
-                let firstUpper = (firstB >= 97 && firstB <= 122) ? (firstB - 32) : firstB
-                let endIdx = raw.count - nLen
-                var i = 0
-                while i <= endIdx {
-                    let b0 = raw[i]
-                    if b0 == firstB || b0 == firstUpper {
-                        var match = true
-                        for j in 1..<nLen {
-                            var bj = raw[i + j]
-                            if bj >= 65 && bj <= 90 { bj += 32 }
-                            if bj != lowerNeedle[j] {
-                                match = false
-                                break
-                            }
-                        }
-                        if match { return true }
-                    }
-                    i += 1
-                }
-                return false
-            }
 
             // Verify MZ magic (0x5A4D)
             guard readU16(0) == 0x5A4D,
@@ -178,16 +153,17 @@ package enum PEBinaryInspector {
             var hasWinHTTP = importedDLLs.contains { $0 == "winhttp.dll" }
 
             // Dynamic LoadLibrary fallback scan on raw mapped bytes if not statically imported
+            let fullRange = 0 ..< raw.count
             if !hasSteam {
-                hasSteam = containsCaseInsensitiveASCII(Array("steam_api64.dll".utf8))
-                    || containsCaseInsensitiveASCII(Array("steam_api.dll".utf8))
+                hasSteam = Self.sliceContainsASCII(raw, fullRange, Array("steam_api64.dll".utf8))
+                    || Self.sliceContainsASCII(raw, fullRange, Array("steam_api.dll".utf8))
             }
             if !hasD3D12 {
-                hasD3D12 = containsCaseInsensitiveASCII(Array("d3d12.dll".utf8))
-                    || containsCaseInsensitiveASCII(Array("d3d12core.dll".utf8))
+                hasD3D12 = Self.sliceContainsASCII(raw, fullRange, Array("d3d12.dll".utf8))
+                    || Self.sliceContainsASCII(raw, fullRange, Array("d3d12core.dll".utf8))
             }
             if !hasWinHTTP {
-                hasWinHTTP = containsCaseInsensitiveASCII(Array("winhttp.dll".utf8))
+                hasWinHTTP = Self.sliceContainsASCII(raw, fullRange, Array("winhttp.dll".utf8))
             }
 
             return PEImportInfo(
@@ -198,6 +174,209 @@ package enum PEBinaryInspector {
                 importsWinHTTP: hasWinHTTP
             )
         }
+    }
+
+    private struct PEAuthenticodeResult {
+        let isValidPE: Bool
+        let certRange: Range<Int>?
+        let hasIntactSignature: Bool
+    }
+
+    package static let proxyHookDLLWhitelist: Set<String> = [
+        "winhttp.dll", "version.dll", "dinput8.dll", "dwmapi.dll", "dsound.dll", "winmm.dll"
+    ]
+
+    /// Scans the main executable's sibling directory (and game root) for non-Microsoft proxy hook DLLs in the safe whitelist.
+    /// Returns lowercased DLL stems (e.g. `["dinput8", "winhttp"]`), excluding DirectX graphics DLLs (`dxgi`/`d3d11`/`d3d12`).
+    package static func detectProxyHookDLLs(nearExecutable exePath: String?, gameDirectory: String? = nil) -> [String] {
+        var dirs: [String] = []
+        if let exePath, !exePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            dirs.append((exePath as NSString).deletingLastPathComponent)
+        }
+        if let gameDirectory, !gameDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            dirs.append(gameDirectory)
+        }
+        var seenDirs = Set<String>()
+        var detectedStems = Set<String>()
+        let fm = FileManager.default
+
+        for dir in dirs {
+            let standardizedDir = URL(fileURLWithPath: dir).standardizedFileURL.path
+            guard seenDirs.insert(standardizedDir).inserted,
+                  let entries = try? fm.contentsOfDirectory(atPath: standardizedDir) else {
+                continue
+            }
+            for entry in entries {
+                let lower = entry.lowercased()
+                guard proxyHookDLLWhitelist.contains(lower) else { continue }
+                let fullPath = (standardizedDir as NSString).appendingPathComponent(entry)
+                let vals = try? URL(fileURLWithPath: fullPath).resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                guard vals?.isRegularFile == true, vals?.isSymbolicLink != true else { continue }
+                if isProxyHookDLL(atPath: fullPath) {
+                    detectedStems.insert(String(lower.dropLast(4)))
+                }
+            }
+        }
+        return detectedStems.sorted()
+    }
+
+    package static func isProxyHookDLL(atPath path: String) -> Bool {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe) else {
+            return false
+        }
+        return isProxyHookDLL(data: data)
+    }
+
+    package static func isProxyHookDLL(data: Data) -> Bool {
+        data.withUnsafeBytes { raw in
+            let msPublishers: [[UInt8]] = [Array("microsoft".utf8)]
+            let msCAs: [[UInt8]] = [
+                Array("microsoft".utf8),
+                Array("digicert".utf8),
+                Array("symantec".utf8),
+                Array("verisign".utf8),
+                Array("globalsign".utf8),
+                Array("sectigo".utf8)
+            ]
+            let auth = verifyPEAuthenticode(
+                in: raw,
+                publisherNeedles: msPublishers,
+                excludedNeedles: [],
+                trustedCANeedles: msCAs
+            )
+            return auth.isValidPE && !auth.hasIntactSignature
+        }
+    }
+
+    private static func sliceContainsASCII(_ raw: UnsafeRawBufferPointer, _ range: Range<Int>, _ lowerNeedle: [UInt8]) -> Bool {
+        let nLen = lowerNeedle.count
+        guard nLen > 0, range.lowerBound >= 0, range.upperBound <= raw.count, range.count >= nLen else {
+            return false
+        }
+        let firstB = lowerNeedle[0]
+        let firstUpper = (firstB >= 97 && firstB <= 122) ? (firstB - 32) : firstB
+        let endIdx = range.upperBound - nLen
+        var i = range.lowerBound
+        while i <= endIdx {
+            let b0 = raw[i]
+            if b0 == firstB || b0 == firstUpper {
+                var match = true
+                for j in 1..<nLen {
+                    var bj = raw[i + j]
+                    if bj >= 65 && bj <= 90 { bj += 32 }
+                    if bj != lowerNeedle[j] {
+                        match = false
+                        break
+                    }
+                }
+                if match { return true }
+            }
+            i += 1
+        }
+        return false
+    }
+
+    private static func sliceContainsBytes(_ raw: UnsafeRawBufferPointer, _ range: Range<Int>, _ needle: [UInt8]) -> Bool {
+        let nLen = needle.count
+        guard nLen > 0, range.lowerBound >= 0, range.upperBound <= raw.count, range.count >= nLen else {
+            return false
+        }
+        let endIdx = range.upperBound - nLen
+        var i = range.lowerBound
+        while i <= endIdx {
+            if raw[i] == needle[0] {
+                var match = true
+                for j in 1..<nLen where raw[i + j] != needle[j] {
+                    match = false
+                    break
+                }
+                if match { return true }
+            }
+            i += 1
+        }
+        return false
+    }
+
+    private static func verifyPEAuthenticode(
+        in raw: UnsafeRawBufferPointer,
+        publisherNeedles: [[UInt8]],
+        excludedNeedles: [[UInt8]],
+        trustedCANeedles: [[UInt8]]
+    ) -> PEAuthenticodeResult {
+        func readU16(_ off: Int) -> UInt16? {
+            guard off >= 0, off + 2 <= raw.count else { return nil }
+            return UInt16(littleEndian: raw.loadUnaligned(fromByteOffset: off, as: UInt16.self))
+        }
+        func readU32(_ off: Int) -> UInt32? {
+            guard off >= 0, off + 4 <= raw.count else { return nil }
+            return UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: off, as: UInt32.self))
+        }
+
+        guard raw.count >= 0x80,
+              readU16(0) == 0x5A4D,
+              let peOffU32 = readU32(0x3C) else {
+            return PEAuthenticodeResult(isValidPE: false, certRange: nil, hasIntactSignature: false)
+        }
+        let peOff = Int(peOffU32)
+        guard peOff >= 0x40,
+              peOff <= raw.count - 0x40,
+              readU32(peOff) == 0x00004550,
+              let sizeOfOptionalHeaderU16 = readU16(peOff + 20),
+              let optMagic = readU16(peOff + 24),
+              optMagic == 0x10B || optMagic == 0x20B else {
+            return PEAuthenticodeResult(isValidPE: false, certRange: nil, hasIntactSignature: false)
+        }
+
+        let is64 = (optMagic == 0x20B)
+        let optHeaderStart = peOff + 24
+        let sizeOfOptionalHeader = Int(sizeOfOptionalHeaderU16)
+        guard optHeaderStart + sizeOfOptionalHeader <= raw.count else {
+            return PEAuthenticodeResult(isValidPE: false, certRange: nil, hasIntactSignature: false)
+        }
+
+        let minOptSizeForSecurity = is64 ? 152 : 136
+        let numRvaAndSizes = readU32(optHeaderStart + (is64 ? 108 : 92)) ?? 0
+        let checksumOff = optHeaderStart + 64
+        let certDirOff = optHeaderStart + (is64 ? 112 : 96) + 32
+
+        var certRange: Range<Int>? = nil
+        var hasIntactSignature = false
+        if sizeOfOptionalHeader >= minOptSizeForSecurity,
+           numRvaAndSizes >= 5,
+           let certOffU32 = readU32(certDirOff),
+           let certSizeU32 = readU32(certDirOff + 4) {
+            let certOff = Int(certOffU32)
+            let certSize = Int(certSizeU32)
+            if certOff > certDirOff + 8,
+               certSize > 8,
+               certOff <= raw.count - certSize {
+                let cRange = (certOff + 8) ..< (certOff + certSize)
+                certRange = cRange
+
+                if certOff + certSize == raw.count,
+                   readU16(certOff + 6) == 0x0002,
+                   publisherNeedles.contains(where: { sliceContainsASCII(raw, cRange, $0) }),
+                   !excludedNeedles.contains(where: { sliceContainsASCII(raw, cRange, $0) }),
+                   trustedCANeedles.contains(where: { sliceContainsASCII(raw, cRange, $0) }) {
+                    var sha1 = Insecure.SHA1()
+                    var sha256 = SHA256()
+                    let r1 = UnsafeRawBufferPointer(rebasing: raw[0 ..< checksumOff])
+                    let r2 = UnsafeRawBufferPointer(rebasing: raw[(checksumOff + 4) ..< certDirOff])
+                    let r3 = UnsafeRawBufferPointer(rebasing: raw[(certDirOff + 8) ..< certOff])
+                    for region in [r1, r2, r3] {
+                        sha1.update(bufferPointer: region)
+                        sha256.update(bufferPointer: region)
+                    }
+                    let sha1Bytes = Array(sha1.finalize())
+                    let sha256Bytes = Array(sha256.finalize())
+                    if sliceContainsBytes(raw, cRange, sha256Bytes) || sliceContainsBytes(raw, cRange, sha1Bytes) {
+                        hasIntactSignature = true
+                    }
+                }
+            }
+        }
+
+        return PEAuthenticodeResult(isValidPE: true, certRange: certRange, hasIntactSignature: hasIntactSignature)
     }
 
     /// Classifies a `steam_api(64).dll` using a whitelist check on Valve's PE Authenticode digital signature
@@ -217,149 +396,36 @@ package enum PEBinaryInspector {
         guard data.count >= 0x200 else { return fallbackDisposition }
 
         return data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> SteamDLLDisposition in
-            func readU16(_ off: Int) -> UInt16? {
-                guard off >= 0, off + 2 <= raw.count else { return nil }
-                return UInt16(littleEndian: raw.loadUnaligned(fromByteOffset: off, as: UInt16.self))
-            }
-            func readU32(_ off: Int) -> UInt32? {
-                guard off >= 0, off + 4 <= raw.count else { return nil }
-                return UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: off, as: UInt32.self))
-            }
-            func sliceContainsASCII(_ range: Range<Int>, _ lowerNeedle: [UInt8]) -> Bool {
-                let nLen = lowerNeedle.count
-                guard nLen > 0, range.lowerBound >= 0, range.upperBound <= raw.count, range.count >= nLen else {
-                    return false
-                }
-                let firstB = lowerNeedle[0]
-                let firstUpper = (firstB >= 97 && firstB <= 122) ? (firstB - 32) : firstB
-                let endIdx = range.upperBound - nLen
-                var i = range.lowerBound
-                while i <= endIdx {
-                    let b0 = raw[i]
-                    if b0 == firstB || b0 == firstUpper {
-                        var match = true
-                        for j in 1..<nLen {
-                            var bj = raw[i + j]
-                            if bj >= 65 && bj <= 90 { bj += 32 }
-                            if bj != lowerNeedle[j] {
-                                match = false
-                                break
-                            }
-                        }
-                        if match { return true }
-                    }
-                    i += 1
-                }
-                return false
-            }
-            func sliceContainsBytes(_ range: Range<Int>, _ needle: [UInt8]) -> Bool {
-                let nLen = needle.count
-                guard nLen > 0, range.lowerBound >= 0, range.upperBound <= raw.count, range.count >= nLen else {
-                    return false
-                }
-                let endIdx = range.upperBound - nLen
-                var i = range.lowerBound
-                while i <= endIdx {
-                    if raw[i] == needle[0] {
-                        var match = true
-                        for j in 1..<nLen where raw[i + j] != needle[j] {
-                            match = false
-                            break
-                        }
-                        if match { return true }
-                    }
-                    i += 1
-                }
-                return false
-            }
-
-            // Non-PE synthetic test fixtures preserve established size/backup fallback behavior.
-            guard readU16(0) == 0x5A4D,
-                  let peOffU32 = readU32(0x3C) else {
-                return fallbackDisposition
-            }
-            let peOff = Int(peOffU32)
-            guard peOff >= 0x40,
-                  peOff <= raw.count - 0x98,
-                  readU32(peOff) == 0x00004550,
-                  let sizeOfOptionalHeaderU16 = readU16(peOff + 20),
-                  let optMagic = readU16(peOff + 24),
-                  optMagic == 0x10B || optMagic == 0x20B else {
-                return fallbackDisposition
-            }
-
-            let is64 = (optMagic == 0x20B)
-            let optHeaderStart = peOff + 24
-            let sizeOfOptionalHeader = Int(sizeOfOptionalHeaderU16)
-            guard optHeaderStart + sizeOfOptionalHeader <= raw.count else {
-                return fallbackDisposition
-            }
-
-            let minOptSizeForSecurity = is64 ? 152 : 136
-            let numRvaAndSizes = readU32(optHeaderStart + (is64 ? 108 : 92)) ?? 0
-            let checksumOff = optHeaderStart + 64
-            let certDirOff = optHeaderStart + (is64 ? 112 : 96) + 32
-
-            var certRange: Range<Int>? = nil
-            if sizeOfOptionalHeader >= minOptSizeForSecurity,
-               numRvaAndSizes >= 5,
-               let certOffU32 = readU32(certDirOff),
-               let certSizeU32 = readU32(certDirOff + 4) {
-                let certOff = Int(certOffU32)
-                let certSize = Int(certSizeU32)
-                if certOff > certDirOff + 8,
-                   certSize > 8,
-                   certOff <= raw.count - certSize {
-                    certRange = (certOff + 8) ..< (certOff + certSize)
-
-                    // Verify genuine Valve Authenticode PKCS#7 signature + unmodified PE image hash.
-                    if certOff + certSize == raw.count,
-                       readU16(certOff + 6) == 0x0002,
-                       let cRange = certRange,
-                       sliceContainsASCII(cRange, Array("valve".utf8)),
-                       !sliceContainsASCII(cRange, Array("gse1".utf8)),
-                       !sliceContainsASCII(cRange, Array("gse0".utf8)) {
-                        let trustedCAs: [[UInt8]] = [
-                            Array("digicert".utf8),
-                            Array("symantec".utf8),
-                            Array("verisign".utf8),
-                            Array("thawte".utf8),
-                            Array("entrust".utf8),
-                            Array("globalsign".utf8),
-                            Array("sectigo".utf8),
-                            Array("comodo".utf8)
-                        ]
-                        if trustedCAs.contains(where: { sliceContainsASCII(cRange, $0) }) {
-                            var sha1 = Insecure.SHA1()
-                            var sha256 = SHA256()
-                            let r1 = UnsafeRawBufferPointer(rebasing: raw[0 ..< checksumOff])
-                            let r2 = UnsafeRawBufferPointer(rebasing: raw[(checksumOff + 4) ..< certDirOff])
-                            let r3 = UnsafeRawBufferPointer(rebasing: raw[(certDirOff + 8) ..< certOff])
-                            for region in [r1, r2, r3] {
-                                sha1.update(bufferPointer: region)
-                                sha256.update(bufferPointer: region)
-                            }
-                            let sha1Bytes = Array(sha1.finalize())
-                            let sha256Bytes = Array(sha256.finalize())
-                            if sliceContainsBytes(cRange, sha256Bytes) || sliceContainsBytes(cRange, sha1Bytes) {
-                                return .officialValve
-                            }
-                        }
-                    }
-                }
-            }
+            let trustedCAs: [[UInt8]] = [
+                Array("digicert".utf8),
+                Array("symantec".utf8),
+                Array("verisign".utf8),
+                Array("thawte".utf8),
+                Array("entrust".utf8),
+                Array("globalsign".utf8),
+                Array("sectigo".utf8),
+                Array("comodo".utf8)
+            ]
+            let auth = verifyPEAuthenticode(
+                in: raw,
+                publisherNeedles: [Array("valve".utf8)],
+                excludedNeedles: [Array("gse1".utf8), Array("gse0".utf8)],
+                trustedCANeedles: trustedCAs
+            )
+            guard auth.isValidPE else { return fallbackDisposition }
+            if auth.hasIntactSignature { return .officialValve }
 
             // Valid PE without an intact Valve signature: distinguish Goldberg (`gbe_fork`) from third-party cracks.
             if raw.count > 2_000_000 {
                 return .goldberg
             }
-            if let cRange = certRange,
-               (sliceContainsASCII(cRange, Array("gse1".utf8)) || sliceContainsASCII(cRange, Array("gse0".utf8))) {
+            if let cRange = auth.certRange,
+               (sliceContainsASCII(raw, cRange, Array("gse1".utf8)) || sliceContainsASCII(raw, cRange, Array("gse0".utf8))) {
                 return .goldberg
             }
             let fullRange = 0 ..< raw.count
-            if sliceContainsASCII(fullRange, Array("gbe_fork".utf8))
-                || sliceContainsASCII(fullRange, Array("steam_settings".utf8)) {
+            if sliceContainsASCII(raw, fullRange, Array("gbe_fork".utf8))
+                || sliceContainsASCII(raw, fullRange, Array("steam_settings".utf8)) {
                 return .goldberg
             }
 

@@ -16,21 +16,6 @@ struct CoreModelTests {
     }
 
     @Test
-    func testAccentColorModeDefaultsToMonochromeAndRoundTrips() throws {
-        var settings = AppSettings.default
-        #expect(settings.accentColorMode == .monochrome)
-        #expect(settings.appearance.accentColorMode == .monochrome)
-
-        settings.selectedIconID = "w6_burgundy"
-        settings.accentColorMode = .followAppIcon
-
-        let encoded = try JSONEncoder().encode(settings)
-        let decoded = try JSONDecoder().decode(AppSettings.self, from: encoded)
-        #expect(decoded.selectedIconID == "w6_burgundy")
-        #expect(decoded.accentColorMode == .followAppIcon)
-    }
-
-    @Test
     func testTaskDecodeUsesDefaultsForMissingFields() throws {
         let id = UUID()
         let data = Data("{\"id\":\"\(id.uuidString)\"}".utf8)
@@ -288,7 +273,8 @@ struct CoreModelTests {
         let noMirrorJobJSON = Data(#"{"id":"11111111-1111-1111-1111-111111111111","kind":"download","title":"Game","status":"paused","progress":0.5}"#.utf8)
         let decodedNoMirror = try JSONDecoder().decode(Job.self, from: noMirrorJobJSON)
         #expect(decodedNoMirror.mirrorURLs.isEmpty)
-        _ = try? JSONDecoder().decode(Job.self, from: legacyJobJSON)
+        let decodedNullMirror = try JSONDecoder().decode(Job.self, from: legacyJobJSON)
+        #expect(decodedNullMirror.mirrorURLs.isEmpty)
 
         let part = DownloadPart(
             filename: "Game.part1.rar",

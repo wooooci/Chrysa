@@ -91,6 +91,8 @@ package struct GameLaunchRequest: Sendable {
     package let title: String
     package let executablePath: String?
     package let gameDirectory: String?
+    package let bottleName: String?
+    package let launchArguments: String?
     package let bottlesDirectory: String
 
     package init(job: Job, bottlesDirectory: String) {
@@ -98,6 +100,8 @@ package struct GameLaunchRequest: Sendable {
         self.title = job.title
         self.executablePath = job.exePath
         self.gameDirectory = job.input?.kind == .directory ? job.input?.value : job.localPath
+        self.bottleName = nil
+        self.launchArguments = nil
         self.bottlesDirectory = bottlesDirectory
     }
 
@@ -106,8 +110,21 @@ package struct GameLaunchRequest: Sendable {
         self.title = game.title
         self.executablePath = game.exePath
         self.gameDirectory = game.gameDirectory
+        self.bottleName = game.bottleName
+        self.launchArguments = game.launchArguments
         self.bottlesDirectory = bottlesDirectory
     }
+}
+
+package enum LaunchGamePatchOutcome: Sendable {
+    case applied(updatedGame: LaunchGame, summary: String)
+    case cancelled
+    case failed(String)
+}
+
+package enum LaunchGameRestoreOutcome: Sendable {
+    case restored(restoredExePath: String?, restoredLaunchArguments: String?, summary: String)
+    case failed(String)
 }
 
 package enum GameLaunchOutcome: Sendable {
@@ -177,5 +194,86 @@ package enum LaunchGameStoreLoadResult: Sendable {
         case .loaded(let games), .recovered(let games): return games
         case .missing, .corrupt, .unsupported: return []
         }
+    }
+}
+
+package enum CrossOverGraphicsBackend: String, CaseIterable, Codable, Sendable, Identifiable {
+    case automatic
+    case d3dmetal
+    case dxmt
+    case dxvk
+    case wined3d
+
+    package var id: String { rawValue }
+
+    package var displayName: String {
+        switch self {
+        case .automatic: return "自动"
+        case .d3dmetal: return "D3DMetal"
+        case .dxmt: return "DXMT"
+        case .dxvk: return "DXVK"
+        case .wined3d: return "WineD3D"
+        }
+    }
+
+    package var envValue: String? {
+        switch self {
+        case .automatic: return nil
+        case .d3dmetal: return "d3dmetal"
+        case .dxmt: return "dxmt"
+        case .dxvk: return "dxvk"
+        case .wined3d: return "wined3d"
+        }
+    }
+
+    package static func fromConfigValue(_ raw: String?) -> CrossOverGraphicsBackend {
+        guard let normalized = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !normalized.isEmpty else {
+            return .automatic
+        }
+        switch normalized {
+        case "d3dmetal": return .d3dmetal
+        case "dxmt": return .dxmt
+        case "dxvk": return .dxvk
+        case "wined3d", "wine": return .wined3d
+        default: return .automatic
+        }
+    }
+}
+
+package struct CrossOverBottleRuntimeOptions: Equatable, Sendable {
+    package var graphicsBackend: CrossOverGraphicsBackend
+    package var retinaMode: Bool
+
+    package init(
+        graphicsBackend: CrossOverGraphicsBackend = .automatic,
+        retinaMode: Bool = false
+    ) {
+        self.graphicsBackend = graphicsBackend
+        self.retinaMode = retinaMode
+    }
+}
+
+package enum LaunchGameRemovalMode: Sendable, Equatable {
+    case recordOnly
+    case moveToTrash
+}
+
+package struct LaunchGameUninstallOutcome: Sendable, Equatable {
+    package let trashedPaths: [String]
+    package let skippedProtectedPaths: [String]
+    package let terminatedBottleName: String?
+    package let warnings: [String]
+
+    package init(
+        trashedPaths: [String] = [],
+        skippedProtectedPaths: [String] = [],
+        terminatedBottleName: String? = nil,
+        warnings: [String] = []
+    ) {
+        self.trashedPaths = trashedPaths
+        self.skippedProtectedPaths = skippedProtectedPaths
+        self.terminatedBottleName = terminatedBottleName
+        self.warnings = warnings
     }
 }

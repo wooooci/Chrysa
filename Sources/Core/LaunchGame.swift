@@ -41,7 +41,7 @@ package enum LaunchGameIconPreference: String, CaseIterable, Codable, Equatable,
 /// A persistent, ready-to-launch game entry stored independently from transient patch jobs.
 package struct LaunchGame: Identifiable, Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
-        case id, title, exePath, gameDirectory, bottleName, appID, source, customIconPath, iconPreference, addedAt, updatedAt, lastPlayedAt
+        case id, title, exePath, gameDirectory, bottleName, appID, source, customIconPath, iconPreference, launchArguments, addedAt, updatedAt, lastPlayedAt
     }
 
     package let id: UUID
@@ -53,6 +53,7 @@ package struct LaunchGame: Identifiable, Codable, Equatable, Sendable {
     package var source: LaunchGameSource
     package var customIconPath: String?
     package var iconPreference: LaunchGameIconPreference
+    package var launchArguments: String?
     package let addedAt: Date
     package var updatedAt: Date
     package var lastPlayedAt: Date?
@@ -67,6 +68,7 @@ package struct LaunchGame: Identifiable, Codable, Equatable, Sendable {
         source: LaunchGameSource = .manualImport,
         customIconPath: String? = nil,
         iconPreference: LaunchGameIconPreference = .automatic,
+        launchArguments: String? = nil,
         addedAt: Date = Date(),
         updatedAt: Date? = nil,
         lastPlayedAt: Date? = nil
@@ -80,6 +82,8 @@ package struct LaunchGame: Identifiable, Codable, Equatable, Sendable {
         self.source = source
         self.customIconPath = customIconPath
         self.iconPreference = iconPreference
+        let trimmedArgs = launchArguments?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.launchArguments = (trimmedArgs?.isEmpty == false) ? trimmedArgs : nil
         self.addedAt = addedAt
         self.updatedAt = updatedAt ?? addedAt
         self.lastPlayedAt = lastPlayedAt
@@ -98,6 +102,7 @@ package struct LaunchGame: Identifiable, Codable, Equatable, Sendable {
             source: (try? container.decodeIfPresent(LaunchGameSource.self, forKey: .source)) ?? .manualImport,
             customIconPath: try container.decodeIfPresent(String.self, forKey: .customIconPath),
             iconPreference: (try? container.decodeIfPresent(LaunchGameIconPreference.self, forKey: .iconPreference)) ?? .automatic,
+            launchArguments: try container.decodeIfPresent(String.self, forKey: .launchArguments),
             addedAt: addedAt,
             updatedAt: try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? addedAt,
             lastPlayedAt: try container.decodeIfPresent(Date.self, forKey: .lastPlayedAt)
@@ -117,17 +122,107 @@ package struct LaunchGame: Identifiable, Codable, Equatable, Sendable {
         if iconPreference != .automatic {
             try container.encode(iconPreference, forKey: .iconPreference)
         }
+        try container.encodeIfPresent(launchArguments, forKey: .launchArguments)
         try container.encode(addedAt, forKey: .addedAt)
         try container.encode(updatedAt, forKey: .updatedAt)
         try container.encodeIfPresent(lastPlayedAt, forKey: .lastPlayedAt)
+    }
+
+    package static func parseLaunchArguments(_ raw: String?) -> [String] {
+        guard let raw else { return [] }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        var args: [String] = []
+        var current = ""
+        var quote: Character?
+        var escaping = false
+        for ch in trimmed {
+            if escaping {
+                current.append(ch)
+                escaping = false
+                continue
+            }
+            if ch == "\\" && quote != "'" {
+                escaping = true
+                continue
+            }
+            if let q = quote {
+                if ch == q {
+                    quote = nil
+                } else {
+                    current.append(ch)
+                }
+            } else if ch == "\"" || ch == "'" {
+                quote = ch
+            } else if ch.isWhitespace {
+                if !current.isEmpty {
+                    args.append(current)
+                    current = ""
+                }
+            } else {
+                current.append(ch)
+            }
+        }
+        if !current.isEmpty {
+            args.append(current)
+        }
+        return args
+    }
+
+    package func appendingLaunchArgument(_ flag: String) -> String? {
+        let trimmedFlag = flag.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedFlag.isEmpty else { return launchArguments }
+        let existing = (launchArguments ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if existing.isEmpty { return trimmedFlag }
+        let tokens = Self.parseLaunchArguments(existing)
+        if tokens.contains(where: { $0.caseInsensitiveCompare(trimmedFlag) == .orderedSame }) {
+            return existing
+        }
+        return "\(existing) \(trimmedFlag)"
+    }
+
+    package static func relativeSubpath(of childPath: String, inside parentDirectory: String) -> String? {
+        guard let canonicalChild = canonicalPath(childPath),
+              let canonicalParent = canonicalPath(parentDirectory) else {
+            return nil
+        }
+        let prefix = canonicalParent.hasSuffix("/") ? canonicalParent : canonicalParent + "/"
+        guard canonicalChild.hasPrefix(prefix) else { return nil }
+        let rel = String(canonicalChild.dropFirst(prefix.count))
+        return rel.isEmpty ? nil : rel
     }
 
     package static func normalizedIdentityTitle(_ raw: String) -> String {
         Job.normalizedPatchIdentityTitle(raw)
     }
 
+    package static func isAntiCheatHelperExecutable(_ path: String?) -> Bool {
+        guard let path, !path.isEmpty else { return false }
+        let normalized = path.lowercased().replacingOccurrences(of: "\\", with: "/")
+        let components = normalized.split(separator: "/").map(String.init)
+        let dirComponents = components.dropLast()
+        let lower = components.last ?? (path as NSString).lastPathComponent.lowercased()
+        let isInAntiCheatDirectory = dirComponents.contains { component in
+            component == "easyanticheat"
+                || component == "easyanticheat_eos"
+                || component == "battleye"
+                || component == "eaanticheat"
+        }
+        return isInAntiCheatDirectory
+            || lower == "start_protected_game.exe"
+            || lower.contains("easyanticheat")
+            || lower.hasSuffix("_be.exe")
+            || (lower.hasPrefix("beservice") && lower.hasSuffix(".exe"))
+            || lower == "beclient.exe"
+            || lower == "beclient_x64.exe"
+            || (lower.hasPrefix("eaanticheat") && lower.hasSuffix(".exe"))
+    }
+
     package static func isIgnoredHelperExecutable(_ path: String?) -> Bool {
         guard let path, !path.isEmpty else { return false }
+        if isAntiCheatHelperExecutable(path) {
+            return true
+        }
         let normalized = path.lowercased().replacingOccurrences(of: "\\", with: "/")
         let components = normalized.split(separator: "/").map(String.init)
         let dirComponents = components.dropLast()
@@ -301,6 +396,13 @@ package struct LaunchGame: Identifiable, Codable, Equatable, Sendable {
                 return iconPreference != .automatic ? iconPreference : incoming.iconPreference
             }
         }()
+        let resolvedLaunchArguments: String? = {
+            let l1 = launchArguments?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let l2 = incoming.launchArguments?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let nonEmpty1 = (l1?.isEmpty == false) ? l1 : nil
+            let nonEmpty2 = (l2?.isEmpty == false) ? l2 : nil
+            return preferIncomingMetadata ? (nonEmpty2 ?? nonEmpty1) : (nonEmpty1 ?? nonEmpty2)
+        }()
 
         return LaunchGame(
             id: id,
@@ -312,6 +414,7 @@ package struct LaunchGame: Identifiable, Codable, Equatable, Sendable {
             source: mergedSource,
             customIconPath: resolvedCustomIconPath,
             iconPreference: resolvedIconPreference,
+            launchArguments: resolvedLaunchArguments,
             addedAt: mergedAddedAt,
             updatedAt: max(updatedAt, incoming.updatedAt),
             lastPlayedAt: mergedLastPlayed

@@ -36,7 +36,7 @@ let package = Package(
         .testTarget(name: "ChrysaApplicationTests", dependencies: ["ChrysaCore", "ChrysaApplication"]),
         .testTarget(
             name: "ChrysaTests",
-            dependencies: ["Chrysa", "ChrysaCore", "ChrysaApplication", "ChrysaAdapters", "ChrysaPresentation"]
+            dependencies: ["ChrysaCore", "ChrysaApplication", "ChrysaAdapters", "ChrysaPresentation"]
         )
     ],
     swiftLanguageModes: [.v5]

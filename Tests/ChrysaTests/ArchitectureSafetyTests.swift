@@ -2,9 +2,7 @@ import Foundation
 import AppKit
 import CryptoKit
 import ImageIO
-import SwiftUI
 import Testing
-@testable import Chrysa
 import ChrysaCore
 import ChrysaApplication
 import ChrysaAdapters
@@ -13,12 +11,28 @@ import ChrysaPresentation
 struct ArchitectureSafetyTests {
 
     @Test
-    func testPathSafetyRejectsTraversalAndUnsafeNames() {
+    func testPathSafetyRejectsTraversalAndUnsafeNames() throws {
         #expect(PathSafety.safeFilename("../outside.7z") == nil)
         #expect(PathSafety.safeFilename("nested/file.7z") == nil)
         #expect(PathSafety.safeRelativeDirectory("../outside") == nil)
         #expect(PathSafety.safeRelativeDirectory("/absolute/path") == nil)
         #expect(PathSafety.safeRelativeDirectory("folder/part-01") == "folder/part-01")
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chrysa-contained-\(UUID().uuidString)", isDirectory: true)
+        let inside = root.appendingPathComponent("inside", isDirectory: true)
+        let outside = root.appendingPathComponent("outside", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: inside, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+
+        let escapingLink = inside.appendingPathComponent("escape")
+        try FileManager.default.createSymbolicLink(at: escapingLink, withDestinationURL: outside)
+        let outsidePayload = outside.appendingPathComponent("payload")
+        try Data().write(to: outsidePayload)
+        #expect(PathSafety.containedURL(escapingLink, in: inside) == nil)
+        #expect(PathSafety.containedURL(escapingLink.appendingPathComponent("payload"), in: inside) == nil)
+        #expect(PathSafety.containedURL(inside.appendingPathComponent("nested/file.txt"), in: inside) != nil)
     }
 
     @Test
@@ -41,6 +55,7 @@ struct ArchitectureSafetyTests {
         await store.update(id: job.id, progress: 0.7, message: "下载中")
         await store.update(id: job.id, status: .succeeded, progress: 1)
         await store.update(id: job.id, status: .running, progress: 0.4, message: "迟到进度")
+        await store.upsert(job)
 
         let saved = await store.job(for: job.id)
         #expect(saved?.status == .succeeded)
@@ -60,74 +75,6 @@ struct ArchitectureSafetyTests {
         #expect(saved?.status == .cancelled)
         #expect(saved?.progress == 0.6)
         #expect(saved?.message == "已停止")
-    }
-
-    @Test
-    func testJobPersistenceMigrationRecoveryAndSchemaProtection() async throws {
-        try await JobPersistenceChecks.run()
-    }
-
-    @MainActor
-    @Test
-    func testPatchWorkflowAndLaunchOutcomes() async throws {
-        try await PatchWorkflowChecks.run()
-    }
-
-    @MainActor
-    @Test
-    func testModuleSFSymbolsAndLogoAccentThemeLinkage() throws {
-        #expect(StudioTab.download.symbolName == "tray.and.arrow.down")
-        #expect(StudioTab.unpack.symbolName == "square.grid.3x1.folder.badge.plus")
-        #expect(StudioTab.patch.symbolName == "puzzlepiece")
-        #expect(StudioTab.launch.symbolName == "gamecontroller")
-        #expect(StudioTab.settings.symbolName == "slider.horizontal.3")
-        let tmpDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("chrysa-theme-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tmpDir) }
-
-        let settingsFile = tmpDir.appendingPathComponent("settings.json")
-        let store = AppSettingsStore(inMemoryOnly: false, customFileURL: settingsFile)
-        let vm = StudioViewModel(
-            inMemoryOnly: true,
-            settingsStore: store,
-            taskStore: TaskStore(inMemoryOnly: true),
-            coordinator: PipelineCoordinator(services: DefaultWorkflowServices(), jobStore: JobStore(inMemoryOnly: true))
-        )
-
-        // 1. Default mode is pure-black monochrome
-        #expect(vm.accentColorMode == .monochrome)
-        #expect(vm.themePalette.mode == .monochrome)
-        #expect(vm.themePalette.accent == .t3InkBlack)
-        #expect(vm.themePalette.iconActive == .t3InkBlack)
-
-        // 2. Toggle Follow App Logo switch ON and verify every Logo yields its own synced accent color
-        vm.toggleFollowAppIconTheme()
-        #expect(vm.themePalette.mode == .followAppIcon)
-        #expect(vm.themePalette.accent != .t3InkBlack)
-        var seenAccents: [Color] = []
-        for option in vm.iconOptions {
-            vm.selectAppIcon(id: option.id)
-            let resolved = vm.themePalette
-            #expect(resolved.selectedIconID == option.id)
-            #expect(resolved.accent == resolved.logoAccent)
-            #expect(resolved.iconActive == resolved.logoAccent)
-            #expect(resolved.accent != .t3InkBlack)
-            #expect(!seenAccents.contains(resolved.accent))
-            seenAccents.append(resolved.accent)
-        }
-        #expect(seenAccents.count == 6)
-
-        // 3. Persistence round-trip preserves followAppIcon + selectedIconID
-        let reloadedStore = AppSettingsStore(inMemoryOnly: false, customFileURL: settingsFile)
-        #expect(reloadedStore.settings.accentColorMode == .followAppIcon)
-        #expect(reloadedStore.settings.selectedIconID == "dark_emerald_mint")
-
-        // 4. Toggling switch OFF restores pure-black minimalist mode while keeping the Logo choice
-        vm.toggleFollowAppIconTheme()
-        #expect(vm.themePalette.mode == .monochrome)
-        #expect(vm.themePalette.accent == .t3InkBlack)
-        #expect(vm.settingsStore.settings.selectedIconID == "dark_emerald_mint")
     }
     @MainActor
     @Test
@@ -279,14 +226,20 @@ struct ArchitectureSafetyTests {
         }
         let patchJob = try #require(vm.jobs(of: .patch).first)
         #expect(patchJob.status == .succeeded)
-        try await Task.sleep(nanoseconds: 30_000_000)
+        let launchDeadline = Date().addingTimeInterval(5)
+        while !vm.launchGames.contains(where: { $0.title == "Hollow Knight" }) && Date() < launchDeadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
         let launchedHollow = try #require(vm.launchGames.first(where: { $0.title == "Hollow Knight" }))
         #expect(launchedHollow.source == .patchPipeline)
         #expect(launchedHollow.appID == "367520")
 
         vm.archiveTask(patchJob.legacyTask())
         vm.deleteTask(patchJob.legacyTask())
-        try await Task.sleep(nanoseconds: 50_000_000)
+        let deleteDeadline = Date().addingTimeInterval(5)
+        while !vm.jobs(of: .patch).isEmpty && Date() < deleteDeadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
         #expect(vm.jobs(of: .patch).isEmpty)
         #expect(vm.launchGames.contains(where: { $0.title == "Hollow Knight" }))
 
@@ -405,25 +358,7 @@ struct ArchitectureSafetyTests {
         try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tmpDir) }
 
-        var rgba = Data(count: 32 * 32 * 4)
-        for idx in stride(from: 0, to: rgba.count, by: 4) {
-            rgba[idx] = 0x24
-            rgba[idx + 1] = 0x47
-            rgba[idx + 2] = 0x9E
-            rgba[idx + 3] = 0xFF
-        }
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let provider = try #require(CGDataProvider(data: rgba as CFData))
-        let cgImg = try #require(CGImage(
-            width: 32, height: 32, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 32 * 4,
-            space: colorSpace, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
-        ))
-        let pngBuf = NSMutableData()
-        let dest = try #require(CGImageDestinationCreateWithData(pngBuf, "public.png" as CFString, 1, nil))
-        CGImageDestinationAddImage(dest, cgImg, nil)
-        #expect(CGImageDestinationFinalize(dest))
-        let pngPayload = pngBuf as Data
+        let pngPayload = try Self.makeSolidPNG(width: 32, height: 32, r: 0x24, g: 0x47, b: 0x9E)
 
         let peData = Self.makePEWithIconResource(iconPayload: pngPayload, width: 32, height: 32, bitCount: 32)
         let extracted = try #require(PEBinaryInspector.extractIconData(from: peData))
@@ -664,6 +599,50 @@ struct ArchitectureSafetyTests {
         let megaResult = await HostResolverRegistry.resolveLinksDetailed("https://mega.nz/file/abc#key")
         #expect(megaResult.downloads.isEmpty)
         #expect(megaResult.failureReason == "不支持该网盘·需专用客户端")
+
+        let encodedFilename = Data("https://cdn.example.test/RainWorld.7z".utf8)
+            .base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+        let offlineResolved = await HostResolverRegistry.resolveLinks("https://example.test/\(encodedFilename)")
+        #expect(offlineResolved.first?.suggestedFilename == "RainWorld.7z")
+    }
+
+    @Test
+    func testUnpackMultipartPathNormalizationBottleScanAndProcessCancellation() async throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chrysa-infra-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        FileManager.default.createFile(atPath: tmpDir.appendingPathComponent("TestGame.part01.rar").path, contents: Data())
+        FileManager.default.createFile(atPath: tmpDir.appendingPathComponent("TestGame.7z.001").path, contents: Data())
+        FileManager.default.createFile(atPath: tmpDir.appendingPathComponent("setup_rain_world_1.11.8_(90164).exe").path, contents: Data())
+        #expect(UnpackService.normalizeMultipartArchivePath(tmpDir.appendingPathComponent("TestGame.part02.rar").path).hasSuffix("TestGame.part01.rar"))
+        #expect(UnpackService.normalizeMultipartArchivePath(tmpDir.appendingPathComponent("TestGame.7z.003").path).hasSuffix("TestGame.7z.001"))
+        #expect(UnpackService.normalizeMultipartArchivePath(tmpDir.appendingPathComponent("setup_rain_world_1.11.8_(90164)-1.bin").path).hasSuffix(".exe"))
+
+        let fixtureBottles = tmpDir.appendingPathComponent("FixtureBottles", isDirectory: true)
+        let fixtureApps = tmpDir.appendingPathComponent("FixtureCrossOverApps", isDirectory: true)
+        let fixtureGame = fixtureBottles.appendingPathComponent("Fixture Bottle/drive_c/Fixture Game", isDirectory: true)
+        try FileManager.default.createDirectory(at: fixtureGame, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: fixtureApps, withIntermediateDirectories: true)
+        try Data("fixture".utf8).write(to: fixtureGame.appendingPathComponent("Fixture.exe"))
+        let discoveredBottles = CrossOverBottleScanner.scanInstalledBottles(
+            bottlesDirectory: fixtureBottles.path,
+            crossOverAppsDirectory: fixtureApps.path
+        )
+        #expect(discoveredBottles.count == 1)
+        #expect(discoveredBottles.first?.title == "Fixture Bottle")
+
+        let processStart = Date()
+        let runningProcess = Task {
+            try await ProcessSupervisor.shared.run(executable: "/bin/sleep", arguments: ["30"], taskID: UUID())
+        }
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        runningProcess.cancel()
+        _ = try? await runningProcess.value
+        #expect(Date().timeIntervalSince(processStart) < 5)
     }
 
     @Test

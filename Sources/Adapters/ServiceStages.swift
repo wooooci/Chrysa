@@ -83,15 +83,18 @@ package struct UnpackStage: Stage {
     private let service: UnpackService
     private let candidatePasswords: [String]
     private let deleteArchiveAfterUnpack: Bool
+    private let knownGames: [LaunchGame]
 
     package init(
         service: UnpackService,
         candidatePasswords: [String],
-        deleteArchiveAfterUnpack: Bool
+        deleteArchiveAfterUnpack: Bool,
+        knownGames: [LaunchGame] = []
     ) {
         self.service = service
         self.candidatePasswords = candidatePasswords
         self.deleteArchiveAfterUnpack = deleteArchiveAfterUnpack
+        self.knownGames = knownGames
     }
 
     package func execute(context: StageContext) async -> StageResult {
@@ -105,6 +108,7 @@ package struct UnpackStage: Stage {
             archivePath: input.value,
             candidatePasswords: candidatePasswords,
             deleteArchiveAfterUnpack: deleteArchiveAfterUnpack,
+            knownGames: knownGames,
             isCancelled: context.isCancelled,
             onProgress: { fraction, message in
                 await context.reportProgress(StageProgress(fraction: fraction, message: message))
@@ -168,15 +172,20 @@ package struct PatchStage: Stage {
             await logQueue.drain()
             guard !(await context.cancellationRequested()) else { return .cancelled }
 
+            var metadata: [String: String] = [
+                "title": payload.displayTitle,
+                "message": payload.pill,
+                "rightText": payload.rightText,
+                "appID": payload.appID,
+                "bottleName": payload.bottleName ?? ""
+            ]
+            if let defaultArgs = payload.defaultLaunchArguments, !defaultArgs.isEmpty {
+                metadata["launchArguments"] = defaultArgs
+            }
+
             return .success(StageOutput(
                 artifact: payload.exePath.map { ArtifactRef(kind: .file, value: $0) } ?? input,
-                metadata: [
-                    "title": payload.displayTitle,
-                    "message": payload.pill,
-                    "rightText": payload.rightText,
-                    "appID": payload.appID,
-                    "bottleName": payload.bottleName ?? ""
-                ],
+                metadata: metadata,
                 checklist: payload.checklist
             ))
         } catch is CancellationError {
