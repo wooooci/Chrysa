@@ -107,22 +107,31 @@ package struct MascotSimState: Sendable, Equatable {
         self.coreY = startY
     }
 
-    package mutating func impulsePopUp(strength: CGFloat) {
-        squashVel = max(-5.0, min(5.0, squashVel - strength * 1.45))
-        boingVel -= strength * 55.0
-        leafVel -= strength * 4.5
-    }
-
-    package mutating func addLandingSplash(strength: CGFloat) {
-        squashVel = max(-5.0, min(5.0, squashVel + strength * 1.65))
-        boingVel += strength * 42.0
-        leafVel += strength * 5.2
-    }
-
     package mutating func triggerZCodeBoing() {
-        boingVel = -92.0
-        squashVel = -1.8
+        boingVel = -62.0
+        squashVel = -1.4
         pawTapPhase = 1.0
+    }
+
+    package mutating func triggerSatisfiedGulp() {
+        boingVel = -44.0
+        squashVel = -1.35
+        pawTapPhase = 1.0
+    }
+
+    package mutating func triggerLatchCatch() {
+        // Subtle tactile micro-catch right when the gliding URL tip enters the open mouth!
+        boingVel = 16.0
+        squashVel = 0.75
+        pawTapPhase = 0.55
+    }
+
+    package mutating func triggerChompImpact() {
+        // Crisp weighted recoil when the jaw snaps shut on the tail of the URL!
+        boingVel = 36.0
+        squashVel = 2.15
+        mawVel = -14.0
+        pawTapPhase = 0.9
     }
 
     package mutating func stepContinuous(dt: CGFloat, prevCoreX: CGFloat, prevCoreY: CGFloat, isIdleCalm: Bool) {
@@ -246,7 +255,7 @@ package struct MascotSimState: Sendable, Equatable {
 
         let steps = 4
         let h = dt / CGFloat(steps)
-        let poseTiltAdd: CGFloat = (pose == .curious) ? 0.06 : (pose == .sideEye ? -0.05 : 0.0)
+        let poseTiltAdd: CGFloat = (pose == .curious) ? 0.05 : (pose == .sideEye ? -0.05 : 0.0)
 
         for _ in 0..<steps {
             let aSq = 400.0 * (targetSquash - squash) - 20.8 * squashVel
@@ -272,7 +281,7 @@ package struct MascotSimState: Sendable, Equatable {
 
             let aBoing = 676.0 * (0 - boingY) - 30.16 * boingVel
             boingVel += aBoing * h
-            boingY = max(-14.0, min(10.0, boingY + boingVel * h))
+            boingY = max(-10.0, min(8.0, boingY + boingVel * h))
 
             let leafTarget = -velX * 0.015 + swayShear * 0.08 + sin(haloSpin * 1.4) * 0.08
             leafVel += (361.0 * (leafTarget - leafSway) - 13.68 * leafVel) * h
@@ -299,8 +308,8 @@ package struct MascotTopRenderFrame: Sendable, Equatable {
     package var mode: MascotIntakeKind
     package var animT: CGFloat
     package var elapsed: CGFloat
-    package var dropOriginX: CGFloat
-    package var dropOriginY: CGFloat
+    package var boxTopY: CGFloat
+    package var siphonText: String
     package var boxShakeX: CGFloat
 }
 
@@ -318,11 +327,13 @@ package struct MascotRunnerRenderFrame: Sendable, Equatable {
 package final class MascotController {
     nonisolated package static let uiMascotScale: CGFloat = 0.36
     nonisolated package static let uiRunnerScale: CGFloat = 0.38
+    nonisolated package static let maxSiphonCharacters: Int = 28
 
     package private(set) var sim = MascotSimState()
     package private(set) var mode: MascotIntakeKind = .idle
     package private(set) var animT: CGFloat = 0
     package private(set) var elapsed: CGFloat = 0
+    package private(set) var activeSiphonText: String = ""
 
     private var lastTopTimestamp: TimeInterval?
     private var cachedTopFrame: MascotTopRenderFrame?
@@ -330,15 +341,10 @@ package final class MascotController {
     private var lastTheme: MascotTheme = .forestCube
     private var barWidth: CGFloat = 605
 
-    private var startCoreX: CGFloat = 480
-    private var startCoreY: CGFloat = -11.4
     private var startMaw: CGFloat = 0
-    private var targetApexX: CGFloat = 290
-    private var dropOriginX: CGFloat = 290
-    private var dropOriginY: CGFloat = 18
-    private var launchImpulsed = false
-    private var landingSplashFired = false
-    private var boingFired = false
+    private var latchFired = false
+    private var chompFired = false
+    private var gulpFired = false
     private var afterglowTimer: CGFloat = 0
     private var boxShakeX: CGFloat = 0
     private var isFrontLayer = true
@@ -355,6 +361,30 @@ package final class MascotController {
     private var runnerClock: CGFloat = 0
 
     package init() {}
+
+    /// Normalizes a pasted URL / multi-line batch / filename to a clean single line and caps long strings
+    /// to a fixed `maxSiphonCharacters` prefix + `"..."` so the visual siphon stream always has a predictable length.
+    nonisolated package static func fixedLengthSiphonText(
+        _ raw: String,
+        maxCharacters: Int = maxSiphonCharacters
+    ) -> String {
+        let lines = raw
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard let first = lines.first else { return "" }
+
+        let condensed = first.replacingOccurrences(
+            of: "\\s+",
+            with: " ",
+            options: .regularExpression
+        )
+        let cap = max(8, maxCharacters)
+        if condensed.count > cap {
+            return String(condensed.prefix(cap)) + "..."
+        }
+        return condensed
+    }
 
     nonisolated package static func restAnchorY(for theme: MascotTheme, boxTopY: CGFloat = 0) -> CGFloat {
         switch theme {
@@ -399,7 +429,7 @@ package final class MascotController {
     package func triggerCheerHop() {
         runnerCheerTimer = 0.45
         afterglowTimer = max(afterglowTimer, 0.65)
-        sim.triggerZCodeBoing()
+        sim.triggerSatisfiedGulp()
     }
 
     package func setDropHovering(_ hovering: Bool) {
@@ -411,26 +441,29 @@ package final class MascotController {
         pointerY = y
     }
 
-    package func triggerIntake(kind: MascotIntakeKind, dropX: CGFloat? = nil) {
+    package func triggerIntake(kind: MascotIntakeKind, rawText: String = "") {
         guard kind != .idle else { return }
         mode = kind
         animT = 0
-        launchImpulsed = false
-        landingSplashFired = false
-        boingFired = false
+        latchFired = false
+        chompFired = false
+        gulpFired = false
         boxShakeX = 0
         sim.poseOverride = .auto
-
-        startCoreX = sim.coreX
-        startCoreY = sim.coreY
         startMaw = sim.mawOpen
 
-        let w = max(260, barWidth)
-        let originX = dropX.map { max(56, min(w - 86, $0)) } ?? (w * 0.46)
-        dropOriginX = originX
-        dropOriginY = 18.0
-        let slotOff = Self.slotAlignOffsetX(for: lastTheme)
-        targetApexX = max(84, min(w - 78, originX + slotOff))
+        let formatted = Self.fixedLengthSiphonText(rawText)
+        if !formatted.isEmpty {
+            activeSiphonText = formatted
+        } else {
+            switch kind {
+            case .url:       activeSiphonText = "https://chrysa.app/dl/..."
+            case .multiDrop: activeSiphonText = "3x_Archive_Batch.7z"
+            case .fileDrop:  activeSiphonText = "Game_Archive.7z"
+            case .reject:    activeSiphonText = "invalid_link???"
+            case .idle:      activeSiphonText = ""
+            }
+        }
     }
 
     package func stepTopFrame(
@@ -453,6 +486,9 @@ package final class MascotController {
         }
 
         if isSnapshotMode {
+            if mode != .idle, let cached = cachedTopFrame, cached.theme == theme {
+                return cached
+            }
             var snapSim = MascotSimState(startX: lurkX, startY: lurkIdleY)
             snapSim.haloSpin = 1.05
             snapSim.lookX = -0.18
@@ -464,8 +500,8 @@ package final class MascotController {
                 mode: .idle,
                 animT: 0,
                 elapsed: 1.2,
-                dropOriginX: clampedW * 0.46,
-                dropOriginY: boxTopY + 18,
+                boxTopY: boxTopY,
+                siphonText: "",
                 boxShakeX: 0
             )
         }
@@ -490,12 +526,11 @@ package final class MascotController {
 
         let prevX = sim.coreX
         let prevY = sim.coreY
-        let isIdleCalm = updateTopChoreography(
+        let isIdleCalm = updateStationaryChoreography(
             dt: dt,
             theme: theme,
             lurkX: lurkX,
             lurkIdleY: lurkIdleY,
-            boxTopY: boxTopY,
             isTypingURL: isTypingURL
         )
         sim.stepContinuous(dt: dt, prevCoreX: prevX, prevCoreY: prevY, isIdleCalm: isIdleCalm)
@@ -507,48 +542,47 @@ package final class MascotController {
             mode: mode,
             animT: animT,
             elapsed: elapsed,
-            dropOriginX: dropOriginX,
-            dropOriginY: boxTopY + dropOriginY,
+            boxTopY: boxTopY,
+            siphonText: activeSiphonText,
             boxShakeX: boxShakeX
         )
         cachedTopFrame = built
         return built
     }
 
-    private func updateTopChoreography(
+    private func updateStationaryChoreography(
         dt: CGFloat,
         theme: MascotTheme,
         lurkX: CGFloat,
         lurkIdleY: CGFloat,
-        boxTopY: CGFloat,
         isTypingURL: Bool
     ) -> Bool {
-        let apexY = boxTopY - 21.0
+        // Mascot ALWAYS stays cozily perched at `lurkX` (zero sideways or aerial jumping!).
+        // Round Mochi ALWAYS stays behind the bar (`isFrontLayer = false`) with its paws over the front border!
+        isFrontLayer = (theme != .roundMochi)
+
         let wantHover = isDropHovering || isTypingURL
         let targetProx: CGFloat = wantHover ? 1.0 : 0.0
         dropProximity += (targetProx - dropProximity) * (1.0 - exp(-dt * 10.0))
 
         if mode == .idle {
+            let posRate = 1.0 - exp(-dt * 10.0)
+            sim.coreX += (lurkX - sim.coreX) * posRate
+
             if dropProximity > 0.04 {
-                let slotOff = Self.slotAlignOffsetX(for: theme)
-                let followX = isDropHovering
-                    ? max(64, min(barWidth - 82, pointerX + slotOff))
-                    : lurkX
-                let hoverY = lurkIdleY - 5.5 * dropProximity
-                sim.coreX += (followX - sim.coreX) * (1.0 - exp(-dt * 10.0))
-                sim.coreY += (hoverY - sim.coreY) * (1.0 - exp(-dt * 11.0))
+                let perkLift: CGFloat = (theme == .roundMochi) ? -1.4 : -0.8
+                sim.coreY += ((lurkIdleY + perkLift * dropProximity) - sim.coreY) * posRate
 
                 let hoverGate = Self.smootherstep(0.02, 0.35, dropProximity)
                 sim.targetMaw = (isDropHovering ? 0.34 : 0.16) * hoverGate
                 sim.targetSmileCurve = 0
-                sim.targetGas = 1.0 + 0.025 * dropProximity
-                sim.targetSquash = -0.018 * dropProximity
-                sim.targetTilt = max(-0.12, min(0.12, (followX - sim.coreX) * 0.006))
-                sim.targetSway = sin(elapsed * 4.2) * 1.0 * hoverGate
-                sim.targetLookX = isDropHovering ? max(-1, min(1, (pointerX - sim.coreX) / 85.0)) : -0.35
+                sim.targetGas = 1.0 + 0.02 * dropProximity
+                sim.targetSquash = -0.015 * dropProximity
+                sim.targetTilt = -0.035 * hoverGate
+                sim.targetSway = sin(elapsed * 4.2) * 0.7 * hoverGate
+                sim.targetLookX = -0.52
                 sim.targetLookY = 0.28
                 sim.targetStuffed = 0
-                isFrontLayer = (theme != .roundMochi)
                 return false
             }
 
@@ -558,10 +592,8 @@ package final class MascotController {
                 fade = Self.smootherstep(0.0, 0.55, afterglowTimer)
             }
 
-            let breath = sin(elapsed * 1.9) * 0.50
-            let idleRate = 1.0 - exp(-dt * 8.0)
-            sim.coreX += (lurkX - sim.coreX) * idleRate
-            sim.coreY += ((lurkIdleY + breath) - sim.coreY) * idleRate
+            let breath = sin(elapsed * 1.9) * 0.45
+            sim.coreY += ((lurkIdleY + breath) - sim.coreY) * (1.0 - exp(-dt * 8.0))
             sim.targetMaw = 0
             sim.targetSmileCurve = fade
             sim.targetGas = 1.0
@@ -572,26 +604,21 @@ package final class MascotController {
 
             sim.targetLookX = max(-0.88, min(0.88, (pointerX - sim.coreX) / 170.0)) * (1.0 - 0.5 * fade)
             sim.targetLookY = max(-0.75, min(0.75, (pointerY - sim.coreY) / 145.0)) * (1.0 - 0.5 * fade)
-
-            isFrontLayer = (theme != .roundMochi)
             return fade <= 0.2
         }
 
-        let siphonExtra: CGFloat = switch mode {
-        case .multiDrop: 0.24
-        case .reject:    0.22
-        case .url:       0.08
-        default:         0.0
-        }
-        let tInhaleEnd: CGFloat = 0.68 + siphonExtra
-        let tTotal: CGFloat = 1.42 + siphonExtra
+        let siphonExtra: CGFloat = (mode == .multiDrop) ? 0.14 : 0.0
+        let tApproachEnd: CGFloat = 0.62
+        let tSlurpEnd: CGFloat = 1.36 + siphonExtra
+        let tChewEnd: CGFloat = 1.78 + siphonExtra
+        let tTotal: CGFloat = 2.08 + siphonExtra
 
         animT += dt
         let t = animT
 
         if t >= tTotal {
             if mode != .reject {
-                afterglowTimer = 0.82
+                afterglowTimer = 0.55
             }
             sim.poseOverride = .auto
             mode = .idle
@@ -599,61 +626,75 @@ package final class MascotController {
             return false
         }
 
-        if !launchImpulsed {
-            launchImpulsed = true
-            sim.impulsePopUp(strength: 0.65)
-        }
+        let openIn = Self.smootherstep(0.0, 0.12, t)
+        let approachProg = Self.smootherstep(0.03, tApproachEnd, t)
+        let inhaleBell = sin(approachProg * .pi) * (1.0 - Self.smootherstep(tApproachEnd - 0.04, tApproachEnd + 0.06, t))
+        // Jaw stays wide open during the entire ribbon feed, then SNAPS shut at `tSlurpEnd`!
+        let chompSnap = Self.smootherstep(tSlurpEnd - 0.03, tSlurpEnd + 0.06, t)
+        let slurpEnv = openIn * (1.0 - chompSnap)
 
-        let riseX = Self.smootherstep(0.0, 0.25, t)
-        let riseY = 1.0 - pow(1.0 - max(0, min(1, t / 0.23)), 3)
-        let settle = Self.smootherstep(tTotal - 0.46, tTotal, t)
-
-        sim.coreX = Self.lerp(Self.lerp(startCoreX, targetApexX, riseX), lurkX, settle)
-        sim.coreY = Self.lerp(Self.lerp(startCoreY, apexY, riseY), lurkIdleY, settle)
-        isFrontLayer = (theme == .roundMochi) ? (settle < 0.55) : true
-
-        if settle > 0.78 && !landingSplashFired {
-            landingSplashFired = true
-            sim.addLandingSplash(strength: 0.52)
-        }
-
-        let openIn = Self.smootherstep(0.0, 0.19, t)
-        let fdx = max(-1.0, min(1.0, (dropOriginX - (sim.coreX - Self.slotAlignOffsetX(for: theme))) / 55.0))
+        // Stay planted right at `lurkX`: gentle backward draw while inhaling in Phase 1, crisp recoil on chomp!
+        let inhaleDrawX: CGFloat = inhaleBell * 1.15
+        let chompRecoilX: CGFloat = sin(Self.smootherstep(tSlurpEnd - 0.02, tSlurpEnd + 0.22, t) * .pi) * 2.4
+        sim.coreX += ((lurkX + inhaleDrawX + chompRecoilX) - sim.coreX) * (1.0 - exp(-dt * 16.0))
+        let mochiCrane: CGFloat = (theme == .roundMochi) ? (-2.6 * slurpEnv) : 0.0
+        sim.coreY += ((lurkIdleY + mochiCrane) - sim.coreY) * (1.0 - exp(-dt * 15.0))
 
         if mode == .reject {
-            let purse = Self.smootherstep(0.32, 0.52, t)
-            let close2 = Self.smootherstep(1.05, 1.38, t)
-            let shakeWin = Self.smootherstep(0.28, 0.42, t) * (1.0 - Self.smootherstep(0.68, 0.84, t))
+            let purse = Self.smootherstep(0.28, 0.48, t)
+            let close2 = Self.smootherstep(0.96, 1.28, t)
+            let shakeWin = Self.smootherstep(0.24, 0.38, t) * (1.0 - Self.smootherstep(0.72, 0.90, t))
 
             sim.poseOverride = (close2 > 0.65) ? .auto : .sideEye
-            sim.targetMaw = Self.lerp(Self.lerp(startMaw, 0.65, openIn), 0.08, purse) * (1.0 - close2)
+            sim.targetMaw = Self.lerp(Self.lerp(startMaw, 0.52, openIn), 0.06, purse) * (1.0 - close2)
             sim.targetSmileCurve = 0
-            sim.targetSway = sin(t * 26.0) * 7.2 * shakeWin
-            sim.targetGas = 1.0 + 0.04 * shakeWin
+            sim.targetSway = sin(t * 26.0) * 6.2 * shakeWin
+            sim.targetGas = 1.0 + 0.03 * shakeWin
             sim.targetSquash = 0
-            sim.targetTilt = -0.08 * (1.0 - close2)
-            sim.targetLookX = -0.45 * (1.0 - close2)
-            sim.targetLookY = 0.25 * (1.0 - close2)
+            sim.targetTilt = -0.07 * (1.0 - close2)
+            sim.targetLookX = -0.58 * (1.0 - close2)
+            sim.targetLookY = 0.28 * (1.0 - close2)
             boxShakeX = sin(t * 48.0) * 2.2 * shakeWin
             return false
         }
 
-        let closeDone = Self.smootherstep(tInhaleEnd - 0.12, tInhaleEnd + 0.20, t)
-        if closeDone > 0.65 && !boingFired {
-            boingFired = true
-            sim.triggerZCodeBoing()
+        if t >= tApproachEnd && !latchFired {
+            latchFired = true
+            sim.triggerLatchCatch()
         }
 
-        let lookGain: CGFloat = (theme == .forestCube && mode != .multiDrop) ? 0.14 : 0.58
-        sim.targetMaw = Self.lerp(openIn * 0.96, 0.0, closeDone)
-        sim.targetSmileCurve = closeDone
-        sim.targetStuffed = closeDone * (1.0 - settle) * 0.68
-        sim.targetSway = (theme == .forestCube ? 0.42 : 1.45) * sin(t * 9.0) * (1.0 - closeDone)
-        sim.targetGas = 1.0 + 0.05 * openIn * (1.0 - closeDone)
-        sim.targetSquash = -0.035 * sin(riseX * .pi) * (1.0 - closeDone)
-        sim.targetTilt = max(-0.10, min(0.10, (targetApexX - startCoreX) * -0.0008)) * sin(riseX * .pi) * (1.0 - closeDone)
-        sim.targetLookX = fdx * lookGain * (1.0 - closeDone)
-        sim.targetLookY = 0.44 * (1.0 - closeDone) - 0.12 * closeDone
+        if chompSnap > 0.52 && !chompFired {
+            chompFired = true
+            sim.triggerChompImpact()
+        }
+
+        let chewWindow = chompSnap * (1.0 - Self.smootherstep(tChewEnd - 0.06, tChewEnd + 0.10, t))
+        let postGulp = Self.smootherstep(tChewEnd - 0.02, tChewEnd + 0.14, t)
+
+        if postGulp > 0.55 && !gulpFired {
+            gulpFired = true
+            sim.triggerSatisfiedGulp()
+        }
+
+        // Phase 1 (`0..0.86s`): deep steady inhale while eyes smoothly track the gliding URL tip (`-0.88 -> -0.58`)!
+        // Phase 2 (`0.86..1.82s`): 8.2 Hz rhythmic jaw-ratchet nibbling while actively eating inside the mouth!
+        let inMouthGate = Self.smootherstep(tApproachEnd - 0.03, tApproachEnd + 0.05, t) * (1.0 - chompSnap)
+        let feedPulse = sin(max(0.0, t - tApproachEnd) * 58.0) * 0.075 * inMouthGate
+        let chewPhase = max(0.0, (t - tSlurpEnd) / max(0.1, tChewEnd - tSlurpEnd))
+        let chewOsc = sin(chewPhase * .pi * 4.0) * chewWindow
+
+        let trackedLookX = Self.lerp(-0.88, -0.58, approachProg)
+        let trackedLookY = Self.lerp(0.20, 0.34, approachProg)
+
+        sim.targetMaw = max(0.0, (openIn * 0.96 + feedPulse) * (1.0 - chompSnap))
+        sim.targetSmileCurve = postGulp
+        sim.targetStuffed = chewWindow * 0.96
+        sim.targetSway = (theme == .forestCube ? 0.40 : 1.05) * sin(t * 11.5) * inMouthGate
+        sim.targetGas = 1.0 + 0.048 * inhaleBell + 0.036 * inMouthGate + 0.088 * chewWindow
+        sim.targetSquash = (-0.042 * inhaleBell) + (-0.030 + feedPulse * 0.58) * inMouthGate + (0.048 + 0.062 * chewOsc) * chewWindow
+        sim.targetTilt = -0.045 * inhaleBell - 0.062 * inMouthGate + 0.034 * chewOsc
+        sim.targetLookX = trackedLookX * slurpEnv - 0.15 * chewWindow
+        sim.targetLookY = trackedLookY * slurpEnv + 0.08 * chewWindow - 0.12 * postGulp
         return false
     }
 

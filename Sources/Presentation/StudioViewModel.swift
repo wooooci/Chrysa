@@ -31,6 +31,8 @@ package final class StudioViewModel: ObservableObject {
     @Published package var logErrorsOnly: Bool = false
     @Published package var logSearchQuery: String = ""
     @Published package var hasUnreadErrorLogs: Bool = false
+    @Published package private(set) var isMascotSiphoningText: Bool = false
+    private var siphonMaskTask: Task<Void, Never>?
 
     package struct LaunchErrorNotice: Identifiable, Equatable {
         package let id = UUID()
@@ -52,6 +54,7 @@ package final class StudioViewModel: ObservableObject {
         eventTask?.cancel()
         restorationTask?.cancel()
         bottleScanTask?.cancel()
+        siphonMaskTask?.cancel()
     }
 
     package var iconOptions: [AppIconOption] { settingsStore.iconOptions }
@@ -206,7 +209,7 @@ package final class StudioViewModel: ObservableObject {
             if let previousStatus, previousStatus != .succeeded, job.status == .succeeded {
                 mascot.triggerCheerHop()
             } else if let previousStatus, previousStatus != .failed, job.status == .failed, mascot.mode == .idle {
-                mascot.triggerIntake(kind: .reject)
+                mascot.triggerIntake(kind: .reject, rawText: job.title)
             }
         case .jobRemoved(let id):
             jobs.removeAll { $0.id == id }
@@ -425,37 +428,59 @@ package final class StudioViewModel: ObservableObject {
         pickFileForActiveTab()
     }
 
+    package func triggerMascotIntake(kind: MascotIntakeKind, rawText: String) {
+        mascot.triggerIntake(kind: kind, rawText: rawText)
+        guard mascotTheme.isEnabled, kind != .idle else { return }
+        isMascotSiphoningText = true
+        siphonMaskTask?.cancel()
+        let maskNs: UInt64 = (kind == .multiDrop) ? 1_540_000_000 : 1_400_000_000
+        siphonMaskTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: maskNs)
+            guard !Task.isCancelled else { return }
+            self?.isMascotSiphoningText = false
+        }
+    }
+
+    package func stopSiphonPlaceholderMaskForSnapshot() {
+        siphonMaskTask?.cancel()
+        isMascotSiphoningText = false
+    }
+
     package func startDownload(urlString: String) {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.lowercased().hasSuffix(".txt"),
            FileManager.default.fileExists(atPath: trimmed),
            let text = try? String(contentsOfFile: trimmed, encoding: .utf8) {
-            let parsedCount = DownloadInputParser.parse(text).urls.count
-            if parsedCount > 0 {
-                mascot.triggerIntake(kind: parsedCount > 1 ? .multiDrop : .fileDrop)
+            let parsed = DownloadInputParser.parse(text)
+            let displayLine = parsed.urls.first ?? URL(fileURLWithPath: trimmed).lastPathComponent
+            if !parsed.urls.isEmpty {
+                triggerMascotIntake(kind: parsed.urls.count > 1 ? .multiDrop : .url, rawText: displayLine)
             } else {
-                mascot.triggerIntake(kind: .reject)
+                triggerMascotIntake(kind: .reject, rawText: URL(fileURLWithPath: trimmed).lastPathComponent)
             }
             coordinator.startDownloads(rawInput: text, settings: settingsStore.settings)
             return
         }
-        let parsedCount = DownloadInputParser.parse(trimmed).urls.count
-        if parsedCount > 1 {
-            mascot.triggerIntake(kind: .multiDrop)
-        } else if parsedCount == 1 || coordinator.containsValidDownloadURL(trimmed) {
-            mascot.triggerIntake(kind: .url)
+        let parsed = DownloadInputParser.parse(trimmed)
+        let primaryText = parsed.urls.first ?? trimmed
+        if parsed.urls.count > 1 {
+            triggerMascotIntake(kind: .multiDrop, rawText: primaryText)
+        } else if parsed.urls.count == 1 || coordinator.containsValidDownloadURL(trimmed) {
+            triggerMascotIntake(kind: .url, rawText: primaryText)
         } else if !trimmed.isEmpty {
-            mascot.triggerIntake(kind: .reject)
+            triggerMascotIntake(kind: .reject, rawText: trimmed)
         }
         coordinator.startDownloads(rawInput: urlString, settings: settingsStore.settings)
     }
     package func startUnpack(filePath: String) {
-        mascot.triggerIntake(kind: .fileDrop)
+        let name = URL(fileURLWithPath: filePath).lastPathComponent
+        triggerMascotIntake(kind: .fileDrop, rawText: name)
         coordinator.startUnpack(filePath: filePath, settings: settingsStore.settings)
     }
 
     package func startPatch(folderPath: String) {
-        mascot.triggerIntake(kind: .fileDrop)
+        let name = URL(fileURLWithPath: folderPath).lastPathComponent
+        triggerMascotIntake(kind: .fileDrop, rawText: name)
         coordinator.startPatch(folderPath: folderPath, settings: settingsStore.settings)
     }
 

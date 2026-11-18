@@ -128,24 +128,46 @@ struct ChrysaAppMain {
             let outDir = ProcessInfo.processInfo.environment["CHRYSA_SNAPSHOT_DIR"]
                 ?? FileManager.default.temporaryDirectory.appendingPathComponent("ChrysaSnapshots", isDirectory: true).path
             try? FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true)
-            let presets: [(StudioTab, SettingsCategory, MascotTheme, String)] = [
-                (.download, .appearance, .forestCube, "dl"),
-                (.download, .appearance, .roundMochi, "dl_mochi"),
-                (.download, .appearance, .grokAstral, "dl_grok"),
-                (.download, .appearance, .none, "dl_quiet"),
-                (.unpack, .appearance, .forestCube, "un"),
-                (.patch, .appearance, .forestCube, "pa"),
-                (.launch, .appearance, .forestCube, "launch"),
-                (.settings, .appearance, .forestCube, "settings_appearance"),
-                (.settings, .download, .forestCube, "settings_download"),
-                (.settings, .unpack, .forestCube, "settings_unpack"),
-                (.settings, .patch, .forestCube, "settings_patch")
+            let presets: [(StudioTab, SettingsCategory, MascotTheme, Int, String)] = [
+                (.download, .appearance, .forestCube, 0, "dl"),
+                (.download, .appearance, .roundMochi, 0, "dl_mochi"),
+                (.download, .appearance, .grokAstral, 0, "dl_grok"),
+                (.download, .appearance, .forestCube, 15, "dl_phase1_early_cube"),
+                (.download, .appearance, .roundMochi, 31, "dl_phase1_arch_mochi"),
+                (.download, .appearance, .forestCube, 58, "dl_siphon_cube"),
+                (.download, .appearance, .roundMochi, 58, "dl_siphon_mochi"),
+                (.download, .appearance, .grokAstral, 58, "dl_siphon_grok"),
+                (.download, .appearance, .forestCube, 83, "dl_chomp_cube"),
+                (.download, .appearance, .roundMochi, 96, "dl_chew_mochi"),
+                (.download, .appearance, .none, 0, "dl_quiet"),
+                (.unpack, .appearance, .forestCube, 0, "un"),
+                (.patch, .appearance, .forestCube, 0, "pa"),
+                (.launch, .appearance, .forestCube, 0, "launch"),
+                (.settings, .appearance, .forestCube, 0, "settings_appearance"),
+                (.settings, .download, .forestCube, 0, "settings_download"),
+                (.settings, .unpack, .forestCube, 0, "settings_unpack"),
+                (.settings, .patch, .forestCube, 0, "settings_patch")
             ]
-            for (tab, cat, mascot, suffix) in presets {
+            for (tab, cat, mascot, siphonSteps, suffix) in presets {
                 let vm = AppComposition.makeViewModel(seedDemoData: true)
                 vm.activeTab = tab
                 vm.settingsCategory = cat
                 vm.setMascotTheme(mascot)
+                if siphonSteps > 0 {
+                    var t: TimeInterval = 0.20
+                    _ = vm.mascot.stepTopFrame(at: t, theme: mascot, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false)
+                    vm.triggerMascotIntake(
+                        kind: .url,
+                        rawText: "https://pixeldrain.com/api/file/SuperLongTokenId_1234567890?download"
+                    )
+                    for _ in 0..<siphonSteps {
+                        t += 1.0 / 60.0
+                        _ = vm.mascot.stepTopFrame(at: t, theme: mascot, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false)
+                    }
+                    if siphonSteps >= 82 {
+                        vm.stopSiphonPlaceholderMaskForSnapshot()
+                    }
+                }
                 let framed = ThingsStudioMainView(vm: vm, isSnapshotMode: true)
                     .frame(width: 860, height: 580)
                     .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))

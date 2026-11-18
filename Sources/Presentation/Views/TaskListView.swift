@@ -207,7 +207,7 @@ package struct TaskListSectionView: View {
     private var topDropZone: some View {
         HStack(spacing: 10) {
             if vm.activeTab == .download && !isSnapshotMode {
-                TextField("粘贴链接或拖入 .txt 列表...", text: $vm.urlInput, axis: .vertical)
+                TextField(vm.isMascotSiphoningText ? "" : "粘贴链接或拖入 .txt 列表...", text: $vm.urlInput, axis: .vertical)
                     .lineLimit(1...3)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12.5))
@@ -226,6 +226,7 @@ package struct TaskListSectionView: View {
                 Text(activeTabPlaceholder)
                     .font(.system(size: 12.5))
                     .foregroundColor(.t3TextSub)
+                    .opacity(vm.isMascotSiphoningText ? 0 : 1)
                 Spacer()
             }
 

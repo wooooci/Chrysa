@@ -1415,6 +1415,42 @@ struct ArchitectureSafetyTests {
         #expect(MascotController.slotAlignOffsetX(for: .roundMochi) == 0)
         #expect(MascotController.slotAlignOffsetX(for: .grokAstral) == 0)
 
+        // Fixed-length URL truncation and stationary intake verification
+        let longURL = "https://pixeldrain.com/api/file/SuperLongTokenId_1234567890_download?auth=secret_token_xyz"
+        let truncated = MascotController.fixedLengthSiphonText(longURL)
+        #expect(truncated == "https://pixeldrain.com/api/f...")
+        #expect(truncated.count == MascotController.maxSiphonCharacters + 3)
+
+        let shortURL = "https://gofile.io/d/AbCdEf"
+        #expect(MascotController.fixedLengthSiphonText(shortURL) == shortURL)
+
+        let multiline = "\n  \n  https://fuckingfast.co/abc12345678901234567890#Hollow_Knight_Silksong.7z  \nhttps://qiwi.gg/other\n"
+        #expect(MascotController.fixedLengthSiphonText(multiline).count == MascotController.maxSiphonCharacters + 3)
+
+        for theme in [MascotTheme.forestCube, .roundMochi, .grokAstral] {
+            let ctrl = MascotController()
+            let barW: CGFloat = 605.0
+            let boxTopY: CGFloat = 52.0
+            let expectedRestX = barW - 96.0
+            _ = ctrl.stepTopFrame(at: 10.0, theme: theme, width: barW, boxTopY: boxTopY, isTypingURL: false, isSnapshotMode: false)
+            ctrl.triggerIntake(kind: .url, rawText: longURL)
+            #expect(ctrl.activeSiphonText == "https://pixeldrain.com/api/f...")
+
+            var t: TimeInterval = 10.0
+            var peakStuffed: CGFloat = 0
+            for _ in 0..<115 {
+                t += 1.0 / 60.0
+                let f = ctrl.stepTopFrame(at: t, theme: theme, width: barW, boxTopY: boxTopY, isTypingURL: false, isSnapshotMode: false)
+                // Mascot stays anchored at `expectedRestX` (allowing only subtle ~2.4pt inhale/chomp recoil)
+                #expect(abs(f.sim.coreX - expectedRestX) < 3.2)
+                peakStuffed = max(peakStuffed, f.sim.stuffedCheeks)
+                if theme == .roundMochi {
+                    #expect(!f.isFrontLayer)
+                }
+            }
+            #expect(peakStuffed > 0.5)
+        }
+
         vm.setMascotTheme(.roundMochi)
         store.flushPendingPersistence()
         let reloadedStore = AppSettingsStore(customFileURL: settingsURL)

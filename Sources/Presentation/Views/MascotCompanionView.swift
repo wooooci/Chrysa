@@ -260,43 +260,6 @@ package enum MascotVectorRenderer {
         front.addCurve(to: pt(-rx, 0), control1: pt(-kx, ry), control2: pt(-rx, ky))
     }
 
-    private static func addTaperedDroplet(
-        _ path: inout Path,
-        tx: CGFloat, ty: CGFloat,
-        hx: CGFloat, hy: CGFloat,
-        rTail: CGFloat, rHead: CGFloat
-    ) {
-        let dx = hx - tx
-        let dy = hy - ty
-        let dist = hypot(dx, dy)
-        if dist < 0.25 {
-            addCircleCW(&path, cx: hx, cy: hy, r: rHead)
-            return
-        }
-        let ux = dx / dist, uy = dy / dist
-        let nx = uy, ny = -ux
-        let k: CGFloat = 0.55228475
-        let kh = k * rHead
-        let kt = k * rTail
-        let waistH = dist * 0.44
-
-        let tip = CGPoint(x: hx + ux * rHead, y: hy + uy * rHead)
-        let rH  = CGPoint(x: hx - nx * rHead, y: hy - ny * rHead)
-        let rT  = CGPoint(x: tx - nx * rTail, y: ty - ny * rTail)
-        let end = CGPoint(x: tx - ux * rTail, y: ty - uy * rTail)
-        let lT  = CGPoint(x: tx + nx * rTail, y: ty + ny * rTail)
-        let lH  = CGPoint(x: hx + nx * rHead, y: hy + ny * rHead)
-
-        path.move(to: tip)
-        path.addCurve(to: rH, control1: CGPoint(x: tip.x - nx * kh, y: tip.y - ny * kh), control2: CGPoint(x: rH.x + ux * kh, y: rH.y + uy * kh))
-        path.addCurve(to: rT, control1: CGPoint(x: rH.x - ux * waistH, y: rH.y - uy * waistH), control2: CGPoint(x: rT.x + ux * waistH, y: rT.y + uy * waistH))
-        path.addCurve(to: end, control1: CGPoint(x: rT.x - ux * kt, y: rT.y - uy * kt), control2: CGPoint(x: end.x - nx * kt, y: end.y - ny * kt))
-        path.addCurve(to: lT, control1: CGPoint(x: end.x + nx * kt, y: end.y + ny * kt), control2: CGPoint(x: lT.x - ux * kt, y: lT.y - uy * kt))
-        path.addCurve(to: lH, control1: CGPoint(x: lT.x + ux * waistH, y: lT.y + uy * waistH), control2: CGPoint(x: lH.x - ux * waistH, y: lH.y - uy * waistH))
-        path.addCurve(to: tip, control1: CGPoint(x: lH.x + ux * kh, y: lH.y + uy * kh), control2: CGPoint(x: tip.x + nx * kh, y: tip.y + ny * kh))
-        path.closeSubpath()
-    }
-
     private static func emitClosedC2Path(
         _ outPath: inout Path,
         kx: [CGFloat],
@@ -497,11 +460,14 @@ package enum MascotVectorRenderer {
         case .forestCube:
             let sx = exp(sim.squash) * sqrt(sim.gasScale)
             let sy = exp(-sim.squash) * sqrt(sim.gasScale)
-            let slotOpen = max(0, min(1.0, sim.mawOpen)) * 12.6
+            // Keep feet & lower stone base planted on boxTopY while upper celadon lid hinges slightly upward!
+            let slotOpen = max(0, min(1.0, sim.mawOpen)) * 11.4
+            let lidLift = slotOpen * 0.68
             let ridgeBotX = (12.0 - sim.lookX * 6.8) * sx
             let faceCenterLocalX = (-27.0 * sx + ridgeBotX) * 0.5
-            let slotTopLocalY = 11.6 * sy
-            let intakePt = xf(faceCenterLocalX, slotTopLocalY + slotOpen * 0.50)
+            let slotBotLocalY = 17.8 * sy
+            let slotTopLocalY = slotBotLocalY - slotOpen
+            let intakePt = xf(faceCenterLocalX, slotBotLocalY - slotOpen * 0.50)
 
             guard includeBody else { return intakePt }
 
@@ -511,13 +477,12 @@ package enum MascotVectorRenderer {
                 context.fill(pShadow, with: .color(colPaperShadow))
             }
 
-            let pedDrop = slotOpen * 0.52
             var pPedInk = Path()
             var pPedFill = Path()
-            let pedTL = xf(-14.0 * sx, 20.0 * sy + pedDrop)
-            let pedTR = xf(14.0 * sx, 20.0 * sy + pedDrop)
-            let pedBR = xf(10.0 * sx, 26.5 * sy + pedDrop)
-            let pedBL = xf(-10.0 * sx, 26.5 * sy + pedDrop)
+            let pedTL = xf(-14.0 * sx, 20.0 * sy)
+            let pedTR = xf(14.0 * sx, 20.0 * sy)
+            let pedBR = xf(10.0 * sx, 26.5 * sy)
+            let pedBL = xf(-10.0 * sx, 26.5 * sy)
             addRoundedQuadCW(
                 &pPedInk,
                 CGPoint(x: pedTL.x - inkPad, y: pedTL.y - inkPad),
@@ -529,19 +494,19 @@ package enum MascotVectorRenderer {
             addRoundedQuadCW(&pPedFill, pedTL, pedTR, pedBR, pedBL, radius: 2.0 * scale)
 
             var pBackInk = Path()
-            let leg1T = xf(-6.2, 25.5 * sy + pedDrop)
-            let leg1B = xf(-6.2, 32.0 + pedDrop * 0.35)
-            let leg2T = xf(6.2, 25.5 * sy + pedDrop)
-            let leg2B = xf(6.2, 32.0 + pedDrop * 0.35)
+            let leg1T = xf(-6.2, 25.5 * sy)
+            let leg1B = xf(-6.2, 32.0)
+            let leg2T = xf(6.2, 25.5 * sy)
+            let leg2B = xf(6.2, 32.0)
             addRotatedPillCW(&pBackInk, cx: (leg1T.x + leg1B.x) * 0.5, cy: (leg1T.y + leg1B.y) * 0.5, w: 2.1 * scale, h: max(2.5, abs(leg1B.y - leg1T.y)), ang: sim.tiltRad)
             addRotatedPillCW(&pBackInk, cx: (leg2T.x + leg2B.x) * 0.5, cy: (leg2T.y + leg2B.y) * 0.5, w: 2.1 * scale, h: max(2.5, abs(leg2B.y - leg2T.y)), ang: sim.tiltRad)
 
-            let stemB = xf(-2.0, -25.0 * sy - slotOpen * 0.18)
+            let stemB = xf(-2.0, -25.0 * sy - lidLift)
             let swayOff = sim.leafSway * 15.0
-            let stemM = xf(-2.0 + swayOff * 0.55, -36.5 * sy - slotOpen * 0.20)
-            let cTip = xf(-2.0 + swayOff * 1.15, -53.5 * sy - slotOpen * 0.25)
-            let lTip = xf(-16.5 + swayOff * 0.95, -44.5 * sy - slotOpen * 0.20)
-            let rTip = xf(12.5 + swayOff * 0.95, -45.0 * sy - slotOpen * 0.20)
+            let stemM = xf(-2.0 + swayOff * 0.55, -36.5 * sy - lidLift)
+            let cTip = xf(-2.0 + swayOff * 1.15, -53.5 * sy - lidLift)
+            let lTip = xf(-16.5 + swayOff * 0.95, -44.5 * sy - lidLift)
+            let rTip = xf(12.5 + swayOff * 0.95, -45.0 * sy - lidLift)
 
             addLeafCW(&pBackInk, bx: stemM.x, by: stemM.y + 1.5 * scale, tx: lTip.x, ty: lTip.y, halfW: 5.0 * scale + inkPad * 0.85, bend: -2.2 * scale)
             addLeafCW(&pBackInk, bx: stemM.x, by: stemM.y + 1.5 * scale, tx: rTip.x, ty: rTip.y, halfW: 5.0 * scale + inkPad * 0.85, bend: 2.2 * scale)
@@ -559,8 +524,8 @@ package enum MascotVectorRenderer {
             context.fill(pSideLeaves, with: .color(Color(red: 202 / 255, green: 86 / 255, blue: 72 / 255)))
             context.fill(pCenterLeaf, with: .color(Color(red: 229 / 255, green: 108 / 255, blue: 90 / 255)))
 
-            let topY = -25.5 * sy - slotOpen * 0.18
-            let botY = 21.0 * sy + pedDrop
+            let topY = -25.5 * sy - lidLift
+            let botY = 21.0 * sy
             let shearTop = sim.swayShear * 0.65
             let ridgeTopX = (13.5 - sim.lookX * 7.5) * sx + shearTop
 
@@ -610,21 +575,41 @@ package enum MascotVectorRenderer {
 
             if slotOpen > 0.35 {
                 var pSlot = Path()
-                let sL = xf(faceCenterLocalX - 12.2, slotTopLocalY)
-                let sR = xf(faceCenterLocalX + 12.2, slotTopLocalY)
-                let sBR = xf(faceCenterLocalX + 11.4, slotTopLocalY + slotOpen)
-                let sBL = xf(faceCenterLocalX - 11.4, slotTopLocalY + slotOpen)
-                addRoundedQuadCW(&pSlot, sL, sR, sBR, sBL, radius: 2.8 * scale)
+                let sL = xf(faceCenterLocalX - 12.8, slotTopLocalY - 0.8)
+                let sR = xf(faceCenterLocalX + 12.8, slotTopLocalY - 0.8)
+                let sBR = xf(faceCenterLocalX + 12.0, slotBotLocalY + 0.4)
+                let sBL = xf(faceCenterLocalX - 12.0, slotBotLocalY + 0.4)
+                addRoundedQuadCW(&pSlot, sL, sR, sBR, sBL, radius: 3.0 * scale)
                 context.fill(pSlot, with: .color(Color(red: 46 / 255, green: 35 / 255, blue: 34 / 255)))
 
                 var pGlow = Path()
-                let glowC = xf(faceCenterLocalX, slotTopLocalY + slotOpen * 0.52)
-                addEllipseCW(&pGlow, cx: glowC.x, cy: glowC.y, rx: 7.2 * scale, ry: max(1.2, slotOpen * 0.34) * scale)
+                let glowC = xf(faceCenterLocalX, slotBotLocalY - slotOpen * 0.48)
+                addEllipseCW(&pGlow, cx: glowC.x, cy: glowC.y, rx: 7.6 * scale, ry: max(1.3, slotOpen * 0.36) * scale)
                 context.fill(pGlow, with: .color(Color(red: 238 / 255, green: 170 / 255, blue: 96 / 255).opacity(0.95)))
+            } else if sim.stuffedCheeks > 0.20 {
+                // Rosy celadon cheek puffs + flexing closed drawer seam while munching the swallowed link!
+                var pBlush = Path()
+                let bL = xf(faceCenterLocalX - 11.2, slotBotLocalY - 5.2)
+                let bR = xf(faceCenterLocalX + 11.2, slotBotLocalY - 5.2)
+                addEllipseCW(&pBlush, cx: bL.x, cy: bL.y, rx: 4.4 * scale, ry: 2.5 * scale)
+                addEllipseCW(&pBlush, cx: bR.x, cy: bR.y, rx: 4.4 * scale, ry: 2.5 * scale)
+                context.fill(pBlush, with: .color(Color(red: 229 / 255, green: 120 / 255, blue: 102 / 255).opacity(0.55 * Double(sim.stuffedCheeks))))
+
+                var pMunch = Path()
+                let mL = xf(faceCenterLocalX - 8.5, slotBotLocalY - 2.2)
+                let mR = xf(faceCenterLocalX + 8.5, slotBotLocalY - 2.2)
+                let wob = sin(sim.haloSpin * 9.0) * 1.4 * scale
+                pMunch.move(to: mL)
+                pMunch.addCurve(
+                    to: mR,
+                    control1: CGPoint(x: lerp(mL.x, mR.x, 0.35), y: mL.y + wob),
+                    control2: CGPoint(x: lerp(mL.x, mR.x, 0.65), y: mR.y - wob)
+                )
+                context.stroke(pMunch, with: .color(colInkPen), style: StrokeStyle(lineWidth: max(0.85, lineW * 1.15), lineCap: .round))
             }
 
             var pEyes = Path()
-            let eyeCenter = xf(faceCenterLocalX, 5.8 * sy - slotOpen * 0.22)
+            let eyeCenter = xf(faceCenterLocalX, 5.8 * sy - slotOpen * 0.65)
             emitGrokbot25DEyes(sim: sim, into: &pEyes, headCx: eyeCenter.x, headCy: eyeCenter.y, sphereR: 12.5, sepAng: 0.38, baseW: 4.8, baseH: 8.6, scale: scale, rotAngle: sim.tiltRad)
             context.fill(pEyes, with: .color(colInkPen))
 
@@ -657,38 +642,52 @@ package enum MascotVectorRenderer {
                 )
 
                 var pBlush = Path()
+                let cheekPuff = sim.stuffedCheeks * 2.2
                 let bL = xf(-18.2 + sim.lookX * 4.2, 5.8 - puff * 1.2)
                 let bR = xf(18.2 + sim.lookX * 4.2, 5.8 - puff * 1.2)
-                addEllipseCW(&pBlush, cx: bL.x, cy: bL.y, rx: 5.8 * scale, ry: 3.3 * scale)
-                addEllipseCW(&pBlush, cx: bR.x, cy: bR.y, rx: 5.8 * scale, ry: 3.3 * scale)
-                context.fill(pBlush, with: .color(Color(red: 232 / 255, green: 152 / 255, blue: 138 / 255).opacity(0.53)))
+                addEllipseCW(&pBlush, cx: bL.x, cy: bL.y, rx: (5.8 + cheekPuff) * scale, ry: (3.3 + cheekPuff * 0.60) * scale)
+                addEllipseCW(&pBlush, cx: bR.x, cy: bR.y, rx: (5.8 + cheekPuff) * scale, ry: (3.3 + cheekPuff * 0.60) * scale)
+                context.fill(pBlush, with: .color(Color(red: 232 / 255, green: 152 / 255, blue: 138 / 255).opacity(0.55 + Double(sim.stuffedCheeks) * 0.24)))
 
                 if puff > 0.05 {
                     var pMouth = Path()
-                    addEllipseCW(&pMouth, cx: intakePt.x, cy: intakePt.y, rx: (1.8 + puff * 4.6) * scale, ry: (1.6 + puff * 4.8) * scale)
+                    addEllipseCW(&pMouth, cx: intakePt.x, cy: intakePt.y, rx: (2.4 + puff * 5.6) * scale, ry: (2.2 + puff * 5.8) * scale)
                     context.fill(pMouth, with: .color(Color(red: 76 / 255, green: 44 / 255, blue: 48 / 255)))
+                } else if sim.stuffedCheeks > 0.20 {
+                    // Cute wobbling closed-lip `w` munch dimple while chewing the swallowed link!
+                    var pChew = Path()
+                    let wob = sin(sim.haloSpin * 9.0) * 0.9 * scale
+                    let cPt = xf(sim.lookX * 3.0, 9.5)
+                    pChew.move(to: CGPoint(x: cPt.x - 4.2 * scale, y: cPt.y - 0.8 * scale + wob * 0.4))
+                    pChew.addCurve(
+                        to: CGPoint(x: cPt.x + 4.2 * scale, y: cPt.y - 0.8 * scale - wob * 0.4),
+                        control1: CGPoint(x: cPt.x - 1.4 * scale, y: cPt.y + 2.2 * scale),
+                        control2: CGPoint(x: cPt.x + 1.4 * scale, y: cPt.y + 2.2 * scale)
+                    )
+                    context.stroke(pChew, with: .color(colInkPen), style: StrokeStyle(lineWidth: max(0.88, lineW * 1.18), lineCap: .round))
                 }
 
                 var pEyes = Path()
-                let eyeCenter = xf(0.0, 1.0 - puff * 2.0)
+                let eyeCenter = xf(0.0, 1.0 - puff * 2.2)
                 emitGrokbot25DEyes(sim: sim, into: &pEyes, headCx: eyeCenter.x, headCy: eyeCenter.y, sphereR: 17.2, sepAng: 0.48, baseW: 5.3, baseH: 7.6, scale: scale, rotAngle: sim.tiltRad)
                 context.fill(pEyes, with: .color(colInkPen))
             }
 
             if includeForepaws {
-                let tapLift = sin(sim.pawTapPhase * .pi) * 6.5
-                let airRaise = MascotController.smootherstep(0.12, 0.65, puff) * 13.5
-                let airSpread = MascotController.smootherstep(0.12, 0.65, puff) * 5.8
-                let pL = xf(-16.8 - airSpread, 21.2 - airRaise - tapLift)
-                let pR = xf(16.8 + airSpread, 21.2 - airRaise)
+                // Keep Bongo-Cat forepaws cozily resting on the bar edge, with a gentle pat/knead on catch or tap!
+                let tapLift = sin(sim.pawTapPhase * .pi) * 4.8
+                let kneadL = sin(sim.haloSpin * 4.5) * 2.2 * puff
+                let kneadR = -kneadL
+                let pL = CGPoint(x: cx - 16.8 * scale, y: anchorY + (21.2 - tapLift - max(0, kneadL)) * scale)
+                let pR = CGPoint(x: cx + 16.8 * scale, y: anchorY + (21.2 - max(0, kneadR)) * scale)
 
                 var pFrontInk = Path()
                 var pFrontFill = Path()
                 var pFrontPads = Path()
-                addRotatedPillCW(&pFrontInk, cx: pL.x, cy: pL.y, w: 13.6 * scale + inkPad * 1.7, h: 9.8 * scale + inkPad * 1.7, ang: sim.tiltRad - 0.18)
-                addRotatedPillCW(&pFrontInk, cx: pR.x, cy: pR.y, w: 13.6 * scale + inkPad * 1.7, h: 9.8 * scale + inkPad * 1.7, ang: sim.tiltRad + 0.18)
-                addRotatedPillCW(&pFrontFill, cx: pL.x, cy: pL.y, w: 13.6 * scale, h: 9.8 * scale, ang: sim.tiltRad - 0.18)
-                addRotatedPillCW(&pFrontFill, cx: pR.x, cy: pR.y, w: 13.6 * scale, h: 9.8 * scale, ang: sim.tiltRad + 0.18)
+                addRotatedPillCW(&pFrontInk, cx: pL.x, cy: pL.y, w: 13.6 * scale + inkPad * 1.7, h: 9.8 * scale + inkPad * 1.7, ang: -0.18)
+                addRotatedPillCW(&pFrontInk, cx: pR.x, cy: pR.y, w: 13.6 * scale + inkPad * 1.7, h: 9.8 * scale + inkPad * 1.7, ang: 0.18)
+                addRotatedPillCW(&pFrontFill, cx: pL.x, cy: pL.y, w: 13.6 * scale, h: 9.8 * scale, ang: -0.18)
+                addRotatedPillCW(&pFrontFill, cx: pR.x, cy: pR.y, w: 13.6 * scale, h: 9.8 * scale, ang: 0.18)
                 addEllipseCW(&pFrontPads, cx: pL.x, cy: pL.y + 1.0 * scale, rx: 3.8 * scale, ry: 2.4 * scale)
                 addEllipseCW(&pFrontPads, cx: pR.x, cy: pR.y + 1.0 * scale, rx: 3.8 * scale, ry: 2.4 * scale)
 
@@ -703,7 +702,11 @@ package enum MascotVectorRenderer {
             let puff = max(0, min(1.0, sim.mawOpen))
             let floatBob = sin(sim.haloSpin * 1.25) * 2.8 * scale
             let orbCy = cy - 12.5 * scale + floatBob
-            let intakePt = CGPoint(x: cx, y: orbCy)
+            let mouthCenter = CGPoint(
+                x: cx + sim.lookX * 4.8 * scale,
+                y: orbCy + 10.2 * scale
+            )
+            let intakePt = mouthCenter
 
             guard includeBody else { return intakePt }
 
@@ -715,10 +718,11 @@ package enum MascotVectorRenderer {
 
             let ringTilt = -0.22 + sim.tiltRad * 0.85 - sim.lookX * 0.08
             let ringRx = (43.0 + puff * 4.5) * scale
-            let ringRy = (11.5 + puff * 2.2) * scale
+            let ringRy = (11.5 + puff * 2.6) * scale
+            let ringCy = orbCy + (2.0 + puff * 4.2) * scale
             var pBackRing = Path()
             var pFrontRing = Path()
-            addTiltedRingArcs(back: &pBackRing, front: &pFrontRing, cx: cx, cy: orbCy + 2.0 * scale, rx: ringRx, ry: ringRy, ang: ringTilt)
+            addTiltedRingArcs(back: &pBackRing, front: &pFrontRing, cx: cx, cy: ringCy, rx: ringRx, ry: ringRy, ang: ringTilt)
 
             context.stroke(
                 pBackRing,
@@ -729,7 +733,7 @@ package enum MascotVectorRenderer {
             let mAng = sim.haloSpin * 0.95
             let cR = cos(ringTilt), sR = sin(ringTilt)
             let mu = cos(mAng) * ringRx, mv = sin(mAng) * ringRy
-            let moonPt = CGPoint(x: cx + mu * cR - mv * sR, y: orbCy + 2.0 * scale + mu * sR + mv * cR)
+            let moonPt = CGPoint(x: cx + mu * cR - mv * sR, y: ringCy + mu * sR + mv * cR)
 
             if sin(mAng) <= 0 {
                 var pMInk = Path()
@@ -744,7 +748,7 @@ package enum MascotVectorRenderer {
             var pLight = Path()
             var pShade = Path()
             var pTerm = Path()
-            build8KnotBD(sim: sim, rest8: grokOrbBody8, puff8: grokOrbPuff8, puffAmt: puff, cx: cx, cy: orbCy, scale: scale, inkPad: inkPad, pInk: &pInk, pLight: &pLight, pShade: &pShade, pTerm: &pTerm)
+            build8KnotBD(sim: sim, rest8: grokOrbBody8, puff8: grokOrbPuff8, puffAmt: max(puff, sim.stuffedCheeks * 0.75), cx: cx, cy: orbCy, scale: scale, inkPad: inkPad, pInk: &pInk, pLight: &pLight, pShade: &pShade, pTerm: &pTerm)
 
             context.fill(pInk, with: .color(colInkPen))
             context.fill(pLight, with: .color(Color(red: 232 / 255, green: 132 / 255, blue: 100 / 255)))
@@ -756,8 +760,38 @@ package enum MascotVectorRenderer {
             )
 
             var pEyes = Path()
-            emitGrokbot25DEyes(sim: sim, into: &pEyes, headCx: cx, headCy: orbCy - 1.2 * scale, sphereR: 18.0, sepAng: 0.40, baseW: 7.2, baseH: 20.2, scale: scale, rotAngle: sim.tiltRad)
+            emitGrokbot25DEyes(
+                sim: sim,
+                into: &pEyes,
+                headCx: cx,
+                headCy: orbCy - (1.2 + puff * 5.2) * scale,
+                sphereR: 18.0,
+                sepAng: 0.40,
+                baseW: 7.2,
+                baseH: 20.2 - puff * 4.8,
+                scale: scale,
+                rotAngle: sim.tiltRad
+            )
             context.fill(pEyes, with: .color(Color(red: 38 / 255, green: 24 / 255, blue: 20 / 255)))
+
+            if puff > 0.05 {
+                // Crisp espresso-gold singularity mouth opening below the `||` eyes so chomp & swallow feel physical!
+                var pVortex = Path()
+                addEllipseCW(&pVortex, cx: mouthCenter.x, cy: mouthCenter.y, rx: (2.4 + puff * 5.4) * scale, ry: (2.2 + puff * 5.4) * scale)
+                context.fill(pVortex, with: .color(Color(red: 38 / 255, green: 24 / 255, blue: 20 / 255)))
+                var pCore = Path()
+                addEllipseCW(&pCore, cx: mouthCenter.x, cy: mouthCenter.y, rx: (1.0 + puff * 2.4) * scale, ry: (0.9 + puff * 2.2) * scale)
+                context.fill(pCore, with: .color(Color(red: 244 / 255, green: 198 / 255, blue: 108 / 255).opacity(0.92)))
+            } else if sim.stuffedCheeks > 0.20 {
+                var pChew = Path()
+                pChew.move(to: CGPoint(x: mouthCenter.x - 4.0 * scale, y: mouthCenter.y - 0.6 * scale))
+                pChew.addCurve(
+                    to: CGPoint(x: mouthCenter.x + 4.0 * scale, y: mouthCenter.y - 0.6 * scale),
+                    control1: CGPoint(x: mouthCenter.x - 1.3 * scale, y: mouthCenter.y + 1.8 * scale),
+                    control2: CGPoint(x: mouthCenter.x + 1.3 * scale, y: mouthCenter.y + 1.8 * scale)
+                )
+                context.stroke(pChew, with: .color(Color(red: 38 / 255, green: 24 / 255, blue: 20 / 255)), style: StrokeStyle(lineWidth: max(0.88, lineW * 1.18), lineCap: .round))
+            }
 
             context.stroke(
                 pFrontRing,
@@ -781,87 +815,333 @@ package enum MascotVectorRenderer {
         }
     }
 
-    // MARK: - 0.0px Aligned Parcel Droplet & URL Bead Intake Effects
+    // MARK: - Physical Intact-Ribbon Siphon + Mouth-Interior Hard Clip + Chomp Sparks!
     package static func drawIntakeEffects(
         in context: inout GraphicsContext,
         frame: MascotTopRenderFrame,
         intakePoint: CGPoint
     ) {
-        guard frame.theme.isEnabled, frame.mode != .idle, frame.mode != .reject else { return }
+        guard frame.theme.isEnabled, frame.mode != .idle else { return }
 
-        let siphonExtra: CGFloat = (frame.mode == .multiDrop) ? 0.24 : (frame.mode == .url ? 0.08 : 0.0)
-        let moteEnv = MascotController.smootherstep(0.04, 0.20, frame.animT)
-            * (1.0 - MascotController.smootherstep(0.54 + siphonExtra, 0.70 + siphonExtra, frame.animT))
-            * MascotController.smootherstep(0.24, 0.50, frame.sim.mawOpen)
+        let chars = Array(frame.siphonText)
+        guard !chars.isEmpty else { return }
 
-        if moteEnv > 0.05 {
-            var pMotes = Path()
-            for k in 1...3 {
-                let cyc = (frame.elapsed * 2.4 + CGFloat(k) * 0.33).truncatingRemainder(dividingBy: 1.0)
-                let accel = cyc * cyc
-                let ang = CGFloat.pi * 0.5 + CGFloat(k - 2) * 0.50
-                let dist = lerp(19.0, 2.5, accel)
-                addCircleCW(
-                    &pMotes,
-                    cx: intakePoint.x + cos(ang) * dist,
-                    cy: intakePoint.y + sin(ang) * dist * 0.78,
-                    r: 1.05 * moteEnv * (1.0 - 0.45 * accel)
-                )
+        let siphonExtra: CGFloat = (frame.mode == .multiDrop) ? 0.14 : 0.0
+        let tLock: CGFloat = 0.03
+        let tApproachEnd: CGFloat = 0.62
+        let tSlurpEnd: CGFloat = 1.36 + siphonExtra
+
+        let originStartX: CGFloat = 12.5
+        let originY: CGFloat = frame.boxTopY + 18.0
+        let accentCol = seamColor(for: frame.theme)
+
+        func siphonInkColor(blend: CGFloat) -> Color {
+            let b = Double(max(0.0, min(1.0, blend)))
+            let (r1, g1, b1): (Double, Double, Double) = (29.0 / 255.0, 30.0 / 255.0, 32.0 / 255.0)
+            let (r2, g2, b2): (Double, Double, Double) = switch frame.theme {
+            case .forestCube: (54.0 / 255.0, 118.0 / 255.0, 110.0 / 255.0)
+            case .roundMochi: (192.0 / 255.0, 98.0 / 255.0, 86.0 / 255.0)
+            case .grokAstral: (188.0 / 255.0, 86.0 / 255.0, 56.0 / 255.0)
+            case .none:       (29.0 / 255.0, 30.0 / 255.0, 32.0 / 255.0)
             }
-            context.fill(pMotes, with: .color(colWindInk))
+            return Color(
+                red: r1 + (r2 - r1) * b,
+                green: g1 + (g2 - g1) * b,
+                blue: b1 + (b2 - b1) * b
+            )
         }
 
-        if frame.mode == .url {
-            // Stream crisp sapphire URL glyph-pearls out of the input bar directly into `intakePoint`!
-            var pBeads = Path()
-            let sDur: CGFloat = 0.62
-            let sProg = max(0, min(1, (frame.animT - 0.03) / sDur))
-            let beadCount = 10
-            for idx in 0..<beadCount {
-                let order = CGFloat(idx) / CGFloat(beadCount - 1)
-                let localU = max(0, min(1, sProg * 1.48 - order * 0.48))
-                if localU > 0.01 && localU < 0.985 {
-                    let startX = lerp(frame.dropOriginX + 70, max(28, frame.dropOriginX - 140), order)
-                    let startY = frame.dropOriginY
-                    let smoothU = MascotController.smootherstep(0, 1, localU)
-                    let accelU = pow(localU, 1.65)
-                    let lift = sin(localU * .pi) * 10.5
-                    let bx = lerp(startX, intakePoint.x, accelU)
-                    let by = lerp(startY, intakePoint.y, smoothU) - lift * (1.0 - localU)
-                    let r = 2.4 * (1.0 - 0.65 * MascotController.smootherstep(0.55, 1.0, localU))
-                    addCircleCW(&pBeads, cx: bx, cy: by, r: r)
-                }
+        // Measure exact proportional SF Pro glyph advances (uniform .medium weight -> zero bold-pop flicker!)
+        var baseResolved: [GraphicsContext.ResolvedText] = []
+        var charOrigins: [CGFloat] = []
+        baseResolved.reserveCapacity(chars.count)
+        charOrigins.reserveCapacity(chars.count)
+
+        var cursorX = originStartX
+        for ch in chars {
+            let s = String(ch)
+            let resDark = context.resolve(
+                Text(s)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundColor(.t3TextMain)
+            )
+            let w = max(3.3, resDark.measure(in: CGSize(width: 100, height: 30)).width + 0.15)
+            baseResolved.append(resDark)
+            charOrigins.append(cursorX + w * 0.5)
+            cursorX += w
+        }
+
+        if frame.mode == .reject {
+            let fadeOut = 1.0 - MascotController.smootherstep(0.86, 1.22, frame.animT)
+            guard fadeOut > 0.02 else { return }
+
+            let sniffLift = sin(max(0, min(1, (frame.animT - 0.04) / 0.52)) * .pi)
+            let count = chars.count
+            for idx in 0..<count {
+                let tailProximity = max(0, CGFloat(idx - max(0, count - 6)) / 6.0)
+                let lift = sniffLift * tailProximity
+                let gx = lerp(charOrigins[idx] + frame.boxShakeX, intakePoint.x - 18.0, lift * 0.28)
+                let gy = lerp(originY, intakePoint.y + 4.0, lift * 0.38)
+                let resolved = context.resolve(
+                    Text(String(chars[idx]))
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundColor(Color.t3TextMain.opacity(fadeOut))
+                )
+                context.draw(resolved, at: CGPoint(x: gx, y: gy), anchor: .center)
             }
-            context.fill(pBeads, with: .color(seamColor(for: frame.theme)))
             return
         }
 
-        let tEnd: CGFloat = (frame.mode == .multiDrop) ? 0.94 : 0.68
-        guard frame.animT <= tEnd else { return }
+        // 1. Crisp Bande-Dessinée `CHOMP!` Impact Sparks right when the jaw snaps shut on the last character!
+        let chompLocalT = (frame.animT - (tSlurpEnd - 0.02)) / 0.24
+        if chompLocalT > 0.0 && chompLocalT < 1.0 {
+            let pop = MascotController.smootherstep(0.0, 0.28, chompLocalT)
+            let fade = 1.0 - MascotController.smootherstep(0.45, 1.0, chompLocalT)
+            let angles: [CGFloat] = [.pi * 0.80, .pi, .pi * 1.20]
+            var pTicks = Path()
+            for (k, ang) in angles.enumerated() {
+                let rIn = lerp(5.0, 11.5, pop) + CGFloat(k % 2) * 1.5
+                let rOut = rIn + lerp(5.2, 1.8, chompLocalT)
+                let c = cos(ang), s = sin(ang)
+                let basePt = CGPoint(x: intakePoint.x - 3.0, y: intakePoint.y)
+                pTicks.move(to: CGPoint(x: basePt.x + c * rIn, y: basePt.y + s * rIn))
+                pTicks.addLine(to: CGPoint(x: basePt.x + c * rOut, y: basePt.y + s * rOut))
+            }
+            context.stroke(
+                pTicks,
+                with: .color(colInkPen.opacity(Double(fade))),
+                style: StrokeStyle(lineWidth: 1.55, lineCap: .round)
+            )
 
-        var pDrop = Path()
-        var pDropHi = Path()
-        let count = (frame.mode == .multiDrop) ? 3 : 1
-        for k in 1...count {
-            let startX = (count == 1) ? frame.dropOriginX : (frame.dropOriginX + CGFloat(k - 2) * 48.0)
-            let startY = frame.dropOriginY
-            let p = max(0, min(1, (frame.animT - (0.02 + CGFloat(k - 1) * 0.16)) / 0.52))
-            if p < 0.985 {
-                let headU = MascotController.smootherstep(0, 0.76, p)
-                let tailU = MascotController.smootherstep(0.22, 1.0, p)
-                let hx = lerp(startX, intakePoint.x, headU)
-                let hy = lerp(startY, intakePoint.y, headU)
-                let tx = lerp(startX, intakePoint.x, tailU)
-                let ty = lerp(startY, intakePoint.y, tailU)
-                let rHead = lerp(7.6, 1.45, headU)
-                let rTail = lerp(6.0, 0.95, tailU)
-                addTaperedDroplet(&pDrop, tx: tx, ty: ty, hx: hx, hy: hy, rTail: rTail, rHead: rHead)
-                addCircleCW(&pDropHi, cx: lerp(tx, hx, 0.55), cy: lerp(ty, hy, 0.55), r: rHead * 0.38)
+            var pSparkDot = Path()
+            addCircleCW(
+                &pSparkDot,
+                cx: intakePoint.x - lerp(6.0, 14.0, pop),
+                cy: intakePoint.y - lerp(3.0, 7.5, pop),
+                r: 1.6 * fade
+            )
+            context.fill(pSparkDot, with: .color(accentCol.opacity(Double(fade))))
+        }
+
+        guard frame.animT <= tSlurpEnd + 0.03 else { return }
+
+        // 2. Build sweeping C1 S-arch Conveyor Track (`liftX` ~232pt before mouth so Phase 1 lifts gracefully!)
+        let rightEndX = charOrigins.last ?? originStartX
+        let liftX = min(intakePoint.x - 108.0, max(originStartX + 46.0, intakePoint.x - 232.0))
+        let p0 = CGPoint(x: liftX, y: originY)
+        let p1 = CGPoint(x: lerp(liftX, intakePoint.x, 0.46), y: originY)
+        let p2 = CGPoint(x: intakePoint.x - 46.0, y: intakePoint.y + 1.0)
+        let p3 = CGPoint(x: intakePoint.x + 3.5, y: intakePoint.y)
+
+        let samples = 48
+        var arcS = Array(repeating: CGFloat(0), count: samples + 1)
+        var arcPt = Array(repeating: p0, count: samples + 1)
+        var arcAng = Array(repeating: CGFloat(0), count: samples + 1)
+
+        func bezierPt(_ u: CGFloat) -> CGPoint {
+            let om = 1.0 - u
+            let b0 = om * om * om
+            let b1 = 3.0 * om * om * u
+            let b2 = 3.0 * om * u * u
+            let b3 = u * u * u
+            return CGPoint(
+                x: b0 * p0.x + b1 * p1.x + b2 * p2.x + b3 * p3.x,
+                y: b0 * p0.y + b1 * p1.y + b2 * p2.y + b3 * p3.y
+            )
+        }
+
+        func bezierTan(_ u: CGFloat) -> CGPoint {
+            let om = 1.0 - u
+            let d0 = 3.0 * om * om
+            let d1 = 6.0 * om * u
+            let d2 = 3.0 * u * u
+            return CGPoint(
+                x: d0 * (p1.x - p0.x) + d1 * (p2.x - p1.x) + d2 * (p3.x - p2.x),
+                y: d0 * (p1.y - p0.y) + d1 * (p2.y - p1.y) + d2 * (p3.y - p2.y)
+            )
+        }
+
+        var accum: CGFloat = 0
+        for i in 0...samples {
+            let u = CGFloat(i) / CGFloat(samples)
+            let pt = bezierPt(u)
+            let tg = bezierTan(u)
+            if i > 0 {
+                accum += hypot(pt.x - arcPt[i - 1].x, pt.y - arcPt[i - 1].y)
+            }
+            arcS[i] = accum
+            arcPt[i] = pt
+            arcAng[i] = atan2(tg.y, tg.x)
+        }
+        let curveLen = max(1.0, accum)
+        let leadTravel = max(12.0, (liftX - rightEndX) + curveLen - 5.0)
+        let bodyTravel = max(24.0, (rightEndX - charOrigins[0]) + 12.0)
+        let approachDur = max(0.15, tApproachEnd - tLock)
+        let eatDuration = max(0.25, tSlurpEnd - tApproachEnd)
+        let vJoin = (1.08 * bodyTravel) / eatDuration
+
+        // Phase 1 (`0.04..0.86s`): silky, readable C1 Hermite glide (~360-480 pt/s, zero blur!) matching mouth entry velocity `vJoin`!
+        // Phase 2 (`0.86..1.82s`): 0.96s of steady, chewy, jaw-ratcheted ingestion INSIDE the mouth with a crisp tail-whip!
+        let feedDist: CGFloat
+        if frame.animT <= tLock {
+            let p = max(0.0, frame.animT / max(0.01, tLock))
+            feedDist = p * p * 0.8
+        } else if frame.animT <= tApproachEnd {
+            let u = max(0.0, min(1.0, (frame.animT - tLock) / approachDur))
+            let u2 = u * u
+            let u3 = u2 * u
+            let h01 = -2.0 * u3 + 3.0 * u2
+            let h11 = u3 - u2
+            let m1 = min(leadTravel * 2.35, vJoin * approachDur)
+            feedDist = 0.8 + (leadTravel - 0.8) * h01 + m1 * h11
+        } else {
+            let w = max(0.0, min(1.0, (frame.animT - tApproachEnd) / eatDuration))
+            let w2 = w * w
+            let baseFeed = bodyTravel * (1.08 * w - 0.22 * w2 + 0.14 * w2 * w)
+            let nibbleAngle = (frame.animT - tApproachEnd) * 58.0
+            let ratchet = (1.0 - cos(nibbleAngle)) * 1.65 * sin(w * .pi)
+            feedDist = leadTravel + baseFeed + ratchet
+        }
+
+        func sampleCurve(at s: CGFloat) -> (pt: CGPoint, ang: CGFloat, frac: CGFloat) {
+            let clamped = max(0.0, min(curveLen, s))
+            var lo = 0
+            var hi = samples
+            while lo + 1 < hi {
+                let mid = (lo + hi) / 2
+                if arcS[mid] <= clamped {
+                    lo = mid
+                } else {
+                    hi = mid
+                }
+            }
+            let segLen = max(0.0001, arcS[hi] - arcS[lo])
+            let t = (clamped - arcS[lo]) / segLen
+            let frac = clamped / curveLen
+            let baseX = lerp(arcPt[lo].x, arcPt[hi].x, t)
+            let baseY = lerp(arcPt[lo].y, arcPt[hi].y, t)
+            let ang = lerp(arcAng[lo], arcAng[hi], t)
+            let waveAmp = sin(clamped * 0.052 - frame.animT * 8.2) * 1.15 * sin(frac * .pi)
+            let pt = CGPoint(
+                x: baseX - sin(ang) * waveAmp,
+                y: baseY + cos(ang) * waveAmp
+            )
+            return (pt, ang, frac)
+        }
+
+        let headTrackX = rightEndX + feedDist
+        let tailTrackX = charOrigins[0] + feedDist
+        let headPt: CGPoint = (headTrackX <= liftX)
+            ? CGPoint(x: headTrackX, y: originY)
+            : sampleCurve(at: headTrackX - liftX).pt
+
+        // 3A. Phase 1 Organic Hand-Inked Inhale Wisps right in front of the open mouth (no mechanical long dashed tracks!)
+        let mouthGap = intakePoint.x - headPt.x
+        if frame.animT > 0.04 && mouthGap > 10.0 {
+            let inhaleIn = MascotController.smootherstep(0.04, 0.22, frame.animT)
+            let inhaleOut = MascotController.smootherstep(10.0, 38.0, mouthGap)
+            let envAlpha = inhaleIn * inhaleOut
+
+            for k in 0..<2 {
+                let side: CGFloat = (k == 0) ? -1.0 : 1.0
+                let cyc = (frame.animT * 2.35 + CGFloat(k) * 0.5).truncatingRemainder(dividingBy: 1.0)
+                let wispBell = sin(cyc * .pi)
+                let distOut = lerp(46.0, 6.0, cyc)
+                let wispLen = lerp(22.0, 11.0, cyc)
+                let ePt = CGPoint(
+                    x: intakePoint.x - distOut,
+                    y: intakePoint.y + side * lerp(4.2, 1.1, cyc) + lerp(3.5, 0.0, cyc)
+                )
+                let sPt = CGPoint(
+                    x: ePt.x - wispLen,
+                    y: ePt.y + side * 2.2 + 2.6
+                )
+                var pWisp = Path()
+                pWisp.move(to: sPt)
+                pWisp.addCurve(
+                    to: ePt,
+                    control1: CGPoint(x: lerp(sPt.x, ePt.x, 0.45), y: sPt.y - side * 0.6),
+                    control2: CGPoint(x: lerp(sPt.x, ePt.x, 0.78), y: ePt.y + side * 0.4)
+                )
+                context.stroke(
+                    pWisp,
+                    with: .color(accentCol.opacity(Double(0.46 * envAlpha * wispBell))),
+                    style: StrokeStyle(lineWidth: 1.25, lineCap: .round)
+                )
             }
         }
-        context.fill(pDrop, with: .color(colPaperBg))
-        context.stroke(pDrop, with: .color(colInkPen), style: StrokeStyle(lineWidth: 1.1, lineCap: .round, lineJoin: .round))
-        context.fill(pDropHi, with: .color(colTerracotta))
+
+        // 3B. Soft watercolor air-cushion & 2.5D paper shadow under the lifted portion of the URL
+        if headTrackX > liftX + 8.0 && tailTrackX < liftX + curveLen - 4.0 {
+            let s0 = max(0.0, tailTrackX - liftX)
+            let s1 = min(curveLen - 2.0, headTrackX - liftX)
+            if s1 > s0 + 6.0 {
+                var pStream = Path()
+                var pLiftShadow = Path()
+                let steps = 16
+                for st in 0...steps {
+                    let cs = lerp(s0, s1, CGFloat(st) / CGFloat(steps))
+                    let smp = sampleCurve(at: cs)
+                    let pt = smp.pt
+                    let shPt = CGPoint(x: pt.x, y: pt.y + 2.8 * sin(smp.frac * .pi))
+                    if st == 0 {
+                        pStream.move(to: pt)
+                        pLiftShadow.move(to: shPt)
+                    } else {
+                        pStream.addLine(to: pt)
+                        pLiftShadow.addLine(to: shPt)
+                    }
+                }
+                context.stroke(
+                    pLiftShadow,
+                    with: .color(colPaperShadow.opacity(0.28)),
+                    style: StrokeStyle(lineWidth: 4.0, lineCap: .round, lineJoin: .round)
+                )
+                context.stroke(
+                    pStream,
+                    with: .color(accentCol.opacity(0.16)),
+                    style: StrokeStyle(lineWidth: 5.5, lineCap: .round, lineJoin: .round)
+                )
+            }
+        }
+
+        // 4. Render every character at 100% solid ink opacity:
+        //    - Uniform .medium weight + continuous watercolor RGB blend (zero bold-pop flicker in Phase 1!),
+        //    - Full size (1.0x) all along the track until the final 15pt lip threshold (`frac 0.82 -> 1.0`),
+        //    - Vertically squeezed between the upper & lower lips right as it crosses into the dark mouth cavity (`clipW = intakePoint.x + 1.2`)!
+        context.drawLayer { layer in
+            let clipW = max(20.0, intakePoint.x + 1.2)
+            layer.clip(to: Path(CGRect(x: 0, y: 0, width: clipW, height: frame.boxTopY + 60.0)))
+
+            for idx in 0..<chars.count {
+                let virtualX = charOrigins[idx] + feedDist
+                if virtualX <= liftX {
+                    layer.draw(baseResolved[idx], at: CGPoint(x: virtualX, y: originY), anchor: .center)
+                } else {
+                    let sAlong = virtualX - liftX
+                    if sAlong > curveLen + 4.0 {
+                        continue
+                    }
+                    let sample = sampleCurve(at: sAlong)
+                    let lipPinch = MascotController.smootherstep(0.82, 0.99, sample.frac)
+                    let scaleX = lerp(1.0, 0.78, lipPinch)
+                    let scaleY = lerp(1.0, 0.44, lipPinch)
+                    let inkBlend = MascotController.smootherstep(0.04, 0.68, sample.frac)
+                    let tintedRes = layer.resolve(
+                        Text(String(chars[idx]))
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundColor(siphonInkColor(blend: inkBlend))
+                    )
+
+                    layer.drawLayer { charLayer in
+                        charLayer.translateBy(x: sample.pt.x, y: sample.pt.y)
+                        charLayer.rotate(by: .radians(Double(sample.ang * 0.75 * (1.0 - lipPinch * 0.65))))
+                        charLayer.scaleBy(x: scaleX, y: scaleY)
+                        charLayer.draw(tintedRes, at: .zero, anchor: .center)
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Master Matched Bottom Progress Bar Companion Renderer
