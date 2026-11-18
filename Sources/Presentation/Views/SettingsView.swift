@@ -91,9 +91,11 @@ struct SettingsView: View {
     // MARK: 1. Appearance Settings
     private var settingsAppearanceView: some View {
         let columns = Array(repeating: GridItem(.flexible(), spacing: 12), count: 6)
+        let mascotColumns = Array(repeating: GridItem(.flexible(), spacing: 12), count: 4)
         let selectedID = vm.settingsStore.settings.selectedIconID
         let variant = vm.settingsStore.settings.selectedIconVariant
         let followTheme = (vm.settingsStore.settings.accentColorMode == .followAppIcon)
+        let activeMascot = vm.mascotTheme
 
         return VStack(alignment: .leading, spacing: 0) {
             LazyVGrid(columns: columns, spacing: 12) {
@@ -116,6 +118,19 @@ struct SettingsView: View {
             .onInstantPress {
                 vm.toggleFollowAppIconTheme()
             }
+
+            LazyVGrid(columns: mascotColumns, spacing: 12) {
+                ForEach(MascotTheme.allCases) { option in
+                    MascotThemeCardView(
+                        option: option,
+                        isSelected: activeMascot == option,
+                        isSnapshotMode: isSnapshotMode
+                    ) {
+                        vm.setMascotTheme(option)
+                    }
+                }
+            }
+            .padding(.top, 16)
         }
     }
 

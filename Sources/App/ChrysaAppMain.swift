@@ -1,3 +1,4 @@
+import ChrysaCore
 import ChrysaAdapters
 import ChrysaPresentation
 import SwiftUI
@@ -127,20 +128,24 @@ struct ChrysaAppMain {
             let outDir = ProcessInfo.processInfo.environment["CHRYSA_SNAPSHOT_DIR"]
                 ?? FileManager.default.temporaryDirectory.appendingPathComponent("ChrysaSnapshots", isDirectory: true).path
             try? FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true)
-            let presets: [(StudioTab, SettingsCategory, String)] = [
-                (.download, .appearance, "dl"),
-                (.unpack, .appearance, "un"),
-                (.patch, .appearance, "pa"),
-                (.launch, .appearance, "launch"),
-                (.settings, .appearance, "settings_appearance"),
-                (.settings, .download, "settings_download"),
-                (.settings, .unpack, "settings_unpack"),
-                (.settings, .patch, "settings_patch")
+            let presets: [(StudioTab, SettingsCategory, MascotTheme, String)] = [
+                (.download, .appearance, .forestCube, "dl"),
+                (.download, .appearance, .roundMochi, "dl_mochi"),
+                (.download, .appearance, .grokAstral, "dl_grok"),
+                (.download, .appearance, .none, "dl_quiet"),
+                (.unpack, .appearance, .forestCube, "un"),
+                (.patch, .appearance, .forestCube, "pa"),
+                (.launch, .appearance, .forestCube, "launch"),
+                (.settings, .appearance, .forestCube, "settings_appearance"),
+                (.settings, .download, .forestCube, "settings_download"),
+                (.settings, .unpack, .forestCube, "settings_unpack"),
+                (.settings, .patch, .forestCube, "settings_patch")
             ]
-            for (tab, cat, suffix) in presets {
+            for (tab, cat, mascot, suffix) in presets {
                 let vm = AppComposition.makeViewModel(seedDemoData: true)
                 vm.activeTab = tab
                 vm.settingsCategory = cat
+                vm.setMascotTheme(mascot)
                 let framed = ThingsStudioMainView(vm: vm, isSnapshotMode: true)
                     .frame(width: 860, height: 580)
                     .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))

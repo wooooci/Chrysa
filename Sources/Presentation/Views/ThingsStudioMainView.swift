@@ -77,12 +77,22 @@ package struct ThingsStudioMainView: View {
                 Rectangle()
                     .fill(Color.t3Divider)
                     .frame(height: 1)
+                    .overlay(alignment: .bottom) {
+                        MascotBottomProgressOverlay(vm: vm, isSnapshotMode: isSnapshotMode)
+                    }
                 GlobalLogDrawerView(vm: vm)
                     .frame(height: 200)
+                Rectangle()
+                    .fill(Color.t3Divider)
+                    .frame(height: 1)
+            } else {
+                Rectangle()
+                    .fill(Color.t3Divider)
+                    .frame(height: 1)
+                    .overlay(alignment: .bottom) {
+                        MascotBottomProgressOverlay(vm: vm, isSnapshotMode: isSnapshotMode)
+                    }
             }
-            Rectangle()
-                .fill(Color.t3Divider)
-                .frame(height: 1)
 
             bottomToolbar
         }

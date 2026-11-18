@@ -16,25 +16,68 @@ package enum AccentColorMode: String, CaseIterable, Codable, Equatable, Sendable
     }
 }
 
+package enum MascotTheme: String, CaseIterable, Codable, Equatable, Sendable, Identifiable {
+    case forestCube = "forestCube"
+    case roundMochi = "roundMochi"
+    case grokAstral = "grokAstral"
+    case none = "none"
+
+    package var id: String { rawValue }
+
+    package var isEnabled: Bool {
+        self != .none
+    }
+
+    package var displayName: String {
+        switch self {
+        case .forestCube:
+            return "森林方块芽"
+        case .roundMochi:
+            return "趴边圆白团"
+        case .grokAstral:
+            return "星轨墨陶球"
+        case .none:
+            return "极简关闭"
+        }
+    }
+
+    package var companionSubtitle: String {
+        switch self {
+        case .forestCube:
+            return "青瓷方石 + 单叶小石仔"
+        case .roundMochi:
+            return "无耳软团 + Q弹小汤圆"
+        case .grokAstral:
+            return "悬浮星陶 + 星轨小卫球"
+        case .none:
+            return "纯正 Things 3 静谧界面"
+        }
+    }
+}
+
 package struct AppearanceSettings: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case selectedIconID
         case selectedIconVariant
         case accentColorMode
+        case mascotTheme
     }
 
     package var selectedIconID: String
     package var selectedIconVariant: String
     package var accentColorMode: AccentColorMode
+    package var mascotTheme: MascotTheme
 
     package init(
         selectedIconID: String = "dark_nebula",
         selectedIconVariant: String = "B",
-        accentColorMode: AccentColorMode = .monochrome
+        accentColorMode: AccentColorMode = .monochrome,
+        mascotTheme: MascotTheme = .forestCube
     ) {
         self.selectedIconID = selectedIconID
         self.selectedIconVariant = selectedIconVariant
         self.accentColorMode = accentColorMode
+        self.mascotTheme = mascotTheme
     }
 
     package init(from decoder: Decoder) throws {
@@ -43,6 +86,7 @@ package struct AppearanceSettings: Codable, Equatable, Sendable {
         selectedIconID = try container.decodeIfPresent(String.self, forKey: .selectedIconID) ?? defaults.selectedIconID
         selectedIconVariant = try container.decodeIfPresent(String.self, forKey: .selectedIconVariant) ?? defaults.selectedIconVariant
         accentColorMode = (try? container.decodeIfPresent(AccentColorMode.self, forKey: .accentColorMode)) ?? defaults.accentColorMode
+        mascotTheme = (try? container.decodeIfPresent(MascotTheme.self, forKey: .mascotTheme)) ?? defaults.mascotTheme
     }
 }
 
@@ -232,6 +276,7 @@ package struct AppSettings: Codable, Equatable, Sendable {
         case selectedIconID
         case selectedIconVariant
         case accentColorMode
+        case mascotTheme
         case passwords
     }
 
@@ -309,6 +354,12 @@ package struct AppSettings: Codable, Equatable, Sendable {
         get { appearance.accentColorMode }
         set { appearance.accentColorMode = newValue }
     }
+
+    package var mascotTheme: MascotTheme {
+        get { appearance.mascotTheme }
+        set { appearance.mascotTheme = newValue }
+    }
+
     package var passwords: [String] {
         get { unpack.passwords }
         set { unpack.passwords = newValue }
@@ -341,12 +392,14 @@ package struct AppSettings: Codable, Equatable, Sendable {
         selectedIconID: String,
         selectedIconVariant: String,
         accentColorMode: AccentColorMode = .monochrome,
+        mascotTheme: MascotTheme = .forestCube,
         passwords: [String]
     ) {
         self.appearance = AppearanceSettings(
             selectedIconID: selectedIconID,
             selectedIconVariant: selectedIconVariant,
-            accentColorMode: accentColorMode
+            accentColorMode: accentColorMode,
+            mascotTheme: mascotTheme
         )
         self.download = DownloadSettings(
             downloadDirectory: downloadDirectory,
@@ -376,6 +429,8 @@ package struct AppSettings: Codable, Equatable, Sendable {
             ?? decodedAppearance?.selectedIconVariant ?? defaults.selectedIconVariant
         let accentMode = (try? container.decodeIfPresent(AccentColorMode.self, forKey: .accentColorMode))
             ?? decodedAppearance?.accentColorMode ?? defaults.accentColorMode
+        let mascot = (try? container.decodeIfPresent(MascotTheme.self, forKey: .mascotTheme))
+            ?? decodedAppearance?.mascotTheme ?? defaults.mascotTheme
         let dlDir = try container.decodeIfPresent(String.self, forKey: .downloadDirectory)
             ?? decodedDownload?.downloadDirectory ?? defaults.downloadDirectory
         let maxConn = try container.decodeIfPresent(Int.self, forKey: .maxConcurrentConnections)
@@ -413,6 +468,7 @@ package struct AppSettings: Codable, Equatable, Sendable {
             selectedIconID: iconID,
             selectedIconVariant: iconVariant,
             accentColorMode: accentMode,
+            mascotTheme: mascot,
             passwords: pwds
         )
     }

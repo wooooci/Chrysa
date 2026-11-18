@@ -285,6 +285,11 @@ struct ArchitectureSafetyTests {
         #expect(vm.logs.isEmpty)
         vm.selectAppIcon(id: "w6_burgundy")
         vm.toggleFollowAppIconTheme()
+        vm.setMascotTheme(.roundMochi)
+        vm.setMascotTheme(.grokAstral)
+        vm.setMascotTheme(.none)
+        vm.cycleMascotTheme()
+        #expect(vm.mascotTheme == .forestCube)
         vm.toggleAutoRelay()
         vm.toggleDeleteArchiveAfterUnpack()
         vm.setConcurrentConnections(8)
@@ -1380,6 +1385,61 @@ struct ArchitectureSafetyTests {
             #expect(try Data(contentsOf: csfDLLURL) != genuineValveDLL)
             #expect(fm.fileExists(atPath: csfDir.appendingPathComponent("steam_settings/configs.user.ini").path))
         }
+    }
+
+    @MainActor
+    @Test
+    func testMascotThemePersistenceProgressSummaryAndIntakeAlignment() async throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chrysa-mascot-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let settingsURL = tmpDir.appendingPathComponent("settings.json")
+        let store = AppSettingsStore(customFileURL: settingsURL)
+        let jobStore = JobStore(inMemoryOnly: true)
+        let coordinator = PipelineCoordinator(
+            services: DefaultWorkflowServices(),
+            jobStore: jobStore,
+            gameLibrary: LaunchGameStore(inMemoryOnly: true)
+        )
+        let vm = StudioViewModel(
+            inMemoryOnly: true,
+            settingsStore: store,
+            taskStore: TaskStore(inMemoryOnly: true),
+            coordinator: coordinator
+        )
+
+        #expect(vm.mascotTheme == .forestCube)
+        #expect(abs(MascotController.slotAlignOffsetX(for: .forestCube) - 2.7) < 0.001)
+        #expect(MascotController.slotAlignOffsetX(for: .roundMochi) == 0)
+        #expect(MascotController.slotAlignOffsetX(for: .grokAstral) == 0)
+
+        vm.setMascotTheme(.roundMochi)
+        store.flushPendingPersistence()
+        let reloadedStore = AppSettingsStore(customFileURL: settingsURL)
+        #expect(reloadedStore.settings.mascotTheme == .roundMochi)
+
+        // Pipeline progress summary tracks running -> paused -> completed states
+        #expect(vm.activePipelineProgressSummary.progress == nil)
+        #expect(vm.activePipelineProgressSummary.isPaused)
+
+        let dlJob = Job(kind: .download, title: "Silksong.7z", status: .running, progress: 0.64)
+        await coordinator.addJob(dlJob)
+        try await Task.sleep(nanoseconds: 25_000_000)
+        let runningSummary = vm.activePipelineProgressSummary
+        #expect(abs((runningSummary.progress ?? 0) - 0.64) < 0.01)
+        #expect(!runningSummary.isPaused)
+
+        await coordinator.updateJob(dlJob.id, status: .paused)
+        try await Task.sleep(nanoseconds: 25_000_000)
+        let pausedSummary = vm.activePipelineProgressSummary
+        #expect(abs((pausedSummary.progress ?? 0) - 0.64) < 0.01)
+        #expect(pausedSummary.isPaused)
+
+        await coordinator.updateJob(dlJob.id, status: .succeeded, progress: 1.0)
+        try await Task.sleep(nanoseconds: 25_000_000)
+        #expect(vm.activePipelineProgressSummary.progress == nil)
     }
 }
 

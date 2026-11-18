@@ -40,6 +40,7 @@ package final class StudioViewModel: ObservableObject {
     package let settingsStore: AppSettingsStore
     package let taskStore: any LegacyTaskLoading
     package let coordinator: PipelineCoordinator
+    package let mascot = MascotController()
     private var cancellables = Set<AnyCancellable>()
     private var eventTask: Task<Void, Never>?
     private var restorationTask: Task<Void, Never>?
@@ -59,6 +60,10 @@ package final class StudioViewModel: ObservableObject {
     package var accentColorMode: AccentColorMode {
         get { settingsStore.settings.accentColorMode }
         set { settingsStore.settings.accentColorMode = newValue }
+    }
+    package var mascotTheme: MascotTheme {
+        get { settingsStore.settings.mascotTheme }
+        set { setMascotTheme(newValue) }
     }
     package var autoRelay: Bool {
         get { settingsStore.settings.autoRelay }
@@ -191,12 +196,18 @@ package final class StudioViewModel: ObservableObject {
     private func receive(_ event: PipelineEvent) {
         switch event {
         case .jobUpdated(let job):
+            let previousStatus = jobs.first(where: { $0.id == job.id })?.status
             if let index = jobs.firstIndex(where: { $0.id == job.id }) {
                 jobs[index] = job
             } else {
                 jobs.append(job)
             }
             jobs.sort(by: Self.jobOrder)
+            if let previousStatus, previousStatus != .succeeded, job.status == .succeeded {
+                mascot.triggerCheerHop()
+            } else if let previousStatus, previousStatus != .failed, job.status == .failed, mascot.mode == .idle {
+                mascot.triggerIntake(kind: .reject)
+            }
         case .jobRemoved(let id):
             jobs.removeAll { $0.id == id }
         case .launchGameUpdated(let game):
@@ -244,6 +255,52 @@ package final class StudioViewModel: ObservableObject {
     package func toggleFollowAppIconTheme() {
         let next: AccentColorMode = (settingsStore.settings.accentColorMode == .followAppIcon) ? .monochrome : .followAppIcon
         setAccentColorMode(next)
+    }
+
+    package func setMascotTheme(_ theme: MascotTheme) {
+        guard settingsStore.settings.mascotTheme != theme else {
+            if theme.isEnabled {
+                mascot.triggerBoing()
+            }
+            return
+        }
+        settingsStore.settings.mascotTheme = theme
+        mascot.notifyThemeChanged(theme)
+    }
+
+    package func cycleMascotTheme() {
+        let all = MascotTheme.allCases
+        guard let idx = all.firstIndex(of: mascotTheme) else { return }
+        let next = all[(idx + 1) % all.count]
+        setMascotTheme(next)
+    }
+
+    package var activePipelineProgressSummary: (progress: Double?, isPaused: Bool) {
+        let tabKind: JobKind? = switch activeTab {
+        case .download: .download
+        case .unpack:   .unpack
+        case .patch:    .patch
+        case .launch, .settings: nil
+        }
+
+        let primaryPool: [Job] = {
+            guard let tabKind else { return [] }
+            return jobs.filter { $0.kind == tabKind && !$0.isArchived }
+        }()
+        let allPool = jobs.filter { !$0.isArchived }
+
+        for pool in [primaryPool, allPool] {
+            let running = pool.filter { $0.status == .running }
+            if !running.isEmpty {
+                let avg = running.reduce(0.0) { $0 + $1.progress } / Double(running.count)
+                return (max(0.03, min(0.995, avg)), false)
+            }
+            let paused = pool.filter { $0.status == .paused }
+            if let firstPaused = paused.first {
+                return (max(0.03, min(0.995, firstPaused.progress)), true)
+            }
+        }
+        return (nil, true)
     }
 
     package func iconPreviewPath(id: String, variant: String) -> String {
@@ -373,16 +430,32 @@ package final class StudioViewModel: ObservableObject {
         if trimmed.lowercased().hasSuffix(".txt"),
            FileManager.default.fileExists(atPath: trimmed),
            let text = try? String(contentsOfFile: trimmed, encoding: .utf8) {
+            let parsedCount = DownloadInputParser.parse(text).urls.count
+            if parsedCount > 0 {
+                mascot.triggerIntake(kind: parsedCount > 1 ? .multiDrop : .fileDrop)
+            } else {
+                mascot.triggerIntake(kind: .reject)
+            }
             coordinator.startDownloads(rawInput: text, settings: settingsStore.settings)
             return
+        }
+        let parsedCount = DownloadInputParser.parse(trimmed).urls.count
+        if parsedCount > 1 {
+            mascot.triggerIntake(kind: .multiDrop)
+        } else if parsedCount == 1 || coordinator.containsValidDownloadURL(trimmed) {
+            mascot.triggerIntake(kind: .url)
+        } else if !trimmed.isEmpty {
+            mascot.triggerIntake(kind: .reject)
         }
         coordinator.startDownloads(rawInput: urlString, settings: settingsStore.settings)
     }
     package func startUnpack(filePath: String) {
+        mascot.triggerIntake(kind: .fileDrop)
         coordinator.startUnpack(filePath: filePath, settings: settingsStore.settings)
     }
 
     package func startPatch(folderPath: String) {
+        mascot.triggerIntake(kind: .fileDrop)
         coordinator.startPatch(folderPath: folderPath, settings: settingsStore.settings)
     }
 

@@ -31,6 +31,20 @@ struct PageHeaderView: View {
                         Label(vm.showArchived ? "隐藏已归档项目" : "显示已归档项目", systemImage: vm.showArchived ? "eye.slash" : "eye")
                     }
                     Divider()
+                    Menu {
+                        ForEach(MascotTheme.allCases) { opt in
+                            Button(action: { vm.setMascotTheme(opt) }) {
+                                if vm.mascotTheme == opt {
+                                    Label(opt.displayName, systemImage: "checkmark")
+                                } else {
+                                    Text(opt.displayName)
+                                }
+                            }
+                        }
+                    } label: {
+                        Label("伴生灵主题（\(vm.mascotTheme.displayName)）", systemImage: "sparkles")
+                    }
+                    Divider()
                     Button(role: .destructive, action: { vm.clearAllInActiveTab() }) {
                         Label("清空当前列表", systemImage: "trash")
                     }
@@ -156,8 +170,10 @@ package struct TaskListSectionView: View {
 
     package var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            topDropZone
-                .padding(.bottom, 16)
+            MascotTopDropZoneContainer(vm: vm, isSnapshotMode: isSnapshotMode) {
+                topDropZone
+            }
+            .padding(.bottom, 16)
 
             if isSnapshotMode {
                 taskListContent
@@ -165,6 +181,12 @@ package struct TaskListSectionView: View {
                 ScrollView(.vertical, showsIndicators: false) {
                     taskListContent
                 }
+            }
+        }
+        .onContinuousHover(coordinateSpace: .local) { phase in
+            guard !isSnapshotMode else { return }
+            if case .active(let pt) = phase {
+                vm.mascot.updatePointer(x: pt.x, y: pt.y + 52.0)
             }
         }
         // Avoid legacy `.alert(item:)` here because ancestor `.alert(item:)` modifiers on macOS swallow child alerts.

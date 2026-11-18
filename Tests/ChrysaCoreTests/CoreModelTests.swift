@@ -13,6 +13,25 @@ struct CoreModelTests {
         #expect(settings.downloadDirectory == AppSettings.default.downloadDirectory)
         #expect(settings.passwords == AppSettings.default.passwords)
         #expect(settings.accentColorMode == .monochrome)
+        #expect(settings.mascotTheme == .forestCube)
+    }
+
+    @Test
+    func testMascotThemeRoundTripAcrossAllVariantsAndLegacyFallback() throws {
+        for theme in MascotTheme.allCases {
+            var settings = AppSettings.default
+            settings.mascotTheme = theme
+            let data = try JSONEncoder().encode(settings)
+            let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
+            #expect(decoded.mascotTheme == theme)
+            #expect(decoded.mascotTheme.isEnabled == (theme != .none))
+        }
+
+        let legacyAppearanceJSON = Data(#"{"appearance":{"selectedIconID":"nordic_sage","selectedIconVariant":"B","accentColorMode":"followAppIcon"}}"#.utf8)
+        let migrated = try JSONDecoder().decode(AppSettings.self, from: legacyAppearanceJSON)
+        #expect(migrated.selectedIconID == "nordic_sage")
+        #expect(migrated.accentColorMode == .followAppIcon)
+        #expect(migrated.mascotTheme == .forestCube)
     }
 
     @Test
