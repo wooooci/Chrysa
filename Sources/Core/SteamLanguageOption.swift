@@ -17,6 +17,15 @@ package enum SteamLanguageOption: String, CaseIterable, Identifiable, Codable, S
         }
     }
 
+    package var displayName: String {
+        switch self {
+        case .schinese: return "简体中文"
+        case .tchinese: return "繁体中文"
+        case .english:  return "英语"
+        case .japanese: return "日语"
+        }
+    }
+
     package var ipCountry: String {
         switch self {
         case .schinese: return "CN"

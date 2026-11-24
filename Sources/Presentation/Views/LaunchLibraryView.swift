@@ -7,6 +7,8 @@ package struct LaunchLibraryView: View {
     @ObservedObject var vm: StudioViewModel
     let isSnapshotMode: Bool
     @State private var pendingRemovalGame: LaunchGame?
+    @State private var isSearchHovered = false
+    @FocusState private var isSearchFocused: Bool
     @Environment(\.appTheme) private var theme
 
     package init(
@@ -24,7 +26,8 @@ package struct LaunchLibraryView: View {
 
         VStack(alignment: .leading, spacing: 0) {
             searchAndImportBar
-                .padding(.bottom, 16)
+                .padding(.horizontal, ChrysaMetrics.canvasInset)
+                .padding(.bottom, 14)
 
             if games.isEmpty {
                 emptyStateView
@@ -34,6 +37,11 @@ package struct LaunchLibraryView: View {
                 ScrollView(.vertical, showsIndicators: false) {
                     gameListContent(games: games)
                 }
+            }
+        }
+        .onChange(of: vm.searchFocusNonce) { _, _ in
+            if vm.activeTab == .launch && !isSnapshotMode {
+                isSearchFocused = true
             }
         }
         // Avoid legacy `.alert(item:)` here so ancestor `.alert(item:)` in ThingsStudioMainView does not swallow it.
@@ -57,14 +65,15 @@ package struct LaunchLibraryView: View {
     private var searchAndImportBar: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 11.5))
-                .foregroundColor(.t3TextMuted)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(isSearchFocused ? theme.accent : .t3TextMuted)
 
             if !isSnapshotMode {
                 TextField("搜索已就绪游戏...", text: $vm.launchSearchQuery)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 12.5))
+                    .font(ChrysaFont.input)
                     .foregroundColor(.t3TextMain)
+                    .focused($isSearchFocused)
 
                 if !vm.launchSearchQuery.isEmpty {
                     Button(action: { vm.launchSearchQuery = "" }) {
@@ -73,43 +82,57 @@ package struct LaunchLibraryView: View {
                             .foregroundColor(.t3TextMuted)
                     }
                     .buttonStyle(.plain)
+                    .help("清空搜索")
                 }
             } else {
                 Text("搜索已就绪游戏...")
-                    .font(.system(size: 12.5))
+                    .font(ChrysaFont.input)
                     .foregroundColor(.t3TextSub)
                 Spacer()
             }
 
-            Button(action: { vm.importLaunchGameFromPanel() }) {
-                Text("+ 导入")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(theme.accent)
+            T3InlineActionButton(title: "+ 导入", tooltip: "导入本地游戏目录、.app 或 .exe (⌘N)") {
+                vm.importLaunchGameFromPanel()
             }
-            .buttonStyle(.plain)
         }
-        .padding(.horizontal, 12)
-        .frame(height: 36)
+        .padding(.leading, 12)
+        .padding(.trailing, 7)
+        .frame(height: ChrysaMetrics.topBoxHeight)
         .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Color.t3TopBoxBg)
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
+                .fill(isSearchFocused ? Color.t3CardBg : Color.t3TopBoxBg)
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
+                .stroke(
+                    isSearchFocused
+                        ? theme.accent.opacity(theme.isDark ? 0.55 : 0.45)
+                        : (isSearchHovered ? Color.t3PillBorder : Color.t3TopBoxBorder),
+                    lineWidth: isSearchFocused ? 1.4 : 1
+                )
+        )
+        .onHover { isSearchHovered = $0 }
     }
 
     private var emptyStateView: some View {
         let isSearching = !vm.launchSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return VStack(spacing: 6) {
+        return VStack(spacing: 8) {
             Spacer()
+            Image(systemName: isSearching ? "magnifyingglass" : "gamecontroller")
+                .font(.system(size: 28, weight: .ultraLight))
+                .foregroundColor(.t3TextMuted.opacity(0.65))
+                .padding(.bottom, 2)
             Text(isSearching ? "未找到匹配的游戏" : "暂无已就绪游戏")
-                .font(.system(size: 13, weight: .medium))
+                .font(ChrysaFont.navItemActive)
                 .foregroundColor(.t3TextSub)
             if !isSearching {
                 Text("补丁完成后自动入库，或拖入本地游戏目录 / .app / .exe")
-                    .font(.system(size: 11.5))
+                    .font(ChrysaFont.caption)
                     .foregroundColor(.t3TextMuted)
             }
             Spacer()
         }
+        .padding(.horizontal, ChrysaMetrics.canvasInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -124,6 +147,8 @@ package struct LaunchLibraryView: View {
                 )
             }
         }
+        .padding(.horizontal, ChrysaMetrics.canvasInset)
+        .padding(.bottom, 12)
     }
 }
 
@@ -136,6 +161,7 @@ private struct LaunchGameRowView: View {
 
     @State private var isHovered = false
     @State private var isPlayHovered = false
+    @State private var isMenuHovered = false
     @State private var isDropTargeted = false
 
     var body: some View {
@@ -146,7 +172,7 @@ private struct LaunchGameRowView: View {
             LaunchGameIconView(icon: icon)
                 .frame(width: 22, height: 22, alignment: .center)
             Text(game.title)
-                .font(.system(size: 13.5, weight: .regular))
+                .font(ChrysaFont.rowTitle)
                 .foregroundColor(.t3TextMain)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -159,20 +185,24 @@ private struct LaunchGameRowView: View {
 
             Spacer(minLength: 12)
             Text(isPatching ? "处理中…" : (isDropTargeted ? "松开以安装补丁" : game.lastPlayedDisplayText()))
-                .font(.system(size: 11.5, weight: .regular))
+                .font(ChrysaFont.caption.monospacedDigit())
                 .foregroundColor(isDropTargeted ? theme.accent : .t3TextMuted)
                 .padding(.trailing, isHovered && !isSnapshotMode ? 54 : 0)
         }
-        .padding(.horizontal, 12)
-        .frame(height: 38)
+        .padding(.horizontal, ChrysaMetrics.rowInnerInset)
+        .frame(height: ChrysaMetrics.listRowHeight)
         .overlay(alignment: .trailing) {
             if !isSnapshotMode {
                 HStack(spacing: 4) {
                     Button(action: { vm.launchGame(game) }) {
-                        Image(systemName: "play")
-                            .font(.system(size: 11.5, weight: .light))
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 10.5, weight: .medium))
                             .foregroundColor(isPlayHovered ? theme.accent : .t3TextSub)
-                            .frame(width: 22, height: 22)
+                            .frame(width: 24, height: 24)
+                            .background(
+                                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                                    .fill(isPlayHovered ? Color.t3HoverBg : Color.clear)
+                            )
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -183,26 +213,32 @@ private struct LaunchGameRowView: View {
                         gameMenuItems
                     } label: {
                         Image(systemName: "ellipsis")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.t3TextSub)
-                            .frame(width: 22, height: 22)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(isMenuHovered ? .t3TextMain : .t3TextSub)
+                            .frame(width: 24, height: 24)
+                            .background(
+                                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                                    .fill(isMenuHovered ? Color.t3HoverBg : Color.clear)
+                            )
                             .contentShape(Rectangle())
                     }
                     .menuStyle(.borderlessButton)
                     .menuIndicator(.hidden)
                     .fixedSize()
+                    .onHover { isMenuHovered = $0 }
+                    .help("更多操作")
                 }
-                .padding(.trailing, 10)
+                .padding(.trailing, 8)
                 .opacity(isHovered ? 1 : 0)
                 .allowsHitTesting(isHovered)
             }
         }
         .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(isDropTargeted ? theme.accent.opacity(0.08) : (isHovered ? Color.t3TopBoxBg : Color.clear))
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
+                .fill(isDropTargeted ? theme.accent.opacity(theme.isDark ? 0.14 : 0.08) : (isHovered ? Color.t3HoverBg : Color.clear))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
                 .stroke(isDropTargeted ? theme.accent.opacity(0.55) : Color.clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
@@ -210,11 +246,11 @@ private struct LaunchGameRowView: View {
             isHovered = hovering
             if !hovering {
                 isPlayHovered = false
+                isMenuHovered = false
             }
         }
-        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
-            guard !isSnapshotMode else { return false }
-            return vm.handleDroppedPatchProviders(providers, for: game)
+        .conditionalDrop(enabled: !isSnapshotMode, of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            vm.handleDroppedPatchProviders(providers, for: game)
         }
         .onTapGesture(count: 2) {
             vm.launchGame(game)
@@ -292,22 +328,22 @@ private struct LaunchGameIconView: View {
                 .interpolation(.high)
                 .aspectRatio(contentMode: .fill)
                 .frame(width: 22, height: 22)
-                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .stroke(Color.black.opacity(0.08), lineWidth: 0.5)
+                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                        .stroke(Color.t3CardBorder, lineWidth: 0.6)
                 )
         } else {
             ZStack {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
                     .fill(Color.t3TopBoxBg)
                     .frame(width: 22, height: 22)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .stroke(Color.t3Divider, lineWidth: 0.6)
+                        RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                            .stroke(Color.t3TopBoxBorder, lineWidth: 0.6)
                     )
                 Image(systemName: "gamecontroller")
-                    .font(.system(size: 10.5, weight: .light))
+                    .font(.system(size: 10.5, weight: .regular))
                     .foregroundColor(.t3TextMuted)
             }
         }

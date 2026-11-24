@@ -7,14 +7,18 @@ struct PageHeaderView: View {
     @ObservedObject var vm: StudioViewModel
     let isSnapshotMode: Bool
     @Environment(\.appTheme) private var theme
+    @State private var isEllipsisHovered = false
+    @State private var isArchivePillHovered = false
+    @State private var isSortPillHovered = false
 
     var body: some View {
         HStack(alignment: .center, spacing: 9) {
             T3SidebarIcon(tab: vm.activeTab, placement: .pageHeader)
 
             Text(tabTitle)
-                .font(.system(size: 24, weight: .bold))
+                .font(ChrysaFont.pageTitle)
                 .foregroundColor(.t3TextMain)
+
             if vm.activeTab != .settings && vm.activeTab != .launch && !isSnapshotMode {
                 Menu {
                     Button(action: { vm.archiveAllCompletedInActiveTab() }) {
@@ -50,20 +54,29 @@ struct PageHeaderView: View {
                     }
                 } label: {
                     Image(systemName: "ellipsis")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(.t3TextMuted)
-                        .padding(.leading, 4)
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundColor(isEllipsisHovered ? .t3TextMain : .t3TextMuted)
+                        .frame(width: 24, height: 22)
+                        .background(
+                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                                .fill(isEllipsisHovered ? Color.t3HoverBg : Color.clear)
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous))
                 }
                 .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
                 .fixedSize()
+                .onHover { isEllipsisHovered = $0 }
+                .help("列表操作")
             } else if vm.activeTab != .settings && vm.activeTab != .launch {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 14, weight: .bold))
+                    .font(.system(size: 13.5, weight: .semibold))
                     .foregroundColor(.t3TextMuted)
                     .padding(.leading, 4)
             }
 
-            Spacer()
+            WindowDragArea(isSnapshotMode: isSnapshotMode)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if vm.activeTab == .launch {
                 if isSnapshotMode {
@@ -84,24 +97,40 @@ struct PageHeaderView: View {
                         launchSortLabel
                     }
                     .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
                     .fixedSize()
+                    .onHover { isSortPillHovered = $0 }
+                    .help("排序方式")
                 }
             } else if vm.activeTab != .settings {
+                let useAccentFill = (vm.showArchived && theme.mode != .monochrome)
                 Button(action: { vm.showArchived.toggle() }) {
                     Text(vm.showArchived ? "含已归档" : "进行中")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundColor(vm.showArchived ? .white : .t3TextSub)
+                        .font(ChrysaFont.captionMedium)
+                        .foregroundColor(
+                            useAccentFill
+                                ? theme.accentForeground
+                                : (vm.showArchived || isArchivePillHovered ? .t3TextMain : .t3TextSub)
+                        )
                         .padding(.horizontal, 10)
-                        .padding(.vertical, 2.5)
+                        .padding(.vertical, 3.5)
                         .background(
                             Capsule().fill(
-                                vm.showArchived
+                                useAccentFill
                                     ? theme.accent
-                                    : Color.t3TopBoxBg
+                                    : (vm.showArchived ? Color.t3ControlSelectedFill : (isArchivePillHovered ? Color.t3ControlHoverFill : Color.t3ControlFill))
+                            )
+                        )
+                        .overlay(
+                            Capsule().stroke(
+                                useAccentFill ? Color.clear : (vm.showArchived ? Color.t3ControlSelectedStroke : Color.t3GroupedCardBorder),
+                                lineWidth: 0.8
                             )
                         )
                 }
                 .buttonStyle(.plain)
+                .onHover { isArchivePillHovered = $0 }
+                .help(vm.showArchived ? "点击仅显示进行中项目" : "点击包含已归档项目")
             }
         }
     }
@@ -111,13 +140,16 @@ struct PageHeaderView: View {
             Image(systemName: "arrow.up.arrow.down")
                 .font(.system(size: 10, weight: .medium))
             Text(vm.launchSortOrder.label)
-                .font(.system(size: 11.5, weight: .semibold))
+                .font(ChrysaFont.captionMedium)
         }
-        .foregroundColor(.t3TextSub)
+        .foregroundColor(isSortPillHovered ? .t3TextMain : .t3TextSub)
         .padding(.horizontal, 10)
-        .padding(.vertical, 2.5)
+        .padding(.vertical, 3)
         .background(
-            Capsule().fill(Color.t3TopBoxBg)
+            Capsule().fill(isSortPillHovered ? Color.t3HoverBg : Color.t3TopBoxBg)
+        )
+        .overlay(
+            Capsule().stroke(Color.t3TopBoxBorder, lineWidth: 0.8)
         )
     }
 
@@ -136,6 +168,8 @@ package struct TaskListSectionView: View {
     @ObservedObject var vm: StudioViewModel
     let isSnapshotMode: Bool
     @State private var pendingDeletion: PendingDeletion?
+    @State private var isDropZoneHovered = false
+    @FocusState private var isURLInputFocused: Bool
     @Environment(\.appTheme) private var theme
 
     package struct PendingDeletion {
@@ -173,9 +207,12 @@ package struct TaskListSectionView: View {
             MascotTopDropZoneContainer(vm: vm, isSnapshotMode: isSnapshotMode) {
                 topDropZone
             }
-            .padding(.bottom, 16)
+            .padding(.horizontal, ChrysaMetrics.canvasInset)
+            .padding(.bottom, 14)
 
-            if isSnapshotMode {
+            if currentRows.isEmpty {
+                emptyStateView
+            } else if isSnapshotMode {
                 taskListContent
             } else {
                 ScrollView(.vertical, showsIndicators: false) {
@@ -183,10 +220,18 @@ package struct TaskListSectionView: View {
                 }
             }
         }
+        .onChange(of: vm.inputFocusNonce) { _, _ in
+            if vm.activeTab == .download && !isSnapshotMode {
+                isURLInputFocused = true
+            }
+        }
         .onContinuousHover(coordinateSpace: .local) { phase in
             guard !isSnapshotMode else { return }
-            if case .active(let pt) = phase {
-                vm.mascot.updatePointer(x: pt.x, y: pt.y + 52.0)
+            switch phase {
+            case .active(let pt):
+                vm.mascot.updatePointer(x: pt.x - ChrysaMetrics.canvasInset, y: pt.y + 52.0)
+            case .ended:
+                vm.mascot.clearPointer()
             }
         }
         // Avoid legacy `.alert(item:)` here because ancestor `.alert(item:)` modifiers on macOS swallow child alerts.
@@ -205,13 +250,16 @@ package struct TaskListSectionView: View {
     }
 
     private var topDropZone: some View {
-        HStack(spacing: 10) {
+        let isFocused = isURLInputFocused && vm.activeTab == .download
+
+        return HStack(spacing: 8) {
             if vm.activeTab == .download && !isSnapshotMode {
                 TextField(vm.isMascotSiphoningText ? "" : "粘贴链接或拖入 .txt 列表...", text: $vm.urlInput, axis: .vertical)
                     .lineLimit(1...3)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 12.5))
+                    .font(ChrysaFont.input)
                     .foregroundColor(.t3TextMain)
+                    .focused($isURLInputFocused)
                     .onSubmit { vm.startDownloadFromInputOrClipboard() }
 
                 if !vm.urlInput.isEmpty {
@@ -221,35 +269,56 @@ package struct TaskListSectionView: View {
                             .foregroundColor(.t3TextMuted)
                     }
                     .buttonStyle(.plain)
+                    .help("清空输入")
+                } else if !isFocused && !vm.isMascotSiphoningText {
+                    Text("⌘V")
+                        .font(ChrysaFont.monoSmall)
+                        .foregroundColor(.t3TextMuted.opacity(0.85))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1.5)
+                        .background(
+                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusMicro, style: .continuous)
+                                .fill(Color.t3CanvasBg.opacity(0.7))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusMicro, style: .continuous)
+                                .stroke(Color.t3TopBoxBorder, lineWidth: 0.8)
+                        )
                 }
             } else {
                 Text(activeTabPlaceholder)
-                    .font(.system(size: 12.5))
+                    .font(ChrysaFont.input)
                     .foregroundColor(.t3TextSub)
                     .opacity(vm.isMascotSiphoningText ? 0 : 1)
                 Spacer()
             }
 
-            Button(action: {
+            T3InlineActionButton(title: activeTabActionTitle, tooltip: activeTabActionTooltip) {
                 if vm.activeTab == .download {
                     vm.startDownloadFromInputOrClipboard()
                 } else {
                     vm.pickFileForActiveTab()
                 }
-            }) {
-                Text(activeTabActionTitle)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(theme.accent)
             }
-            .buttonStyle(.plain)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(minHeight: 36)
+        .padding(.leading, 12)
+        .padding(.trailing, 7)
+        .padding(.vertical, 6)
+        .frame(minHeight: ChrysaMetrics.topBoxHeight)
         .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Color.t3TopBoxBg)
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
+                .fill(isFocused ? Color.t3CardBg : Color.t3TopBoxBg)
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
+                .stroke(
+                    isFocused
+                        ? theme.accent.opacity(theme.isDark ? 0.55 : 0.45)
+                        : (isDropZoneHovered ? Color.t3PillBorder : Color.t3TopBoxBorder),
+                    lineWidth: isFocused ? 1.4 : 1
+                )
+        )
+        .onHover { isDropZoneHovered = $0 }
     }
 
     private var activeTabPlaceholder: String {
@@ -259,6 +328,7 @@ package struct TaskListSectionView: View {
         case .patch, .launch, .settings: return "拖入游戏目录 / .exe 或点击选择..."
         }
     }
+
     private var activeTabActionTitle: String {
         switch vm.activeTab {
         case .download: return "+ 新建"
@@ -267,110 +337,215 @@ package struct TaskListSectionView: View {
         }
     }
 
-    private var currentRows: [StudioTask] {
-        let kind: JobKind = switch vm.activeTab {
-        case .download: .download
-        case .unpack: .unpack
-        case .patch, .launch, .settings: .patch
+    private var activeTabActionTooltip: String {
+        switch vm.activeTab {
+        case .download: return "从输入或剪贴板新建下载 (⌘V)"
+        case .unpack:   return "选择要解压的压缩包 (⌘N)"
+        case .patch, .launch, .settings: return "选择要打补丁的游戏目录 (⌘N)"
         }
-        let rawList = vm.tasks(for: kind)
+    }
+
+    private var activeKind: JobKind {
+        switch vm.activeTab {
+        case .download: return .download
+        case .unpack: return .unpack
+        case .patch, .launch, .settings: return .patch
+        }
+    }
+
+    private var allRowsInActiveTab: [StudioTask] {
+        vm.tasks(for: activeKind)
+    }
+
+    private var currentRows: [StudioTask] {
+        let rawList = allRowsInActiveTab
         return vm.showArchived ? rawList : rawList.filter { !$0.isArchived }
+    }
+
+    private var emptyStateView: some View {
+        let hasHiddenArchived = !vm.showArchived && allRowsInActiveTab.contains(where: \.isArchived)
+        let symbol: String = switch vm.activeTab {
+        case .download: "tray.and.arrow.down"
+        case .unpack:   "archivebox"
+        case .patch, .launch, .settings: "puzzlepiece"
+        }
+        let title: String = {
+            if hasHiddenArchived { return "暂无进行中项目" }
+            switch vm.activeTab {
+            case .download: return "暂无下载任务"
+            case .unpack:   return "暂无解压任务"
+            case .patch, .launch, .settings: return "暂无补丁任务"
+            }
+        }()
+        let subtitle: String = {
+            if hasHiddenArchived { return "已有 \(allRowsInActiveTab.count) 项归档记录，可随时切换查看" }
+            switch vm.activeTab {
+            case .download: return "按 ⌘V 粘贴链接，或直接拖入 .txt 下载列表"
+            case .unpack:   return "拖入 .7z / .rar / .zip 压缩包，或点击右上角添加"
+            case .patch, .launch, .settings: return "拖入游戏目录或 .exe，自动配置补丁与 CrossOver 容器"
+            }
+        }()
+
+        return VStack(spacing: 8) {
+            Spacer()
+            Image(systemName: symbol)
+                .font(.system(size: 28, weight: .ultraLight))
+                .foregroundColor(.t3TextMuted.opacity(0.65))
+                .padding(.bottom, 2)
+            Text(title)
+                .font(ChrysaFont.navItemActive)
+                .foregroundColor(.t3TextSub)
+            Text(subtitle)
+                .font(ChrysaFont.caption)
+                .foregroundColor(.t3TextMuted)
+                .multilineTextAlignment(.center)
+            if hasHiddenArchived {
+                Button(action: { vm.showArchived = true }) {
+                    Text("显示已归档项目")
+                        .font(ChrysaFont.control)
+                        .foregroundColor(theme.accent)
+                        .padding(.top, 2)
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, ChrysaMetrics.canvasInset)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var taskListContent: some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(currentRows) { row in
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack(alignment: .center, spacing: 10) {
-                        Button(action: { vm.archiveTask(row) }) {
-                            T3StatusBox(status: row.isArchived ? .done : row.status)
-                                .frame(width: 16, height: 16, alignment: .center)
-                        }
-                        .buttonStyle(.plain)
-                        .help(row.isArchived ? "取消归档" : "归档")
-
-                        Text(row.title)
-                            .font(.system(size: 13.5, weight: row.expanded ? .semibold : .regular))
-                            .strikethrough(row.isArchived, color: .t3TextMuted)
-                            .foregroundColor(rowTitleColor(row))
-                            .lineLimit(1)
-
-                        if row.isArchived {
-                            T3OutlinedPill(text: "已归档", icon: "archivebox")
-                        } else if let pill = row.pill {
-                            T3OutlinedPill(
-                                text: pill,
-                                icon: pill == "试密中" ? "key.fill" : nil
-                            )
-                        }
-
-                        Spacer(minLength: 8)
-
-                        HStack(alignment: .center, spacing: 4) {
-                            Text(rowRightText(row))
-                                .font(.system(size: 11.5, weight: .regular))
-                                .monospacedDigit()
-                                .foregroundColor(.t3TextMuted)
-                                .lineLimit(1)
-                                .padding(.trailing, 4)
-
-                            rowActionSlot(for: row)
-                                .frame(width: 24, height: 24, alignment: .center)
-
-                            if !isSnapshotMode {
-                                Menu {
-                                    taskMenuItems(for: row)
-                                } label: {
-                                    TaskRowMenuIconLabel()
-                                }
-                                .menuStyle(.borderlessButton)
-                                .fixedSize()
-                                .help("更多操作")
-                            }
-                        }
-                    }
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 12)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        vm.toggleExpanded(row)
-                    }
-                    .contextMenu {
-                        taskMenuItems(for: row)
-                    }
-
-                    if row.expanded {
-                        TaskExpandedDetailView(vm: vm, row: row)
-                    }
-                }
-                .background(
-                    Group {
-                        if row.expanded {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Color.white)
-                                .shadow(color: Color.black.opacity(0.07), radius: 12, x: 0, y: 3)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .stroke(Color.black.opacity(0.05), lineWidth: 1)
-                                )
-                        } else {
-                            Color.clear
-                        }
-                    }
+                TaskRowView(
+                    vm: vm,
+                    row: row,
+                    isSnapshotMode: isSnapshotMode,
+                    onRequestDelete: { pendingDeletion = $0 }
                 )
             }
         }
+        .padding(.horizontal, ChrysaMetrics.canvasInset)
+        .padding(.top, 2)
+        .padding(.bottom, 12)
+    }
+}
+
+private struct TaskRowView: View {
+    @ObservedObject var vm: StudioViewModel
+    let row: StudioTask
+    let isSnapshotMode: Bool
+    let onRequestDelete: (TaskListSectionView.PendingDeletion) -> Void
+    @Environment(\.appTheme) private var theme
+    @State private var isHovered = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 10) {
+                Button(action: { vm.archiveTask(row) }) {
+                    T3StatusBox(status: row.isArchived ? .done : row.status)
+                        .frame(width: 16, height: 16, alignment: .center)
+                }
+                .buttonStyle(.plain)
+                .help(row.isArchived ? "取消归档" : "归档")
+
+                Text(row.title)
+                    .font(row.expanded ? ChrysaFont.rowTitleActive : ChrysaFont.rowTitle)
+                    .strikethrough(row.isArchived, color: .t3TextMuted)
+                    .foregroundColor(rowTitleColor)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                if row.isArchived {
+                    T3OutlinedPill(text: "已归档", icon: "archivebox")
+                } else if let pill = row.pill {
+                    T3OutlinedPill(
+                        text: pill,
+                        icon: pill == "试密中" ? "key.fill" : nil
+                    )
+                }
+
+                Spacer(minLength: 8)
+
+                HStack(alignment: .center, spacing: 4) {
+                    Text(rowRightText)
+                        .font(ChrysaFont.caption.monospacedDigit())
+                        .foregroundColor(.t3TextMuted)
+                        .lineLimit(1)
+                        .padding(.trailing, 4)
+
+                    rowActionSlot
+                        .frame(width: 24, height: 24, alignment: .center)
+
+                    if !isSnapshotMode {
+                        Menu {
+                            taskMenuItems
+                        } label: {
+                            TaskRowMenuIconLabel(isRowHovered: isHovered)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                        .help("更多操作")
+                    }
+                }
+            }
+            .padding(.horizontal, ChrysaMetrics.rowInnerInset)
+            .frame(minHeight: ChrysaMetrics.listRowHeight)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                vm.toggleExpanded(row)
+            }
+            .contextMenu {
+                taskMenuItems
+            }
+
+            if row.expanded {
+                TaskExpandedDetailView(vm: vm, row: row)
+            }
+        }
+        .background(
+            Group {
+                if row.expanded {
+                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous)
+                        .fill(Color.t3CardBg)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous)
+                                .stroke(Color.t3PillBorder, lineWidth: 1)
+                        )
+                } else if isHovered && !isSnapshotMode {
+                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
+                        .fill(Color.t3HoverBg)
+                } else {
+                    Color.clear
+                }
+            }
+        )
+        .onHover { isHovered = $0 }
     }
 
-    private func rowRightText(_ row: StudioTask) -> String {
+    private var rowRightText: String {
         if vm.activeTab == .patch && row.status == .done && row.rightText == "▶ 启动" {
             return "已入库"
         }
         return row.rightText
     }
 
+    private var rowTitleColor: Color {
+        if row.isArchived {
+            return .t3TextMuted
+        }
+        if row.expanded {
+            return .t3TextMain
+        }
+        if case .done = row.status {
+            return .t3TextMuted
+        }
+        return .t3TextMain
+    }
+
     @ViewBuilder
-    private func rowActionSlot(for row: StudioTask) -> some View {
+    private var rowActionSlot: some View {
         switch row.status {
         case .failed:
             TaskRowActionIconButton(
@@ -414,23 +589,25 @@ package struct TaskListSectionView: View {
             ) {
                 vm.stopTask(row)
             }
-        default:
+        case .done:
+            if isHovered, !isSnapshotMode, let local = row.localPath, FileManager.default.fileExists(atPath: local) {
+                TaskRowActionIconButton(
+                    systemName: "folder",
+                    tint: theme.accent,
+                    tooltip: "在访达中显示"
+                ) {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: local)])
+                }
+            } else {
+                Color.clear
+            }
+        case .queued:
             Color.clear
         }
     }
 
-    private func rowTitleColor(_ row: StudioTask) -> Color {
-        if row.isArchived {
-            return .t3TextMuted
-        }
-        if case .done = row.status {
-            return .t3TextMuted
-        }
-        return .t3TextMain
-    }
-
     @ViewBuilder
-    private func taskMenuItems(for row: StudioTask) -> some View {
+    private var taskMenuItems: some View {
         Button(action: { vm.beginEditTask(row) }) {
             Label("编辑...", systemImage: "pencil")
         }
@@ -488,14 +665,14 @@ package struct TaskListSectionView: View {
         Divider()
 
         Button(role: .destructive, action: {
-            pendingDeletion = PendingDeletion(task: row, deleteLocalFile: false)
+            onRequestDelete(TaskListSectionView.PendingDeletion(task: row, deleteLocalFile: false))
         }) {
             Label("删除记录", systemImage: "trash")
         }
 
         if let local = row.localPath, FileManager.default.fileExists(atPath: local) {
             Button(role: .destructive, action: {
-                pendingDeletion = PendingDeletion(task: row, deleteLocalFile: true)
+                onRequestDelete(TaskListSectionView.PendingDeletion(task: row, deleteLocalFile: true))
             }) {
                 Label("删除记录及本地文件", systemImage: "trash.fill")
             }
@@ -530,7 +707,7 @@ struct TaskExpandedDetailView: View {
                 .fill(Color.t3Divider)
                 .frame(height: 1)
                 .padding(.leading, 38)
-                .padding(.trailing, 12)
+                .padding(.trailing, ChrysaMetrics.rowInnerInset)
                 .padding(.vertical, 6)
 
             VStack(alignment: .leading, spacing: 8) {
@@ -542,7 +719,7 @@ struct TaskExpandedDetailView: View {
                                     .frame(width: 13, height: 13, alignment: .center)
 
                                 Text(part.filename)
-                                    .font(.system(size: 11.5))
+                                    .font(ChrysaFont.caption)
                                     .foregroundColor(part.status == .succeeded ? .t3TextMuted : .t3TextMain)
                                     .lineLimit(1)
 
@@ -553,8 +730,7 @@ struct TaskExpandedDetailView: View {
                                 Spacer(minLength: 6)
 
                                 Text(partRightText(part))
-                                    .font(.system(size: 11))
-                                    .monospacedDigit()
+                                    .font(ChrysaFont.badge.monospacedDigit())
                                     .foregroundColor(.t3TextMuted)
                                     .lineLimit(1)
 
@@ -590,7 +766,7 @@ struct TaskExpandedDetailView: View {
                             HStack(alignment: .center, spacing: 8) {
                                 ZStack {
                                     RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                        .fill(item.isChecked ? theme.accent : Color.white)
+                                        .fill(item.isChecked ? theme.accent : Color.t3CardBg)
                                         .frame(width: 12, height: 12)
                                     if !item.isChecked {
                                         RoundedRectangle(cornerRadius: 3, style: .continuous)
@@ -599,11 +775,11 @@ struct TaskExpandedDetailView: View {
                                     } else {
                                         Image(systemName: "checkmark")
                                             .font(.system(size: 7.5, weight: .bold))
-                                            .foregroundColor(.white)
+                                            .foregroundColor(theme.accentForeground)
                                     }
                                 }
                                 Text(item.title)
-                                    .font(.system(size: 12.5))
+                                    .font(ChrysaFont.input)
                                     .foregroundColor(.t3TextMain)
                             }
                             .contentShape(Rectangle())
@@ -657,12 +833,13 @@ struct TaskExpandedDetailView: View {
                                     .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .help("复制日志")
                         }
 
                         if showRawOutput, let rawErrorText {
                             ScrollView(.vertical, showsIndicators: true) {
                                 Text(rawErrorText)
-                                    .font(.system(size: 11, design: .monospaced))
+                                    .font(ChrysaFont.monoSmall)
                                     .foregroundColor(.t3TextMain)
                                     .fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -671,7 +848,7 @@ struct TaskExpandedDetailView: View {
                             }
                             .frame(maxHeight: 140)
                             .background(
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
                                     .fill(Color.t3TopBoxBg)
                             )
                         } else {
@@ -684,7 +861,7 @@ struct TaskExpandedDetailView: View {
                                                 .frame(width: 5, height: 5)
                                                 .offset(y: -1)
                                             Text(line.time)
-                                                .font(.system(size: 11, design: .monospaced))
+                                                .font(ChrysaFont.monoSmall)
                                                 .foregroundColor(.t3TextMuted)
                                             Text(line.message)
                                                 .font(.system(size: 11, weight: line.level == .error ? .medium : .regular, design: .monospaced))
@@ -703,37 +880,37 @@ struct TaskExpandedDetailView: View {
                 }
             }
             .padding(.leading, 38)
-            .padding(.trailing, 12)
-            .padding(.bottom, 8)
+            .padding(.trailing, ChrysaMetrics.rowInnerInset)
+            .padding(.bottom, 10)
         } else {
             Rectangle()
                 .fill(Color.t3Divider)
                 .frame(height: 1)
                 .padding(.leading, 38)
-                .padding(.trailing, 12)
+                .padding(.trailing, ChrysaMetrics.rowInnerInset)
                 .padding(.vertical, 6)
 
             Text("暂无记录")
-                .font(.system(size: 11.5))
+                .font(ChrysaFont.caption)
                 .foregroundColor(.t3TextMuted)
                 .padding(.leading, 38)
-                .padding(.bottom, 8)
+                .padding(.bottom, 10)
         }
     }
 
     private func logLevelColor(_ level: LogLevel) -> Color {
         switch level {
-        case .info:    return Color.t3TextMuted.opacity(0.55)
+        case .info:    return Color.t3TextMuted.opacity(0.6)
         case .warning: return Color.t3Amber
-        case .error:   return Color.red.opacity(0.85)
+        case .error:   return Color.t3ErrorText
         }
     }
 
     private func logMessageColor(_ level: LogLevel) -> Color {
         switch level {
         case .info:    return .t3TextSub
-        case .warning: return Color(red: 0.72, green: 0.48, blue: 0.06)
-        case .error:   return Color.red.opacity(0.88)
+        case .warning: return .t3WarningText
+        case .error:   return .t3ErrorText
         }
     }
 
@@ -755,7 +932,7 @@ struct TaskExpandedDetailView: View {
         case .failed, .cancelled:
             Image(systemName: "xmark.circle.fill")
                 .font(.system(size: 11.5))
-                .foregroundColor(Color.red.opacity(0.85))
+                .foregroundColor(.t3ErrorText)
         }
     }
 
@@ -784,6 +961,7 @@ struct TaskExpandedDetailView: View {
 struct GlobalLogDrawerView: View {
     @ObservedObject var vm: StudioViewModel
     @Environment(\.appTheme) private var theme
+    @FocusState private var isLogSearchFocused: Bool
 
     var body: some View {
         let entries = vm.filteredGlobalLogs
@@ -807,17 +985,17 @@ struct GlobalLogDrawerView: View {
                 Button(action: { vm.logErrorsOnly.toggle() }) {
                     HStack(spacing: 4) {
                         Circle()
-                            .fill(Color.red.opacity(0.85))
+                            .fill(Color.t3ErrorText)
                             .frame(width: 5, height: 5)
                         Text("仅错误")
                             .font(.system(size: 11, weight: vm.logErrorsOnly ? .semibold : .regular))
-                            .foregroundColor(vm.logErrorsOnly ? Color.red.opacity(0.88) : .t3TextSub)
+                            .foregroundColor(vm.logErrorsOnly ? .t3ErrorText : .t3TextSub)
                     }
                     .padding(.horizontal, 7)
                     .padding(.vertical, 2)
                     .background(
                         Capsule(style: .continuous)
-                            .fill(vm.logErrorsOnly ? Color.red.opacity(0.10) : Color.clear)
+                            .fill(vm.logErrorsOnly ? Color.t3ErrorPillBg : Color.clear)
                     )
                 }
                 .buttonStyle(.plain)
@@ -830,8 +1008,9 @@ struct GlobalLogDrawerView: View {
                         .foregroundColor(.t3TextMuted)
                     TextField("搜索", text: $vm.logSearchQuery)
                         .textFieldStyle(.plain)
-                        .font(.system(size: 11))
+                        .font(ChrysaFont.monoSmall)
                         .foregroundColor(.t3TextMain)
+                        .focused($isLogSearchFocused)
                         .frame(width: 110)
                     if !vm.logSearchQuery.isEmpty {
                         Button(action: { vm.logSearchQuery = "" }) {
@@ -843,10 +1022,14 @@ struct GlobalLogDrawerView: View {
                     }
                 }
                 .padding(.horizontal, 7)
-                .frame(height: 22)
+                .frame(height: 24)
                 .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
                         .fill(Color.t3TopBoxBg)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                        .stroke(isLogSearchFocused ? theme.accent.opacity(0.45) : Color.t3TopBoxBorder, lineWidth: 0.8)
                 )
 
                 Button(action: { vm.clearLogs() }) {
@@ -857,6 +1040,7 @@ struct GlobalLogDrawerView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .help("清空日志")
 
                 Button(action: { vm.isLogDrawerPresented = false }) {
                     Image(systemName: "chevron.down")
@@ -866,9 +1050,10 @@ struct GlobalLogDrawerView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .help("收起日志抽屉")
             }
-            .padding(.horizontal, 34)
-            .frame(height: 32)
+            .padding(.horizontal, ChrysaMetrics.canvasInset)
+            .frame(height: 34)
             .overlay(
                 Rectangle()
                     .fill(Color.t3Divider)
@@ -880,7 +1065,7 @@ struct GlobalLogDrawerView: View {
                 HStack {
                     Spacer()
                     Text("无记录")
-                        .font(.system(size: 11.5))
+                        .font(ChrysaFont.caption)
                         .foregroundColor(.t3TextMuted)
                     Spacer()
                 }
@@ -896,7 +1081,7 @@ struct GlobalLogDrawerView: View {
                                         .frame(width: 5, height: 5)
                                         .offset(y: -1)
                                     Text(line.time)
-                                        .font(.system(size: 11, design: .monospaced))
+                                        .font(ChrysaFont.monoSmall)
                                         .foregroundColor(.t3TextMuted)
                                     Text(line.module.label)
                                         .font(.system(size: 10.5, weight: .medium))
@@ -917,7 +1102,7 @@ struct GlobalLogDrawerView: View {
                                         .padding(6)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                         .background(
-                                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
                                                 .fill(Color.t3TopBoxBg)
                                         )
                                         .padding(.leading, 12)
@@ -925,24 +1110,30 @@ struct GlobalLogDrawerView: View {
                             }
                         }
                     }
-                    .padding(.horizontal, 34)
+                    .padding(.horizontal, ChrysaMetrics.canvasInset)
                     .padding(.vertical, 8)
                 }
             }
         }
-        .background(Color.white)
+        .background(Color.t3CanvasBg)
+        .onChange(of: vm.searchFocusNonce) { _, _ in
+            if vm.isLogDrawerPresented && vm.activeTab != .launch {
+                isLogSearchFocused = true
+            }
+        }
     }
 
     private func filterPill(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        let useAccent = isSelected && theme.mode != .monochrome
+        return Button(action: action) {
             Text(title)
                 .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
-                .foregroundColor(isSelected ? .white : .t3TextSub)
+                .foregroundColor(useAccent ? theme.accentForeground : (isSelected ? .t3TextMain : .t3TextSub))
                 .padding(.horizontal, 8)
-                .padding(.vertical, 2)
+                .padding(.vertical, 2.5)
                 .background(
                     Capsule(style: .continuous)
-                        .fill(isSelected ? theme.accent : Color.clear)
+                        .fill(useAccent ? theme.accent : (isSelected ? Color.t3ControlSelectedFill : Color.clear))
                 )
         }
         .buttonStyle(.plain)
@@ -950,17 +1141,17 @@ struct GlobalLogDrawerView: View {
 
     private func drawerLevelColor(_ level: LogLevel) -> Color {
         switch level {
-        case .info:    return Color.t3TextMuted.opacity(0.55)
+        case .info:    return Color.t3TextMuted.opacity(0.6)
         case .warning: return Color.t3Amber
-        case .error:   return Color.red.opacity(0.85)
+        case .error:   return Color.t3ErrorText
         }
     }
 
     private func drawerMessageColor(_ level: LogLevel) -> Color {
         switch level {
         case .info:    return .t3TextSub
-        case .warning: return Color(red: 0.72, green: 0.48, blue: 0.06)
-        case .error:   return Color.red.opacity(0.88)
+        case .warning: return .t3WarningText
+        case .error:   return .t3ErrorText
         }
     }
 }
@@ -981,8 +1172,8 @@ private struct TaskRowActionIconButton: View {
                 .foregroundColor(isHovered ? tint : .t3TextSub)
                 .frame(width: size, height: size)
                 .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isHovered ? Color.t3TopBoxBg : Color.clear)
+                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                        .fill(isHovered ? Color.t3HoverBg : Color.clear)
                 )
                 .contentShape(Rectangle())
         }
@@ -995,16 +1186,17 @@ private struct TaskRowActionIconButton: View {
 }
 
 private struct TaskRowMenuIconLabel: View {
+    var isRowHovered: Bool = false
     @State private var isHovered = false
 
     var body: some View {
         Image(systemName: "ellipsis")
             .font(.system(size: 12, weight: .semibold))
-            .foregroundColor(isHovered ? .t3TextMain : .t3TextMuted)
+            .foregroundColor(isHovered ? .t3TextMain : (isRowHovered ? .t3TextSub : .t3TextMuted))
             .frame(width: 24, height: 24)
             .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(isHovered ? Color.t3TopBoxBg : Color.clear)
+                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                    .fill(isHovered ? Color.t3HoverBg : Color.clear)
             )
             .contentShape(Rectangle())
             .onHover { hovering in

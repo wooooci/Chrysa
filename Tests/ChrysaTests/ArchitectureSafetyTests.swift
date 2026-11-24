@@ -284,6 +284,9 @@ struct ArchitectureSafetyTests {
         // 1. Pure UI/preference actions must produce zero log noise
         #expect(vm.logs.isEmpty)
         vm.selectAppIcon(id: "w6_burgundy")
+        vm.setAppearanceMode(.dark)
+        vm.setAppearanceMode(.light)
+        vm.setAppearanceMode(.system)
         vm.toggleFollowAppIconTheme()
         vm.setMascotTheme(.roundMochi)
         vm.setMascotTheme(.grokAstral)
@@ -1476,6 +1479,190 @@ struct ArchitectureSafetyTests {
         await coordinator.updateJob(dlJob.id, status: .succeeded, progress: 1.0)
         try await Task.sleep(nanoseconds: 25_000_000)
         #expect(vm.activePipelineProgressSummary.progress == nil)
+    }
+
+    @Test("Mascot keeps unified S-arch URL intake while differentiating Poke, Idle Theater, and Runner Cheer per theme")
+    @MainActor
+    func mascotBespokePokeIdleTheaterAndRunnerCheer() {
+        var now: TimeInterval = 10.0
+
+        // 1. Forest Cube: Hermit leg-tuck Poke + Moss-stone ember nap + Rotor-leaf cheer
+        let cubeCtrl = MascotController()
+        _ = cubeCtrl.stepTopFrame(at: now, theme: .forestCube, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false)
+        cubeCtrl.triggerBoing()
+        for _ in 0..<18 {
+            now += 1.0 / 60.0
+            _ = cubeCtrl.stepTopFrame(at: now, theme: .forestCube, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false)
+        }
+        #expect(cubeCtrl.sim.cubeLegRetract > 0.75)
+        #expect(abs(cubeCtrl.sim.cubeLeafShiver) > 0.01)
+
+        cubeCtrl.setIdleTheaterPreview(true)
+        for _ in 0..<24 {
+            now += 1.0 / 60.0
+            _ = cubeCtrl.stepTopFrame(at: now, theme: .forestCube, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false)
+        }
+        #expect(cubeCtrl.sim.cubeLegRetract > 0.45)
+        #expect(cubeCtrl.sim.cubeEmberGlow > 0.35)
+        #expect(cubeCtrl.sim.activePose == .sleepy)
+
+        // Unified intake immediately wakes and clears bespoke sleep/poke channels
+        cubeCtrl.triggerIntake(kind: .url, rawText: "https://example.com/archive/build_01.7z")
+        for _ in 0..<24 {
+            now += 1.0 / 60.0
+            _ = cubeCtrl.stepTopFrame(at: now, theme: .forestCube, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false)
+        }
+        #expect(cubeCtrl.sim.cubeEmberGlow < 0.05)
+        #expect(cubeCtrl.sim.mawOpen > 0.5)
+
+        // 2. Round Mochi: Shy cheek-cupping paws Poke + Translucent sleep bubble nap + Wake on pointer move
+        let mochiCtrl = MascotController()
+        mochiCtrl.notifyThemeChanged(.roundMochi)
+        _ = mochiCtrl.stepTopFrame(at: now, theme: .roundMochi, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false)
+        mochiCtrl.triggerBoing()
+        for _ in 0..<20 {
+            now += 1.0 / 60.0
+            _ = mochiCtrl.stepTopFrame(at: now, theme: .roundMochi, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false)
+        }
+        #expect(mochiCtrl.sim.mochiPawShy > 0.75)
+        #expect(mochiCtrl.sim.activePose == .beaming)
+
+        mochiCtrl.setIdleTheaterPreview(false)
+        for _ in 0..<260 {
+            now += 1.0 / 30.0
+            _ = mochiCtrl.stepTopFrame(at: now, theme: .roundMochi, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false)
+        }
+        #expect(mochiCtrl.sim.mochiSleepBubble > 0.85)
+        mochiCtrl.updatePointer(x: 180, y: 40)
+        #expect(mochiCtrl.idleCalmTime == 0)
+
+        // 3. Grok Astral Orb: Zero-G 360° barrel roll Poke + Finish-line Runner Cheer hold
+        let grokCtrl = MascotController()
+        grokCtrl.notifyThemeChanged(.grokAstral)
+        _ = grokCtrl.stepTopFrame(at: now, theme: .grokAstral, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false)
+        grokCtrl.triggerBoing()
+        for _ in 0..<34 {
+            now += 1.0 / 60.0
+            _ = grokCtrl.stepTopFrame(at: now, theme: .grokAstral, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false)
+        }
+        #expect(grokCtrl.sim.grokRollAngle > 2.2)
+
+        _ = grokCtrl.stepRunnerFrame(at: now, theme: .grokAstral, seamX1: 34, seamX2: 570, progress: 0.98, isPaused: false, isSnapshotMode: false)
+        grokCtrl.triggerCheerHop()
+        var cheerFrame = grokCtrl.stepRunnerFrame(at: now, theme: .grokAstral, seamX1: 34, seamX2: 570, progress: nil, isPaused: true, isSnapshotMode: false)
+        for _ in 0..<22 {
+            now += 1.0 / 60.0
+            cheerFrame = grokCtrl.stepRunnerFrame(at: now, theme: .grokAstral, seamX1: 34, seamX2: 570, progress: nil, isPaused: true, isSnapshotMode: false)
+        }
+        #expect(cheerFrame.hasActiveProgress)
+        #expect(!cheerFrame.isPaused)
+        #expect(cheerFrame.cheerProgress > 0.35 && cheerFrame.cheerProgress < 0.75)
+        #expect(cheerFrame.cheerHop > 8.0)
+        #expect(cheerFrame.runnerX > 520)
+    }
+
+    @Test("Mascot universal motion fixes: full blink closure, hover gaze release, knot impulse, work alertness, and smooth runner transitions")
+    @MainActor
+    func mascotUniversalLivelinessFixes() {
+        var now: TimeInterval = 20.0
+
+        // 1. Biological blink genuinely reaches full closure (blinkOpen == 0.0) and rebounds cleanly
+        let blinkCtrl = MascotController()
+        blinkCtrl.notifyThemeChanged(.grokAstral)
+        _ = blinkCtrl.stepTopFrame(at: now, theme: .grokAstral, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false)
+        var minBlinkOpen: CGFloat = 1.0
+        var sawOpenOvershoot = false
+        for _ in 0..<240 {
+            now += 1.0 / 60.0
+            let f = blinkCtrl.stepTopFrame(at: now, theme: .grokAstral, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false)
+            minBlinkOpen = min(minBlinkOpen, f.sim.blinkOpen)
+            if f.sim.blinkOpen > 1.005 {
+                sawOpenOvershoot = true
+            }
+        }
+        #expect(minBlinkOpen == 0.0)
+        #expect(sawOpenOvershoot)
+
+        // 2. Pointer tracking drives Eye-Lead-Head tilt overlap, and clearPointer() releases gaze cleanly
+        let gazeCtrl = MascotController()
+        gazeCtrl.notifyThemeChanged(.roundMochi)
+        _ = gazeCtrl.stepTopFrame(at: now, theme: .roundMochi, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false)
+        gazeCtrl.updatePointer(x: 80, y: 80)
+        var peakLeftLook: CGFloat = 0
+        var peakLeftTilt: CGFloat = 0
+        for _ in 0..<30 {
+            now += 1.0 / 60.0
+            let f = gazeCtrl.stepTopFrame(at: now, theme: .roundMochi, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false)
+            peakLeftLook = min(peakLeftLook, f.sim.lookX)
+            peakLeftTilt = min(peakLeftTilt, f.sim.tiltRad)
+        }
+        #expect(peakLeftLook < -0.65)
+        #expect(peakLeftTilt < -0.04)
+
+        gazeCtrl.clearPointer()
+        var releasedFrame = gazeCtrl.stepTopFrame(at: now, theme: .roundMochi, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false)
+        for _ in 0..<60 {
+            now += 1.0 / 60.0
+            releasedFrame = gazeCtrl.stepTopFrame(at: now, theme: .roundMochi, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false)
+        }
+        #expect(abs(releasedFrame.sim.targetLookX) < 0.10)
+
+        // 3. Poke impulse visibly excites the 8-knot soft-body jelly mesh via boing acceleration
+        gazeCtrl.triggerBoing()
+        var maxKnotDisp: CGFloat = 0
+        for _ in 0..<24 {
+            now += 1.0 / 60.0
+            let f = gazeCtrl.stepTopFrame(at: now, theme: .roundMochi, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false)
+            for k in f.sim.knots {
+                maxKnotDisp = max(maxKnotDisp, hypot(k.x, k.y))
+            }
+        }
+        #expect(maxKnotDisp > 0.6)
+
+        // 4. Active background work keeps the top mascot awake instead of entering long-idle sleep
+        let workCtrl = MascotController()
+        workCtrl.notifyThemeChanged(.roundMochi)
+        _ = workCtrl.stepTopFrame(at: now, theme: .roundMochi, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false, isWorking: true)
+        for _ in 0..<260 {
+            now += 1.0 / 30.0
+            _ = workCtrl.stepTopFrame(at: now, theme: .roundMochi, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false, isWorking: true)
+        }
+        #expect(workCtrl.sim.mochiSleepBubble < 0.05)
+        #expect(workCtrl.sim.activePose != .sleepy)
+
+        // 5. Bottom runner transitions smoothly between running and paused (no single-frame teleport)
+        let runCtrl = MascotController()
+        _ = runCtrl.stepRunnerFrame(at: now, theme: .forestCube, seamX1: 34, seamX2: 570, progress: 0.4, isPaused: false, isSnapshotMode: false)
+        now += 1.0 / 60.0
+        let paused1 = runCtrl.stepRunnerFrame(at: now, theme: .forestCube, seamX1: 34, seamX2: 570, progress: 0.4, isPaused: true, isSnapshotMode: false)
+        #expect(paused1.activeBlend > 0.5 && paused1.activeBlend < 0.98)
+        var settled = paused1
+        for _ in 0..<45 {
+            now += 1.0 / 60.0
+            settled = runCtrl.stepRunnerFrame(at: now, theme: .forestCube, seamX1: 34, seamX2: 570, progress: 0.4, isPaused: true, isSnapshotMode: false)
+        }
+        #expect(settled.activeBlend < 0.05)
+    }
+
+    @MainActor
+    @Test
+    func testAdaptiveThemePaletteResolvesLightAndDarkContrasts() {
+        let lightMono = AppThemePalette.resolve(mode: .monochrome, selectedIconID: "dark_nebula", colorScheme: .light)
+        let darkMono = AppThemePalette.resolve(mode: .monochrome, selectedIconID: "dark_nebula", colorScheme: .dark)
+        #expect(!lightMono.isDark)
+        #expect(darkMono.isDark)
+        #expect(lightMono.accent != darkMono.accent)
+        #expect(lightMono.accentForeground != darkMono.accentForeground)
+
+        let lightBrand = AppThemePalette.resolve(mode: .followAppIcon, selectedIconID: "cultured_prussian", colorScheme: .light)
+        let darkBrand = AppThemePalette.resolve(mode: .followAppIcon, selectedIconID: "cultured_prussian", colorScheme: .dark)
+        #expect(lightBrand.accent != darkBrand.accent)
+        #expect(lightBrand.logoColorTitle == darkBrand.logoColorTitle)
+
+        let customCobalt = AppThemePalette.resolve(mode: .custom, selectedIconID: "dark_nebula", swatch: .cobalt, colorScheme: .dark)
+        let customRose = AppThemePalette.resolve(mode: .custom, selectedIconID: "dark_nebula", swatch: .rose, colorScheme: .dark)
+        #expect(customCobalt.accent != customRose.accent)
+        #expect(customCobalt.activeAccentTitle == "钴蓝")
     }
 }
 

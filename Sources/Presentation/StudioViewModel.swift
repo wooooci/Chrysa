@@ -31,6 +31,9 @@ package final class StudioViewModel: ObservableObject {
     @Published package var logErrorsOnly: Bool = false
     @Published package var logSearchQuery: String = ""
     @Published package var hasUnreadErrorLogs: Bool = false
+    @Published package var isSidebarQuickLaunchExpanded: Bool = true
+    @Published package var inputFocusNonce: Int = 0
+    @Published package var searchFocusNonce: Int = 0
     @Published package private(set) var isMascotSiphoningText: Bool = false
     private var siphonMaskTask: Task<Void, Never>?
 
@@ -48,7 +51,9 @@ package final class StudioViewModel: ObservableObject {
     private var restorationTask: Task<Void, Never>?
     private var bottleScanTask: Task<Void, Never>?
     private var attemptedIconSignatureByID: [UUID: String] = [:]
+    private let inMemoryOnly: Bool
     private var canWriteJobs = true
+    private static let sidebarQuickLaunchDefaultsKey = "Chrysa.SidebarQuickLaunchExpanded.v1"
 
     deinit {
         eventTask?.cancel()
@@ -60,9 +65,20 @@ package final class StudioViewModel: ObservableObject {
     package var iconOptions: [AppIconOption] { settingsStore.iconOptions }
     package var passwords: [String] { settingsStore.settings.passwords }
     package var themePalette: AppThemePalette { AppThemePalette.resolve(settings: settingsStore.settings) }
+    package func resolvedThemePalette(for colorScheme: ColorScheme) -> AppThemePalette {
+        AppThemePalette.resolve(settings: settingsStore.settings, colorScheme: colorScheme)
+    }
+    package var appearanceMode: AppearanceMode {
+        get { settingsStore.settings.appearanceMode }
+        set { setAppearanceMode(newValue) }
+    }
     package var accentColorMode: AccentColorMode {
         get { settingsStore.settings.accentColorMode }
         set { settingsStore.settings.accentColorMode = newValue }
+    }
+    package var accentSwatch: AccentSwatch {
+        get { settingsStore.settings.accentSwatch }
+        set { settingsStore.settings.accentSwatch = newValue }
     }
     package var mascotTheme: MascotTheme {
         get { settingsStore.settings.mascotTheme }
@@ -81,6 +97,10 @@ package final class StudioViewModel: ObservableObject {
         coordinator: PipelineCoordinator
     ) {
         let ephemeral = seedDemoData || inMemoryOnly
+        self.inMemoryOnly = ephemeral
+        if !ephemeral, UserDefaults.standard.object(forKey: Self.sidebarQuickLaunchDefaultsKey) != nil {
+            self.isSidebarQuickLaunchExpanded = UserDefaults.standard.bool(forKey: Self.sidebarQuickLaunchDefaultsKey)
+        }
         let resolvedSettings = settingsStore
         let resolvedTaskStore = taskStore
         let resolvedCoordinator = coordinator
@@ -188,6 +208,17 @@ package final class StudioViewModel: ObservableObject {
         return LaunchGame.sorted(filtered, by: launchSortOrder)
     }
 
+    package var quickLaunchGames: [LaunchGame] {
+        LaunchGame.sorted(launchGames, by: .lastPlayed)
+    }
+
+    package func toggleSidebarQuickLaunch() {
+        isSidebarQuickLaunchExpanded.toggle()
+        if !inMemoryOnly {
+            UserDefaults.standard.set(isSidebarQuickLaunchExpanded, forKey: Self.sidebarQuickLaunchDefaultsKey)
+        }
+    }
+
     package func flushTasksImmediately() async {
         await restorationTask?.value
         bottleScanTask?.cancel()
@@ -251,10 +282,25 @@ package final class StudioViewModel: ObservableObject {
         _ = settingsStore.applyAppIcon(id: id, variant: targetVariant)
     }
 
+    package func setAppearanceMode(_ mode: AppearanceMode) {
+        guard settingsStore.settings.appearanceMode != mode else { return }
+        settingsStore.settings.appearanceMode = mode
+    }
+
     package func setAccentColorMode(_ mode: AccentColorMode) {
         guard settingsStore.settings.accentColorMode != mode else { return }
         settingsStore.settings.accentColorMode = mode
     }
+
+    package func setCustomAccentSwatch(_ swatch: AccentSwatch) {
+        if settingsStore.settings.accentSwatch != swatch {
+            settingsStore.settings.accentSwatch = swatch
+        }
+        if settingsStore.settings.accentColorMode != .custom {
+            settingsStore.settings.accentColorMode = .custom
+        }
+    }
+
     package func toggleFollowAppIconTheme() {
         let next: AccentColorMode = (settingsStore.settings.accentColorMode == .followAppIcon) ? .monochrome : .followAppIcon
         setAccentColorMode(next)
@@ -304,6 +350,78 @@ package final class StudioViewModel: ObservableObject {
             }
         }
         return (nil, true)
+    }
+
+    package func requestPrimaryInputFocus() {
+        inputFocusNonce &+= 1
+    }
+
+    package func requestSearchFocus() {
+        searchFocusNonce &+= 1
+    }
+
+    package var bottomBarStatusSummary: (text: String, isActive: Bool) {
+        let activeJobs = jobs.filter { !$0.isArchived }
+        let running = activeJobs.filter { $0.status == .running }
+        if !running.isEmpty {
+            let dlSpeeds = running
+                .filter { $0.kind == .download }
+                .compactMap { $0.pill }
+                .filter { $0.contains("/s") }
+            if let firstSpeed = dlSpeeds.first {
+                let speedSummary: String
+                if dlSpeeds.count > 1 {
+                    speedSummary = Self.sumSpeedStrings(dlSpeeds) ?? firstSpeed
+                } else {
+                    speedSummary = firstSpeed
+                }
+                return ("\(running.count) 项进行中 · \(speedSummary)", true)
+            }
+            return ("\(running.count) 项进行中", true)
+        }
+        let pausedCount = activeJobs.filter { $0.status == .paused }.count
+        if pausedCount > 0 {
+            return ("\(pausedCount) 项已暂停", false)
+        }
+        switch activeTab {
+        case .launch:
+            return (launchGames.isEmpty ? "暂无游戏" : "共 \(launchGames.count) 款游戏", false)
+        case .settings:
+            return ("外观：\(appearanceMode.displayName)", false)
+        case .download, .unpack, .patch:
+            let kind: JobKind = activeTab == .download ? .download : (activeTab == .unpack ? .unpack : .patch)
+            let count = activeJobs.filter { $0.kind == kind }.count
+            return (count == 0 ? "就绪" : "共 \(count) 项", false)
+        }
+    }
+
+    private static func sumSpeedStrings(_ speeds: [String]) -> String? {
+        var totalMBps: Double = 0
+        var parsedAny = false
+        for raw in speeds {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let parts = trimmed.split(separator: " ")
+            guard parts.count >= 2, let value = Double(parts[0]) else { continue }
+            let unit = parts[1].lowercased()
+            if unit.hasPrefix("gb") {
+                totalMBps += value * 1024.0
+                parsedAny = true
+            } else if unit.hasPrefix("mb") {
+                totalMBps += value
+                parsedAny = true
+            } else if unit.hasPrefix("kb") {
+                totalMBps += value / 1024.0
+                parsedAny = true
+            }
+        }
+        guard parsedAny else { return nil }
+        if totalMBps >= 1024.0 {
+            return String(format: "%.2f GB/s", totalMBps / 1024.0)
+        } else if totalMBps >= 10.0 {
+            return String(format: "%.1f MB/s", totalMBps)
+        } else {
+            return String(format: "%.2f MB/s", totalMBps)
+        }
     }
 
     package func iconPreviewPath(id: String, variant: String) -> String {

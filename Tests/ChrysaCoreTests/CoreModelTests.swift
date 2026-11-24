@@ -14,6 +14,33 @@ struct CoreModelTests {
         #expect(settings.passwords == AppSettings.default.passwords)
         #expect(settings.accentColorMode == .monochrome)
         #expect(settings.mascotTheme == .forestCube)
+        #expect(settings.appearanceMode == .system)
+    }
+
+    @Test
+    func testAppearanceModeRoundTripAndLegacyFallback() throws {
+        for mode in AppearanceMode.allCases {
+            var settings = AppSettings.default
+            settings.appearanceMode = mode
+            let data = try JSONEncoder().encode(settings)
+            let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
+            #expect(decoded.appearanceMode == mode)
+        }
+
+        let legacyJSON = Data(#"{"appearance":{"selectedIconID":"nordic_sage","accentColorMode":"monochrome"}}"#.utf8)
+        let migrated = try JSONDecoder().decode(AppSettings.self, from: legacyJSON)
+        #expect(migrated.appearanceMode == .system)
+        #expect(migrated.accentSwatch == .cobalt)
+        #expect(SteamLanguageOption.schinese.displayName == "简体中文")
+
+        for swatch in AccentSwatch.allCases {
+            var s = AppSettings.default
+            s.accentColorMode = .custom
+            s.accentSwatch = swatch
+            let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(s))
+            #expect(decoded.accentColorMode == .custom)
+            #expect(decoded.accentSwatch == swatch)
+        }
     }
 
     @Test

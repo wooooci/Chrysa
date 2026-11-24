@@ -1,16 +1,26 @@
 import ChrysaCore
 import ChrysaApplication
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
 
 // MARK: - Main Interactive Things 3 Studio View (Root Assembly)
 package struct ThingsStudioMainView: View {
     @ObservedObject package var vm: StudioViewModel
     package var isSnapshotMode: Bool = false
+    @Environment(\.colorScheme) private var systemColorScheme
 
     package init(vm: StudioViewModel, isSnapshotMode: Bool = false) {
         self.vm = vm
         self.isSnapshotMode = isSnapshotMode
+    }
+
+    private var effectiveColorScheme: ColorScheme {
+        vm.appearanceMode.preferredColorScheme ?? systemColorScheme
+    }
+
+    private var resolvedTheme: AppThemePalette {
+        vm.resolvedThemePalette(for: effectiveColorScheme)
     }
 
     private var topBarHeight: CGFloat {
@@ -18,44 +28,59 @@ package struct ThingsStudioMainView: View {
     }
 
     package var body: some View {
+        let theme = resolvedTheme
+
         HStack(spacing: 0) {
             SidebarView(vm: vm, isSnapshotMode: isSnapshotMode)
-                .frame(width: 186)
+                .frame(width: ChrysaMetrics.sidebarWidth)
 
             Rectangle()
                 .fill(Color.t3SidebarBorder)
                 .frame(width: 1)
 
-            mainCanvasView
+            mainCanvasView(theme: theme)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.white)
+                .background(Color.t3CanvasBg)
         }
         .frame(minWidth: 820, minHeight: 560)
-        .background(Color.white)
-        .environment(\.appTheme, vm.themePalette)
-        .onDrop(of: [.fileURL, .plainText, .url], isTargeted: nil) { providers in
+        .background(Color.t3CanvasBg)
+        .environment(\.appTheme, theme)
+        .preferredColorScheme(vm.appearanceMode.preferredColorScheme)
+        .onChange(of: vm.appearanceMode) { _, newMode in
+            guard !isSnapshotMode else { return }
+            NSApp?.appearance = newMode.nsAppearance
+        }
+        .onAppear {
+            guard !isSnapshotMode else { return }
+            NSApp?.appearance = vm.appearanceMode.nsAppearance
+        }
+        .conditionalDrop(enabled: !isSnapshotMode, of: [.fileURL, .plainText, .url]) { providers in
             vm.handleDroppedProviders(providers)
         }
         .sheet(item: $vm.editingTask) { task in
             EditTaskSheetView(vm: vm, task: task)
-                .environment(\.appTheme, vm.themePalette)
-                .tint(vm.themePalette.accent)
+                .environment(\.appTheme, theme)
+                .preferredColorScheme(vm.appearanceMode.preferredColorScheme)
+                .tint(theme.accent)
         }
         .sheet(item: $vm.editingLaunchGame) { game in
             EditLaunchGameSheetView(vm: vm, game: game)
-                .environment(\.appTheme, vm.themePalette)
-                .tint(vm.themePalette.accent)
+                .environment(\.appTheme, theme)
+                .preferredColorScheme(vm.appearanceMode.preferredColorScheme)
+                .tint(theme.accent)
         }
         .launchErrorAlert($vm.launchErrorAlert)
     }
 
-    private var mainCanvasView: some View {
+    private func mainCanvasView(theme: AppThemePalette) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
-                Spacer().frame(height: topBarHeight)
+                WindowDragArea(isSnapshotMode: isSnapshotMode)
+                    .frame(height: topBarHeight)
 
                 PageHeaderView(vm: vm, isSnapshotMode: isSnapshotMode)
                     .frame(height: 30)
+                    .padding(.horizontal, ChrysaMetrics.canvasInset)
                     .padding(.bottom, 12)
 
                 Group {
@@ -70,10 +95,9 @@ package struct ThingsStudioMainView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
-            .padding(.horizontal, 34)
-            .padding(.bottom, 14)
+            .padding(.bottom, 10)
 
-            if vm.isLogDrawerPresented && vm.activeTab != .launch && !isSnapshotMode {
+            if vm.isLogDrawerPresented && !isSnapshotMode {
                 Rectangle()
                     .fill(Color.t3Divider)
                     .frame(height: 1)
@@ -94,71 +118,89 @@ package struct ThingsStudioMainView: View {
                     }
             }
 
-            bottomToolbar
+            bottomToolbar(theme: theme)
         }
     }
 
-    private var bottomToolbar: some View {
-        HStack(spacing: 62) {
-            Button(action: { vm.pickFileForActiveTab() }) {
-                Image(systemName: "plus")
-            }
-            .buttonStyle(.plain)
+    private func bottomToolbar(theme: AppThemePalette) -> some View {
+        let status = vm.bottomBarStatusSummary
 
-            Button(action: {
-                vm.activeTab = .settings
-                vm.settingsCategory = .unpack
-            }) {
-                Image(systemName: "tag")
-                    .foregroundColor(vm.activeTab == .settings && vm.settingsCategory == .unpack ? vm.themePalette.accent : .t3TextSub)
+        return HStack(alignment: .center, spacing: 0) {
+            HStack(spacing: 6) {
+                if status.isActive {
+                    Circle()
+                        .fill(theme.accent)
+                        .frame(width: 6, height: 6)
+                }
+                Text(status.text)
+                    .font(ChrysaFont.caption.monospacedDigit())
+                    .foregroundColor(.t3TextMuted)
+                    .lineLimit(1)
             }
-            .buttonStyle(.plain)
 
-            Button(action: { vm.openDownloadDirectoryInFinder() }) {
-                Image(systemName: "arrow.right")
-            }
-            .buttonStyle(.plain)
+            Spacer(minLength: 12)
 
-            Button(action: { vm.openBottlesDirectoryInFinder() }) {
-                Image(systemName: "magnifyingglass")
-            }
-            .buttonStyle(.plain)
-
-            Button(action: {
-                if vm.activeTab == .launch {
-                    vm.activeTab = .patch
-                    if !vm.isLogDrawerPresented {
-                        vm.toggleLogDrawer()
+            HStack(spacing: 6) {
+                T3ToolbarIconButton(
+                    systemName: "plus",
+                    tooltip: addActionTooltip
+                ) {
+                    if vm.activeTab == .download {
+                        vm.requestPrimaryInputFocus()
+                    } else if vm.activeTab == .launch {
+                        vm.importLaunchGameFromPanel()
+                    } else {
+                        vm.pickFileForActiveTab()
                     }
-                } else {
+                }
+
+                T3ToolbarIconButton(
+                    systemName: "folder",
+                    tooltip: "在访达中打开下载目录"
+                ) {
+                    vm.openDownloadDirectoryInFinder()
+                }
+
+                T3ToolbarIconButton(
+                    systemName: "shippingbox",
+                    tooltip: "在访达中打开 CrossOver 容器目录"
+                ) {
+                    vm.openBottlesDirectoryInFinder()
+                }
+
+                T3ToolbarIconButton(
+                    systemName: "key",
+                    isActive: vm.activeTab == .settings && vm.settingsCategory == .unpack,
+                    tooltip: "解压密码词典"
+                ) {
+                    vm.activeTab = .settings
+                    vm.settingsCategory = .unpack
+                }
+
+                T3ToolbarIconButton(
+                    systemName: "terminal",
+                    isActive: vm.isLogDrawerPresented,
+                    showBadgeDot: vm.hasUnreadErrorLogs,
+                    tooltip: "显示或隐藏诊断日志 (⇧⌘L)"
+                ) {
                     vm.toggleLogDrawer()
                 }
-            }) {
-                Image(systemName: "terminal")
-                    .foregroundColor(vm.isLogDrawerPresented && vm.activeTab != .launch ? vm.themePalette.accent : .t3TextSub)
-                    .overlay(alignment: .topTrailing) {
-                        if vm.hasUnreadErrorLogs {
-                            Circle()
-                                .fill(Color.red.opacity(0.88))
-                                .frame(width: 5, height: 5)
-                                .offset(x: 3.5, y: -2)
-                        }
-                    }
             }
-            .buttonStyle(.plain)
-
-            Button(action: {
-                vm.activeTab = .settings
-            }) {
-                Image(systemName: "slider.horizontal.3")
-                    .foregroundColor(vm.activeTab == .settings ? vm.themePalette.accent : .t3TextSub)
-            }
-            .buttonStyle(.plain)
         }
-        .font(.system(size: 13.5, weight: .medium))
-        .foregroundColor(.t3TextSub)
+        .padding(.horizontal, ChrysaMetrics.canvasInset)
         .frame(maxWidth: .infinity)
-        .frame(height: 38)
+        .frame(height: ChrysaMetrics.bottomBarHeight)
+        .background(Color.t3CanvasBg)
+    }
+
+    private var addActionTooltip: String {
+        switch vm.activeTab {
+        case .download: return "新建下载任务 (⌘N)"
+        case .unpack:   return "添加压缩包 (⌘N)"
+        case .patch:    return "选择游戏目录 (⌘N)"
+        case .launch:   return "导入本地游戏 (⌘N)"
+        case .settings: return "新建任务 (⌘N)"
+        }
     }
 }
 
