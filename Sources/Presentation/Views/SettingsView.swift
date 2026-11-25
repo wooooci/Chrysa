@@ -61,24 +61,16 @@ struct SettingsView: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 // Editorial Category Page Header
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(vm.settingsCategory.rawValue)
-                        .font(ChrysaFont.settingsTitle)
-                        .tracking(ChrysaTracking.pageTitle)
-                        .foregroundColor(.t3TextMain)
-
-                    Text(vm.settingsCategory.pageDescription)
-                        .font(ChrysaFont.control)
-                        .fontWeight(.regular)
-                        .foregroundColor(.t3TextMuted)
-                        .lineLimit(2)
-                }
-                .padding(.bottom, 18)
+                Text(vm.settingsCategory.rawValue)
+                    .font(ChrysaFont.settingsTitle)
+                    .tracking(ChrysaTracking.pageTitle)
+                    .foregroundColor(.t3TextMain)
+                    .padding(.bottom, 14)
 
                 Rectangle()
                     .fill(Color.t3Divider)
                     .frame(height: 1)
-                    .padding(.bottom, 26)
+                    .padding(.bottom, 22)
 
                 settingsCategoryBody
             }
@@ -132,18 +124,14 @@ struct SettingsView: View {
             // Section 2: Theme & Live Preview Stage
             SettingsSection(
                 title: "主题强调色",
-                description: "控制进度环、开关及主要操作的高亮色调"
+                trailingMeta: theme.activeAccentTitle
             ) {
                 T3SettingsGroupCard {
                     liveAppearancePreviewStage
 
                     cardDivider
 
-                    groupedRow(
-                        title: "强调色",
-                        subtitle: theme.activeAccentTitle,
-                        minHeight: 58
-                    ) {
+                    groupedRow(title: "强调色") {
                         accentSwatchStrip
                     }
                 }
@@ -152,7 +140,6 @@ struct SettingsView: View {
             // Section 3: Dedicated App Icon Section (No Longer Squeezed Under Color Dots)
             SettingsSection(
                 title: "应用图标",
-                description: "切换程序坞与访达中显示的应用图标风格",
                 trailingMeta: selectedIconTitle
             ) {
                 T3SettingsGroupCard {
@@ -172,7 +159,6 @@ struct SettingsView: View {
             // Section 4: Dedicated Companion Mascot Section
             SettingsSection(
                 title: "桌面伴生灵",
-                description: "在下载与处理过程中陪伴你的轻量动态伙伴",
                 trailingMeta: activeMascot.displayName
             ) {
                 LazyVGrid(columns: mascotColumns, spacing: 12) {
@@ -364,7 +350,7 @@ struct SettingsView: View {
         return VStack(alignment: .leading, spacing: ChrysaMetrics.settingsSectionGap) {
             SettingsSection(title: "存储与并发") {
                 T3SettingsGroupCard {
-                    groupedRow(title: "下载目录", subtitle: "新建下载任务的默认保存位置") {
+                    groupedRow(title: "下载目录") {
                         if isSnapshotMode {
                             T3MenuPill(text: dirLabel, icon: "folder")
                         } else {
@@ -390,7 +376,7 @@ struct SettingsView: View {
 
                     cardDivider
 
-                    groupedRow(title: "同时下载", subtitle: "队列中允许并行执行的下载任务上限") {
+                    groupedRow(title: "同时下载") {
                         if isSnapshotMode {
                             T3MenuPill(text: "\(maxJobsCount) 个任务")
                         } else {
@@ -416,7 +402,7 @@ struct SettingsView: View {
 
                     cardDivider
 
-                    groupedRow(title: "并发连接", subtitle: "单文件多分片拉取的最大线程数") {
+                    groupedRow(title: "并发连接") {
                         if isSnapshotMode {
                             T3MenuPill(text: "\(connCount) 线程")
                         } else {
@@ -444,7 +430,7 @@ struct SettingsView: View {
 
             SettingsSection(title: "网络与加速") {
                 T3SettingsGroupCard {
-                    groupedRow(title: "代理策略", subtitle: "智能分流仅对海外受限网盘走系统代理") {
+                    groupedRow(title: "代理策略") {
                         let policy = vm.settingsStore.settings.proxyPolicy
                         HStack(spacing: 2) {
                             ForEach(ProxyPolicy.allCases) { option in
@@ -477,11 +463,12 @@ struct SettingsView: View {
                             RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
                                 .stroke(Color.t3GroupedCardBorder, lineWidth: 0.8)
                         )
+                        .help("智能分流仅对海外受限网盘走系统代理")
                     }
 
                     cardDivider
 
-                    groupedRow(title: "加速凭证", subtitle: "可选填入 Pixeldrain / Debrid API 密钥") {
+                    groupedRow(title: "加速凭证") {
                         if isSnapshotMode {
                             let configured = AccelerationCredentialKind.allCases
                                 .filter { !vm.accelerationCredential(for: $0).isEmpty }
@@ -560,7 +547,7 @@ struct SettingsView: View {
                 T3SettingsGroupCard {
                     T3GroupedToggleRow(
                         title: "解压后清理压缩包",
-                        subtitle: "解压完整校验成功后自动移除源压缩包以释放磁盘空间",
+                        subtitle: nil,
                         isOn: vm.settingsStore.settings.deleteArchiveAfterUnpack,
                         onToggle: { vm.toggleDeleteArchiveAfterUnpack() }
                     )
@@ -569,7 +556,6 @@ struct SettingsView: View {
 
             SettingsSection(
                 title: "密码词典",
-                description: "遇到加密压缩包时按顺序自动尝试以下常用密码",
                 trailingMeta: "共 \(vm.passwords.count) 条"
             ) {
                 T3SettingsGroupCard {
@@ -681,7 +667,7 @@ struct SettingsView: View {
         return VStack(alignment: .leading, spacing: ChrysaMetrics.settingsSectionGap) {
             SettingsSection(title: "CrossOver 环境") {
                 T3SettingsGroupCard {
-                    groupedRow(title: "容器目录", subtitle: "扫描和新建 CrossOver 游戏容器的根目录") {
+                    groupedRow(title: "容器目录") {
                         if isSnapshotMode {
                             T3MenuPill(text: bottlesLabel, icon: "folder")
                         } else {
@@ -710,7 +696,7 @@ struct SettingsView: View {
 
                     cardDivider
 
-                    groupedRow(title: "默认语言", subtitle: "补丁写入 Goldberg 配置时使用的游戏内语言") {
+                    groupedRow(title: "默认语言") {
                         if isSnapshotMode {
                             T3MenuPill(text: lang.displayName)
                         } else {
@@ -740,7 +726,7 @@ struct SettingsView: View {
                 T3SettingsGroupCard {
                     T3GroupedToggleRow(
                         title: "自动流转",
-                        subtitle: "下载完成自动解压，并在解压完成后自动执行补丁入库",
+                        subtitle: "下载 → 解压 → 补丁",
                         isOn: vm.settingsStore.settings.autoRelay,
                         onToggle: { vm.toggleAutoRelay() }
                     )
@@ -779,41 +765,31 @@ struct SettingsView: View {
             trailing()
         }
         .padding(.horizontal, 18)
-        .padding(.vertical, 12)
+        .padding(.vertical, 9)
         .frame(minHeight: minHeight)
     }
 }
 
-// MARK: - Editorial Section Wrapper (Clear Title / Description / Content Separation)
+// MARK: - Editorial Section Wrapper (Clear Title / Meta / Content Separation)
 private struct SettingsSection<Content: View>: View {
     let title: String
-    var description: String? = nil
     var trailingMeta: String? = nil
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(title)
-                        .font(ChrysaFont.sectionTitle)
-                        .tracking(ChrysaTracking.sectionTitle)
-                        .foregroundColor(.t3TextMain)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(title)
+                    .font(ChrysaFont.sectionTitle)
+                    .tracking(ChrysaTracking.sectionTitle)
+                    .foregroundColor(.t3TextMain)
 
-                    Spacer(minLength: 8)
+                Spacer(minLength: 8)
 
-                    if let trailingMeta, !trailingMeta.isEmpty {
-                        Text(trailingMeta)
-                            .font(ChrysaFont.caption.monospacedDigit())
-                            .foregroundColor(.t3TextMuted)
-                    }
-                }
-
-                if let description, !description.isEmpty {
-                    Text(description)
-                        .font(ChrysaFont.helper)
+                if let trailingMeta, !trailingMeta.isEmpty {
+                    Text(trailingMeta)
+                        .font(ChrysaFont.caption.monospacedDigit())
                         .foregroundColor(.t3TextMuted)
-                        .lineLimit(2)
                 }
             }
             .padding(.horizontal, 2)
@@ -864,7 +840,7 @@ private struct T3GroupedToggleRow: View {
             T3ToggleSwitch(isOn: isOn)
         }
         .padding(.horizontal, 18)
-        .padding(.vertical, 12)
+        .padding(.vertical, 9)
         .frame(minHeight: ChrysaMetrics.settingRowHeight)
         .background(isHovered ? Color.t3HoverBg : Color.clear)
         .contentShape(Rectangle())

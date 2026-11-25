@@ -250,10 +250,6 @@ struct SidebarView: View {
                     )
 
                 Spacer(minLength: 0)
-
-                Text("\(vm.launchGames.count)")
-                    .font(ChrysaFont.captionMedium.monospacedDigit())
-                    .foregroundColor(isHighlighted ? .t3TextSub : .t3TextMuted)
             }
             .padding(.leading, 8)
             .padding(.trailing, hasQuickGames ? 4 : 8)

@@ -114,7 +114,7 @@ package enum ChrysaMetrics {
 
     // Unified Box & Row Heights (Proportional to 14pt Desktop Scale)
     package static let showcaseCardHeight: CGFloat = 86
-    package static let settingRowHeight: CGFloat = 58
+    package static let settingRowHeight: CGFloat = 48
     package static let listRowHeight: CGFloat = 40
     package static let bottomBarHeight: CGFloat = 40
     package static let topBoxHeight: CGFloat = 38
@@ -190,15 +190,6 @@ package enum SettingsCategory: String, CaseIterable, Identifiable, Codable, Send
         case .download:   return StudioTab.download.symbolName
         case .unpack:     return StudioTab.unpack.symbolName
         case .patch:      return StudioTab.patch.symbolName
-        }
-    }
-
-    package var pageDescription: String {
-        switch self {
-        case .appearance: return "调整明暗外观、主题强调色、应用图标与桌面伴生灵"
-        case .download:   return "管理默认下载目录、并行任务数、分片连接与网络代理"
-        case .unpack:     return "配置解压后清理规则与加密压缩包自动试密词典"
-        case .patch:      return "配置 CrossOver 容器路径、游戏默认语言与自动流转"
         }
     }
 }
