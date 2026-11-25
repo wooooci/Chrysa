@@ -37,13 +37,13 @@ package struct ThingsStudioMainView: View {
             Rectangle()
                 .fill(Color.t3SidebarBorder)
                 .frame(width: 1)
+                .ignoresSafeArea(.container, edges: .top)
 
             mainCanvasView(theme: theme)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.t3CanvasBg)
+                .background(Color.t3CanvasBg.ignoresSafeArea(.container, edges: .top))
         }
         .frame(minWidth: 820, minHeight: 560)
-        .background(Color.t3CanvasBg)
         .environment(\.appTheme, theme)
         .preferredColorScheme(vm.appearanceMode.preferredColorScheme)
         .onChange(of: vm.appearanceMode) { _, newMode in

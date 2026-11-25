@@ -49,20 +49,18 @@ struct SidebarView: View {
             .padding(.horizontal, 10)
 
             if showQuickCard {
-                SidebarQuickLaunchDockCard(
+                SidebarArcFavoritesGrid(
                     vm: vm,
                     games: quickGames,
                     isSnapshotMode: isSnapshotMode
                 )
                 .padding(.horizontal, 10)
-                .padding(.top, 6)
-                .padding(.bottom, 5)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .transition(.opacity)
-            } else {
-                WindowDragArea(isSnapshotMode: isSnapshotMode)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.top, 8)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
+
+            WindowDragArea(isSnapshotMode: isSnapshotMode)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             sidebarRow(tab: .settings, title: "设置", count: "")
                 .padding(.horizontal, 10)
@@ -82,7 +80,10 @@ struct SidebarView: View {
                 }
             }
         }
-        .background(T3SidebarBackdropView(isSnapshotMode: isSnapshotMode))
+        .background(
+            T3SidebarBackdropView(isSnapshotMode: isSnapshotMode)
+                .ignoresSafeArea(.container, edges: .top)
+        )
     }
 
     private func launchSidebarRow(hasQuickGames: Bool) -> some View {
@@ -203,8 +204,8 @@ struct SidebarView: View {
     }
 }
 
-// MARK: - Full-Height Sidebar Quick-Launch Dock Card (Scrollable Icon Wall + Anchored Continue-Playing Spotlight)
-private struct SidebarQuickLaunchDockCard: View {
+// MARK: - Arc-Style Unboxed Adaptive Favorites Grid (Content-Sized, Floating Directly on Translucent Sidebar)
+private struct SidebarArcFavoritesGrid: View {
     @ObservedObject var vm: StudioViewModel
     let games: [LaunchGame]
     let isSnapshotMode: Bool
@@ -212,57 +213,86 @@ private struct SidebarQuickLaunchDockCard: View {
 
     @State private var hoveredGame: LaunchGame? = nil
     @State private var dropTargetedGame: LaunchGame? = nil
-    @State private var isPlayButtonHovered = false
-    @State private var isFolderButtonHovered = false
 
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 6), count: 4)
+    private let tileHeight: CGFloat = 44
+    private let gridSpacing: CGFloat = 6
+    private let maxVisibleRows: Int = 4
 
-    private var spotlightGame: LaunchGame? {
-        dropTargetedGame ?? hoveredGame ?? games.first
+    private var columnCount: Int {
+        min(max(games.count, 1), 3)
+    }
+
+    private var columns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: gridSpacing), count: columnCount)
+    }
+
+    private var totalRows: Int {
+        let count = max(games.count, 1)
+        return (count + columnCount - 1) / columnCount
+    }
+
+    private var needsScroll: Bool {
+        totalRows > maxVisibleRows
+    }
+
+    private var maxGridHeight: CGFloat {
+        CGFloat(maxVisibleRows) * tileHeight + CGFloat(maxVisibleRows - 1) * gridSpacing
+    }
+
+    private var activeHintGame: LaunchGame? {
+        dropTargetedGame ?? hoveredGame
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Upper Region: Scrollable All-Games Icon Wall
-            if isSnapshotMode {
-                iconGridContent
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            } else {
+        VStack(alignment: .leading, spacing: 6) {
+            if needsScroll && !isSnapshotMode {
                 ScrollView(.vertical, showsIndicators: false) {
-                    iconGridContent
+                    gridBody
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .frame(height: maxGridHeight)
+            } else {
+                gridBody
             }
 
-            // Lower Region: Anchored "Continue Playing / Hover Spotlight" Panel
-            if let focused = spotlightGame {
-                Rectangle()
-                    .fill(Color.t3Divider)
-                    .frame(height: 1)
-
-                spotlightPanel(for: focused)
+            if let hintGame = activeHintGame {
+                let isDrop = (dropTargetedGame?.id == hintGame.id)
+                HStack(spacing: 4) {
+                    Image(systemName: isDrop ? "puzzlepiece.extension" : "play.fill")
+                        .font(.system(size: isDrop ? 9.5 : 8, weight: .semibold))
+                        .foregroundColor(isDrop ? theme.accent : .t3TextMuted)
+                    Text(isDrop ? "松开安装补丁 · \(hintGame.title)" : hintGame.title)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(isDrop ? theme.accent : .t3TextSub)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 4)
+                    if !isDrop {
+                        Text(hintGame.lastPlayedDisplayText())
+                            .font(.system(size: 10, weight: .regular).monospacedDigit())
+                            .foregroundColor(.t3TextMuted)
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.horizontal, 4)
+                .frame(height: 16)
+                .transition(.opacity)
             }
         }
-        .background(theme.isDark ? Color.white.opacity(0.038) : Color.black.opacity(0.028))
-        .clipShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous)
-                .stroke(Color.t3GroupedCardBorder, lineWidth: 1)
-        )
+        .animation(.easeOut(duration: 0.14), value: activeHintGame?.id)
     }
 
-    private var iconGridContent: some View {
-        LazyVGrid(columns: columns, spacing: 6) {
+    private var gridBody: some View {
+        LazyVGrid(columns: columns, spacing: gridSpacing) {
             ForEach(games) { game in
-                QuickLaunchIconTile(
+                ArcFavoriteTile(
                     vm: vm,
                     game: game,
+                    tileHeight: tileHeight,
                     isHovered: hoveredGame?.id == game.id,
                     isDropTargeted: dropTargetedGame?.id == game.id,
-                    isFocused: spotlightGame?.id == game.id && hoveredGame == nil && dropTargetedGame == nil,
                     isSnapshotMode: isSnapshotMode,
-                    onHoverChange: { isHovering in
-                        if isHovering {
+                    onHoverChange: { hovering in
+                        if hovering {
                             hoveredGame = game
                         } else if hoveredGame?.id == game.id {
                             hoveredGame = nil
@@ -278,199 +308,41 @@ private struct SidebarQuickLaunchDockCard: View {
                 )
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 9)
-    }
-
-    private func spotlightPanel(for game: LaunchGame) -> some View {
-        let isDrop = (dropTargetedGame?.id == game.id)
-        let isHoveringIcon = (hoveredGame?.id == game.id)
-        let eyebrowText: String = {
-            if isDrop { return "松开安装补丁" }
-            if isHoveringIcon { return "单击直启" }
-            return game.lastPlayedAt != nil ? "上次游玩" : "最近入库"
-        }()
-        let subtitleText: String = {
-            if let bottle = game.bottleName?.trimmingCharacters(in: .whitespacesAndNewlines), !bottle.isEmpty {
-                return bottle
-            }
-            switch game.source {
-            case .patchPipeline: return "补丁自动入库"
-            case .crossoverScan: return "CrossOver 容器"
-            case .manualImport:  return "本地导入"
-            }
-        }()
-        let isAccentMode = (theme.mode != .monochrome)
-        let playFill: Color = {
-            if isAccentMode {
-                return theme.accent.opacity(isPlayButtonHovered ? (theme.isDark ? 0.28 : 0.20) : (theme.isDark ? 0.18 : 0.12))
-            }
-            return isPlayButtonHovered ? Color.t3ControlHoverFill : Color.t3ControlSelectedFill
-        }()
-        let playBorder: Color = {
-            if isAccentMode {
-                return theme.accent.opacity(theme.isDark ? 0.34 : 0.26)
-            }
-            return Color.t3ControlSelectedStroke
-        }()
-        let playForeground: Color = isAccentMode ? theme.accent : .t3TextMain
-
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 4) {
-                Text(eyebrowText)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(isDrop ? theme.accent : .t3TextMuted)
-                Spacer(minLength: 4)
-                Text(game.lastPlayedDisplayText())
-                    .font(.system(size: 10, weight: .regular).monospacedDigit())
-                    .foregroundColor(.t3TextMuted)
-                    .lineLimit(1)
-            }
-
-            HStack(alignment: .center, spacing: 8) {
-                QuickLaunchMiniIcon(
-                    icon: vm.launchGameIcon(for: game),
-                    title: game.title,
-                    size: 28,
-                    cornerRadius: ChrysaMetrics.radiusSmall
-                )
-
-                VStack(alignment: .leading, spacing: 1.5) {
-                    Text(game.title)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.t3TextMain)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Text(subtitleText)
-                        .font(.system(size: 10, weight: .regular))
-                        .foregroundColor(.t3TextMuted)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                Spacer(minLength: 0)
-            }
-
-            HStack(spacing: 5) {
-                Button(action: { vm.launchGame(game) }) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "play.fill")
-                            .font(.system(size: 9, weight: .semibold))
-                        Text(game.lastPlayedAt != nil ? "继续游玩" : "启动游戏")
-                            .font(.system(size: 11.5, weight: .medium))
-                    }
-                    .foregroundColor(playForeground)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: ChrysaMetrics.controlHeight)
-                    .background(
-                        RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
-                            .fill(playFill)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
-                            .stroke(playBorder, lineWidth: 0.9)
-                    )
-                    .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .onHover { isPlayButtonHovered = $0 }
-                .help("启动「\(game.title)」")
-
-                if !isSnapshotMode && vm.hasAccessibleDirectory(for: game) {
-                    Button(action: { vm.openLaunchGameDirectory(game) }) {
-                        Image(systemName: "folder")
-                            .font(.system(size: 11, weight: .regular))
-                            .foregroundColor(isFolderButtonHovered ? .t3TextMain : .t3TextSub)
-                            .frame(width: ChrysaMetrics.controlHeight, height: ChrysaMetrics.controlHeight)
-                            .background(
-                                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
-                                    .fill(isFolderButtonHovered ? Color.t3ControlHoverFill : Color.t3ControlFill)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
-                                    .stroke(Color.t3GroupedCardBorder, lineWidth: 0.9)
-                            )
-                            .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .onHover { isFolderButtonHovered = $0 }
-                    .help("打开游戏目录")
-                }
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
-        .background(theme.isDark ? Color.white.opacity(0.022) : Color.black.opacity(0.018))
     }
 }
 
-private struct QuickLaunchMiniIcon: View {
-    let icon: NSImage?
-    let title: String
-    let size: CGFloat
-    let cornerRadius: CGFloat
-    @Environment(\.appTheme) private var theme
-
-    private var monogram: String {
-        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let first = trimmed.first else { return "?" }
-        return String(first).uppercased()
-    }
-
-    var body: some View {
-        if let icon {
-            Image(nsImage: icon)
-                .resizable()
-                .interpolation(.high)
-                .aspectRatio(contentMode: .fill)
-                .frame(width: size, height: size)
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .stroke(Color.t3CardBorder, lineWidth: 0.6)
-                )
-        } else {
-            ZStack {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(theme.isDark ? Color.white.opacity(0.075) : Color.black.opacity(0.055))
-                    .frame(width: size, height: size)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .stroke(Color.t3GroupedCardBorder, lineWidth: 0.75)
-                    )
-                Text(monogram)
-                    .font(.system(size: size * 0.41, weight: .semibold, design: .rounded))
-                    .foregroundColor(.t3TextSub)
-            }
-        }
-    }
-}
-
-private struct QuickLaunchIconTile: View {
+private struct ArcFavoriteTile: View {
     @ObservedObject var vm: StudioViewModel
     let game: LaunchGame
+    let tileHeight: CGFloat
     let isHovered: Bool
     let isDropTargeted: Bool
-    let isFocused: Bool
     let isSnapshotMode: Bool
     let onHoverChange: (Bool) -> Void
     let onDropTargetChange: (Bool) -> Void
     @Environment(\.appTheme) private var theme
 
-    private var ringColor: Color {
+    private var tileFill: Color {
+        if isDropTargeted {
+            return theme.accent.opacity(theme.isDark ? 0.22 : 0.14)
+        }
+        if isHovered {
+            return theme.isDark ? Color.white.opacity(0.115) : Color.white.opacity(0.82)
+        }
+        return theme.isDark ? Color.white.opacity(0.056) : Color.black.opacity(0.035)
+    }
+
+    private var tileBorder: Color {
         if isDropTargeted {
             return theme.accent
         }
         if isHovered {
-            return theme.mode == .monochrome
-                ? Color.t3TextMain.opacity(theme.isDark ? 0.62 : 0.72)
-                : theme.accent
+            if theme.mode != .monochrome {
+                return theme.accent.opacity(theme.isDark ? 0.58 : 0.48)
+            }
+            return theme.isDark ? Color.white.opacity(0.18) : Color.black.opacity(0.12)
         }
-        if isFocused {
-            return theme.mode == .monochrome
-                ? Color.t3TextMain.opacity(theme.isDark ? 0.28 : 0.30)
-                : theme.accent.opacity(0.55)
-        }
-        return Color.clear
+        return theme.isDark ? Color.white.opacity(0.075) : Color.black.opacity(0.062)
     }
 
     var body: some View {
@@ -481,20 +353,26 @@ private struct QuickLaunchIconTile: View {
         )
 
         Button(action: { vm.launchGame(game) }) {
-            QuickLaunchMiniIcon(
-                icon: icon,
-                title: game.title,
-                size: 30,
-                cornerRadius: ChrysaMetrics.radiusSmall
-            )
-            .padding(2)
-            .overlay(
-                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
-                    .stroke(ringColor, lineWidth: isDropTargeted || isHovered ? 1.5 : 1.1)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous))
+            ZStack {
+                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous)
+                    .fill(tileFill)
+                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous)
+                    .stroke(tileBorder, lineWidth: isDropTargeted ? 1.5 : 0.9)
+
+                ArcGameGlyph(
+                    icon: icon,
+                    title: game.title,
+                    iconSize: 28,
+                    monogramSize: 26
+                )
+                .scaleEffect(isHovered ? 1.05 : 1.0)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: tileHeight)
+            .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ArcTilePressStyle())
+        .animation(.easeOut(duration: 0.14), value: isHovered)
         .onHover { onHoverChange($0) }
         .conditionalDrop(enabled: !isSnapshotMode, of: [.fileURL], isTargeted: dropBinding) { providers in
             vm.handleDroppedPatchProviders(providers, for: game)
@@ -521,6 +399,71 @@ private struct QuickLaunchIconTile: View {
         .task(id: StudioViewModel.launchGameIconSignature(for: game)) {
             guard !isSnapshotMode else { return }
             await vm.loadLaunchGameIconIfNeeded(for: game)
+        }
+    }
+}
+
+private struct ArcTilePressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
+            .animation(.spring(response: 0.22, dampingFraction: 0.72), value: configuration.isPressed)
+    }
+}
+
+private struct ArcGameGlyph: View {
+    let icon: NSImage?
+    let title: String
+    let iconSize: CGFloat
+    let monogramSize: CGFloat
+    @Environment(\.appTheme) private var theme
+
+    private var monogram: String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first else { return "?" }
+        return String(first).uppercased()
+    }
+
+    private var mutedTone: Color {
+        let palette: [Color] = [
+            Color(red: 0.36, green: 0.58, blue: 0.90), // Slate Blue
+            Color(red: 0.28, green: 0.70, blue: 0.54), // Sage Emerald
+            Color(red: 0.84, green: 0.58, blue: 0.28), // Warm Ochre
+            Color(red: 0.68, green: 0.48, blue: 0.86), // Muted Lavender
+            Color(red: 0.82, green: 0.44, blue: 0.52), // Dusty Rose
+            Color(red: 0.32, green: 0.66, blue: 0.76), // Muted Teal
+            Color(red: 0.52, green: 0.56, blue: 0.88), // Periwinkle
+            Color(red: 0.76, green: 0.66, blue: 0.34)  // Soft Brass
+        ]
+        var hash: UInt64 = 14695981039346656037
+        for byte in title.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1099511628211
+        }
+        return palette[Int(hash % UInt64(palette.count))]
+    }
+
+    var body: some View {
+        if let icon {
+            Image(nsImage: icon)
+                .resizable()
+                .interpolation(.high)
+                .aspectRatio(contentMode: .fill)
+                .frame(width: iconSize, height: iconSize)
+                .clipShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                        .stroke(Color.black.opacity(theme.isDark ? 0.22 : 0.08), lineWidth: 0.5)
+                )
+        } else {
+            ZStack {
+                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                    .fill(mutedTone.opacity(theme.isDark ? 0.20 : 0.14))
+                    .frame(width: monogramSize, height: monogramSize)
+                Text(monogram)
+                    .font(.system(size: monogramSize * 0.48, weight: .semibold, design: .rounded))
+                    .foregroundColor(theme.isDark ? mutedTone.opacity(0.95) : mutedTone.opacity(0.88))
+            }
         }
     }
 }

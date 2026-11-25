@@ -19,7 +19,7 @@ extension Color {
     // Core Surfaces (Obsidian Dark #0F1013 / Pure Paper Light #FFFFFF)
     package static let t3CanvasBg             = adaptive(light: rgb(1.000, 1.000, 1.000), dark: rgb(0.059, 0.063, 0.075)) // #FFFFFF / #0F1013
     package static let t3SidebarBg            = adaptive(light: rgb(0.957, 0.961, 0.969), dark: rgb(0.075, 0.078, 0.094)) // #F4F5F7 / #131418
-    package static let t3SidebarVeil          = adaptive(light: rgb(0.965, 0.969, 0.976, 0.62), dark: rgb(0.055, 0.059, 0.071, 0.56))
+    package static let t3SidebarVeil          = adaptive(light: rgb(0.965, 0.969, 0.976, 0.42), dark: rgb(0.055, 0.059, 0.071, 0.36))
     package static let t3SidebarActive        = adaptive(light: rgb(0.000, 0.000, 0.000, 0.068), dark: rgb(1.000, 1.000, 1.000, 0.105))
     package static let t3SidebarBorder        = adaptive(light: rgb(0.000, 0.000, 0.000, 0.075), dark: rgb(1.000, 1.000, 1.000, 0.075))
 
