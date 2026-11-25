@@ -11,16 +11,23 @@ struct SidebarView: View {
     @Environment(\.appTheme) private var theme
 
     @State private var hoveredSidebarTab: StudioTab? = nil
+    @State private var hoveredSettingsCategory: SettingsCategory? = nil
+    @State private var isBackHovered = false
     @State private var isLaunchChevronHovered = false
 
     private var topBarHeight: CGFloat {
         isSnapshotMode ? 38 : 10
     }
 
-    var body: some View {
-        let quickGames = vm.quickLaunchGames
-        let showQuickCard = vm.isSidebarQuickLaunchExpanded && !quickGames.isEmpty
+    private var appVersionLabel: String {
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        if let short, !short.isEmpty {
+            return "Chrysa v\(short)"
+        }
+        return "Chrysa"
+    }
 
+    var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ZStack(alignment: .leading) {
                 WindowDragArea(isSnapshotMode: isSnapshotMode)
@@ -39,6 +46,136 @@ struct SidebarView: View {
             }
             .frame(height: topBarHeight)
 
+            if vm.activeTab == .settings {
+                settingsSidebarBody
+            } else {
+                workspaceSidebarBody
+            }
+        }
+        .background(
+            T3SidebarBackdropView(isSnapshotMode: isSnapshotMode)
+                .ignoresSafeArea(.container, edges: .top)
+        )
+    }
+
+    // MARK: - Dedicated Settings Navigation Sidebar (Linear / Vetta Pattern)
+    private var settingsSidebarBody: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Back to Workspace Anchor
+            Button(action: { vm.exitSettings() }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundColor(isBackHovered ? .t3TextMain : .t3TextSub)
+                    Text("返回")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundColor(isBackHovered ? .t3TextMain : .t3TextSub)
+                    Spacer(minLength: 0)
+                    Text("Esc")
+                        .font(.system(size: 10, weight: .regular, design: .monospaced))
+                        .foregroundColor(.t3TextMuted.opacity(isBackHovered ? 0.85 : 0.5))
+                }
+                .padding(.horizontal, 8)
+                .frame(height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                        .fill(isBackHovered ? Color.t3HoverBg : Color.clear)
+                )
+                .animation(ChrysaMotion.hover(isBackHovered), value: isBackHovered)
+                .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 10)
+            .onHover { isBackHovered = $0 }
+            .help("返回工作台 (Esc)")
+
+            Text("设置")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundColor(.t3TextMain)
+                .padding(.leading, 18)
+                .padding(.top, 14)
+                .padding(.bottom, 10)
+
+            VStack(spacing: 2) {
+                ForEach(SettingsCategory.allCases) { cat in
+                    settingsCategoryRow(cat)
+                }
+            }
+            .padding(.horizontal, 10)
+
+            WindowDragArea(isSnapshotMode: isSnapshotMode)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            Text(appVersionLabel)
+                .font(ChrysaFont.helper.monospacedDigit())
+                .foregroundColor(.t3TextMuted.opacity(0.75))
+                .padding(.horizontal, 18)
+                .padding(.bottom, 12)
+        }
+        .backgroundPreferenceValue(SettingsCategoryBoundsKey.self) { bounds in
+            GeometryReader { proxy in
+                if let anchor = bounds[vm.settingsCategory] {
+                    let rect = proxy[anchor]
+                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                        .fill(Color.t3SidebarActive)
+                        .frame(width: rect.width, height: rect.height)
+                        .offset(x: rect.minX, y: rect.minY)
+                        .animation(isSnapshotMode ? nil : ChrysaMotion.tabGlide, value: vm.settingsCategory)
+                }
+            }
+        }
+    }
+
+    private func settingsCategoryRow(_ cat: SettingsCategory) -> some View {
+        let isHighlighted = (vm.settingsCategory == cat)
+        let isHovered = (hoveredSettingsCategory == cat && !isHighlighted)
+
+        return HStack(alignment: .center, spacing: 8) {
+            Image(systemName: cat.symbolName)
+                .symbolRenderingMode(.monochrome)
+                .font(.system(size: 13, weight: isHighlighted ? .medium : .regular))
+                .foregroundStyle(isHighlighted ? theme.iconActive : theme.iconInactive)
+                .frame(width: 20, height: 20, alignment: .center)
+
+            Text(cat.rawValue)
+                .font(isHighlighted ? ChrysaFont.navItemActive : ChrysaFont.navItem)
+                .foregroundColor(
+                    isHighlighted
+                        ? .t3TextMain
+                        : (isHovered ? .t3TextMain : .t3TextMain.opacity(0.86))
+                )
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .frame(height: ChrysaMetrics.navRowHeight)
+        .background(
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                .fill(isHovered ? Color.t3HoverBg : Color.clear)
+                .animation(ChrysaMotion.hover(isHovered), value: isHovered)
+        )
+        .contentShape(Rectangle())
+        .anchorPreference(key: SettingsCategoryBoundsKey.self, value: .bounds) { [cat: $0] }
+        .onHover { hovering in
+            if hovering {
+                hoveredSettingsCategory = cat
+            } else if hoveredSettingsCategory == cat {
+                hoveredSettingsCategory = nil
+            }
+        }
+        .onInstantPress {
+            if vm.settingsCategory != cat {
+                vm.settingsCategory = cat
+            }
+        }
+    }
+
+    // MARK: - Primary Workspace Sidebar
+    private var workspaceSidebarBody: some View {
+        let quickGames = vm.quickLaunchGames
+        let showQuickCard = vm.isSidebarQuickLaunchExpanded && !quickGames.isEmpty
+
+        return VStack(alignment: .leading, spacing: 0) {
             VStack(spacing: 2) {
                 sidebarRow(tab: .download, title: "下载", count: "\(vm.jobs(of: .download).filter { !$0.isArchived }.count)")
                 sidebarRow(tab: .unpack,   title: "解压", count: "\(vm.jobs(of: .unpack).filter { !$0.isArchived }.count)")
@@ -80,10 +217,6 @@ struct SidebarView: View {
                 }
             }
         }
-        .background(
-            T3SidebarBackdropView(isSnapshotMode: isSnapshotMode)
-                .ignoresSafeArea(.container, edges: .top)
-        )
     }
 
     private func launchSidebarRow(hasQuickGames: Bool) -> some View {
@@ -200,7 +333,9 @@ struct SidebarView: View {
             }
         }
         .onInstantPress {
-            if vm.activeTab != tab {
+            if tab == .settings {
+                vm.openSettings()
+            } else if vm.activeTab != tab {
                 vm.activeTab = tab
             }
         }

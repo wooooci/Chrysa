@@ -7,8 +7,15 @@ import UniformTypeIdentifiers
 
 @MainActor
 package final class StudioViewModel: ObservableObject {
-    @Published package var activeTab: StudioTab = .download
+    @Published package var activeTab: StudioTab = .download {
+        didSet {
+            if activeTab != .settings {
+                lastWorkspaceTab = activeTab
+            }
+        }
+    }
     @Published package var settingsCategory: SettingsCategory = .appearance
+    private var lastWorkspaceTab: StudioTab = .download
     @Published package var urlInput: String = ""
     @Published package var newPasswordInput: String = ""
     @Published package var showArchived: Bool = false
@@ -87,6 +94,21 @@ package final class StudioViewModel: ObservableObject {
     package var autoRelay: Bool {
         get { settingsStore.settings.autoRelay }
         set { settingsStore.settings.autoRelay = newValue }
+    }
+
+    package func openSettings(category: SettingsCategory? = nil) {
+        if activeTab != .settings {
+            lastWorkspaceTab = activeTab
+        }
+        if let category {
+            settingsCategory = category
+        }
+        activeTab = .settings
+    }
+
+    package func exitSettings() {
+        guard activeTab == .settings else { return }
+        activeTab = (lastWorkspaceTab == .settings) ? .download : lastWorkspaceTab
     }
 
     package init(

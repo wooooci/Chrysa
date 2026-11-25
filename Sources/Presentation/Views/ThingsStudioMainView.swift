@@ -74,51 +74,56 @@ package struct ThingsStudioMainView: View {
 
     private func mainCanvasView(theme: AppThemePalette) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 0) {
-                WindowDragArea(isSnapshotMode: isSnapshotMode)
-                    .frame(height: topBarHeight)
-
-                PageHeaderView(vm: vm, isSnapshotMode: isSnapshotMode)
-                    .frame(height: 30)
-                    .padding(.horizontal, ChrysaMetrics.canvasInset)
-                    .padding(.bottom, 12)
-
-                Group {
-                    switch vm.activeTab {
-                    case .settings:
-                        SettingsView(vm: vm, isSnapshotMode: isSnapshotMode)
-                    case .launch:
-                        LaunchLibraryView(vm: vm, isSnapshotMode: isSnapshotMode)
-                    case .download, .unpack, .patch:
-                        TaskListSectionView(vm: vm, isSnapshotMode: isSnapshotMode)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            }
-            .padding(.bottom, 10)
-
-            if vm.isLogDrawerPresented && !isSnapshotMode {
-                Rectangle()
-                    .fill(Color.t3Divider)
-                    .frame(height: 1)
-                    .overlay(alignment: .bottom) {
-                        MascotBottomProgressOverlay(vm: vm, isSnapshotMode: isSnapshotMode)
-                    }
-                GlobalLogDrawerView(vm: vm)
-                    .frame(height: 200)
-                Rectangle()
-                    .fill(Color.t3Divider)
-                    .frame(height: 1)
+            if vm.activeTab == .settings {
+                SettingsView(vm: vm, isSnapshotMode: isSnapshotMode, topBarHeight: topBarHeight)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             } else {
-                Rectangle()
-                    .fill(Color.t3Divider)
-                    .frame(height: 1)
-                    .overlay(alignment: .bottom) {
-                        MascotBottomProgressOverlay(vm: vm, isSnapshotMode: isSnapshotMode)
-                    }
-            }
+                VStack(alignment: .leading, spacing: 0) {
+                    WindowDragArea(isSnapshotMode: isSnapshotMode)
+                        .frame(height: topBarHeight)
 
-            bottomToolbar(theme: theme)
+                    PageHeaderView(vm: vm, isSnapshotMode: isSnapshotMode)
+                        .frame(height: 30)
+                        .padding(.horizontal, ChrysaMetrics.canvasInset)
+                        .padding(.bottom, 12)
+
+                    Group {
+                        switch vm.activeTab {
+                        case .launch:
+                            LaunchLibraryView(vm: vm, isSnapshotMode: isSnapshotMode)
+                        case .download, .unpack, .patch:
+                            TaskListSectionView(vm: vm, isSnapshotMode: isSnapshotMode)
+                        case .settings:
+                            EmptyView()
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                }
+                .padding(.bottom, 10)
+
+                if vm.isLogDrawerPresented && !isSnapshotMode {
+                    Rectangle()
+                        .fill(Color.t3Divider)
+                        .frame(height: 1)
+                        .overlay(alignment: .bottom) {
+                            MascotBottomProgressOverlay(vm: vm, isSnapshotMode: isSnapshotMode)
+                        }
+                    GlobalLogDrawerView(vm: vm)
+                        .frame(height: 200)
+                    Rectangle()
+                        .fill(Color.t3Divider)
+                        .frame(height: 1)
+                } else {
+                    Rectangle()
+                        .fill(Color.t3Divider)
+                        .frame(height: 1)
+                        .overlay(alignment: .bottom) {
+                            MascotBottomProgressOverlay(vm: vm, isSnapshotMode: isSnapshotMode)
+                        }
+                }
+
+                bottomToolbar(theme: theme)
+            }
         }
     }
 
@@ -173,8 +178,7 @@ package struct ThingsStudioMainView: View {
                     isActive: vm.activeTab == .settings && vm.settingsCategory == .unpack,
                     tooltip: "解压密码词典"
                 ) {
-                    vm.activeTab = .settings
-                    vm.settingsCategory = .unpack
+                    vm.openSettings(category: .unpack)
                 }
 
                 T3ToolbarIconButton(

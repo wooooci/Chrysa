@@ -88,7 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor @objc private func openSettingsFromMenu(_ sender: Any?) {
-        vm?.activeTab = .settings
+        vm?.openSettings()
     }
 
     @MainActor @objc private func selectDownloadTab(_ sender: Any?) {

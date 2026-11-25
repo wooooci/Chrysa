@@ -3,68 +3,88 @@ import ChrysaApplication
 import SwiftUI
 import AppKit
 
+// MARK: - Editorial Centered Settings View (Linear / Vetta / Cursor Spacious Architecture)
 struct SettingsView: View {
     @ObservedObject var vm: StudioViewModel
     let isSnapshotMode: Bool
+    var topBarHeight: CGFloat = 10
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var colorScheme
 
-    @State private var hoveredSettingsCategory: SettingsCategory? = nil
     @State private var selectedCredentialKind: AccelerationCredentialKind = .pixeldrain
     @State private var hoveredIconID: String? = nil
     @State private var hoveredPasswordIdx: Int? = nil
-    @State private var isPasswordBarHovered = false
     @FocusState private var isPasswordInputFocused: Bool
     @FocusState private var isCredentialFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Secondary Category Bar with Low-Glare Matte Gliding Pill
-            HStack(spacing: 4) {
-                ForEach(SettingsCategory.allCases) { cat in
-                    settingsCategoryPill(cat)
-                }
-                Spacer()
-            }
-            .backgroundPreferenceValue(SettingsCategoryBoundsKey.self) { bounds in
-                GeometryReader { proxy in
-                    if let anchor = bounds[vm.settingsCategory] {
-                        let rect = proxy[anchor]
-                        RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
-                            .fill(Color.t3SidebarActive)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
-                                    .stroke(Color.t3GroupedCardBorder, lineWidth: 0.8)
-                            )
-                            .frame(width: rect.width, height: rect.height)
-                            .offset(x: rect.minX, y: rect.minY)
-                            .animation(ChrysaMotion.tabGlide, value: vm.settingsCategory)
-                    }
-                }
-            }
-            .padding(.bottom, 12)
-            .overlay(
-                Rectangle()
-                    .fill(Color.t3Divider)
-                    .frame(height: 1),
-                alignment: .bottom
-            )
-            .padding(.horizontal, ChrysaMetrics.canvasInset)
-            .padding(.bottom, 14)
+            WindowDragArea(isSnapshotMode: isSnapshotMode)
+                .frame(height: topBarHeight)
 
             if isSnapshotMode {
-                settingsCategoryBody
-                    .frame(maxWidth: ChrysaMetrics.settingsMaxWidth, alignment: .leading)
-                    .padding(.horizontal, ChrysaMetrics.canvasInset)
+                Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay(alignment: .top) {
+                        centeredSettingsColumn
+                            .padding(.top, 14)
+                            .padding(.bottom, 28)
+                    }
+                    .clipped()
             } else {
                 ScrollView(.vertical, showsIndicators: false) {
-                    settingsCategoryBody
-                        .frame(maxWidth: ChrysaMetrics.settingsMaxWidth, alignment: .leading)
-                        .padding(.horizontal, ChrysaMetrics.canvasInset)
-                        .padding(.bottom, 20)
+                    centeredSettingsColumn
+                        .padding(.top, 14)
+                        .padding(.bottom, 48)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .onKeyPress(.escape) {
+            guard !isSnapshotMode else { return .ignored }
+            if isPasswordInputFocused {
+                isPasswordInputFocused = false
+                return .handled
+            }
+            if isCredentialFocused {
+                isCredentialFocused = false
+                return .handled
+            }
+            vm.exitSettings()
+            return .handled
+        }
+    }
+
+    private var centeredSettingsColumn: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+
+            VStack(alignment: .leading, spacing: 0) {
+                // Editorial Category Page Header
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(vm.settingsCategory.rawValue)
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(.t3TextMain)
+
+                    Text(vm.settingsCategory.pageDescription)
+                        .font(.system(size: 12.5, weight: .regular))
+                        .foregroundColor(.t3TextMuted)
+                        .lineLimit(2)
+                }
+                .padding(.bottom, 18)
+
+                Rectangle()
+                    .fill(Color.t3Divider)
+                    .frame(height: 1)
+                    .padding(.bottom, 26)
+
+                settingsCategoryBody
+            }
+            .frame(maxWidth: ChrysaMetrics.settingsMaxWidth, alignment: .leading)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 36)
     }
 
     @ViewBuilder
@@ -81,47 +101,9 @@ struct SettingsView: View {
         }
     }
 
-    private func settingsCategoryPill(_ cat: SettingsCategory) -> some View {
-        let isHighlighted = (vm.settingsCategory == cat)
-        let isHovered = (hoveredSettingsCategory == cat && !isHighlighted)
-
-        return Text(cat.rawValue)
-            .font(ChrysaFont.controlSemibold)
-            .opacity(0)
-            .overlay {
-                Text(cat.rawValue)
-                    .font(isHighlighted ? ChrysaFont.controlSemibold : ChrysaFont.control)
-                    .foregroundColor(
-                        isHighlighted
-                            ? .t3TextMain
-                            : (isHovered ? .t3TextMain : .t3TextSub)
-                    )
-            }
-            .padding(.horizontal, 12)
-            .frame(height: ChrysaMetrics.controlHeight)
-            .background(
-                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
-                    .fill(isHovered ? Color.t3HoverBg : Color.clear)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous))
-            .anchorPreference(key: SettingsCategoryBoundsKey.self, value: .bounds) { [cat: $0] }
-            .onHover { hovering in
-                if hovering {
-                    hoveredSettingsCategory = cat
-                } else if hoveredSettingsCategory == cat {
-                    hoveredSettingsCategory = nil
-                }
-            }
-            .onInstantPress {
-                if vm.settingsCategory != cat {
-                    vm.settingsCategory = cat
-                }
-            }
-    }
-
-    // MARK: 1. Appearance Settings (Miniature Window Cards + Live Preview Card + Swatches + Mascot Gallery)
+    // MARK: 1. Appearance Settings (Generous 30pt Section Separation & Distinct Roles)
     private var settingsAppearanceView: some View {
-        let mascotColumns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 4)
+        let mascotColumns = Array(repeating: GridItem(.flexible(), spacing: 12), count: 4)
         let selectedID = vm.settingsStore.settings.selectedIconID
         let variant = vm.settingsStore.settings.selectedIconVariant
         let activeMascot = vm.mascotTheme
@@ -129,14 +111,10 @@ struct SettingsView: View {
         let selectedIconTitle = vm.iconOptions.first(where: { $0.id == selectedID })?.title
             .components(separatedBy: " · ").last ?? theme.logoColorTitle
 
-        return VStack(alignment: .leading, spacing: 14) {
-            // Section 1: Miniature Window Appearance Mode Picker
-            VStack(alignment: .leading, spacing: 8) {
-                Text("外观模式")
-                    .font(ChrysaFont.sectionTitle)
-                    .foregroundColor(.t3TextMain)
-
-                HStack(spacing: 12) {
+        return VStack(alignment: .leading, spacing: ChrysaMetrics.settingsSectionGap) {
+            // Section 1: Appearance Mode Miniature Windows
+            SettingsSection(title: "外观模式") {
+                HStack(spacing: 14) {
                     ForEach(AppearanceMode.allCases) { mode in
                         AppearanceModeWindowCard(
                             mode: mode,
@@ -149,53 +127,55 @@ struct SettingsView: View {
                 }
             }
 
-            // Section 2: Grouped Card with Live Preview + Accent Swatch Row + Bare App Icon Row
-            VStack(alignment: .leading, spacing: 8) {
-                Text("主题与图标")
-                    .font(ChrysaFont.sectionTitle)
-                    .foregroundColor(.t3TextMain)
-
+            // Section 2: Theme & Live Preview Stage
+            SettingsSection(
+                title: "主题强调色",
+                description: "控制进度环、开关及主要操作的高亮色调"
+            ) {
                 T3SettingsGroupCard {
-                    // Live Miniature Preview Stage (What You See Is What You Get)
-                    liveAppearancePreviewStrip
+                    liveAppearancePreviewStage
 
                     cardDivider
 
-                    // Accent Color Swatches Row
                     groupedRow(
                         title: "强调色",
                         subtitle: theme.activeAccentTitle,
-                        minHeight: ChrysaMetrics.settingRowHeight
+                        minHeight: 58
                     ) {
                         accentSwatchStrip
-                    }
-
-                    cardDivider
-
-                    // App Icon Row (Clean Bare Icons, No Nested Card Boxes)
-                    groupedRow(
-                        title: "应用图标",
-                        subtitle: selectedIconTitle,
-                        minHeight: ChrysaMetrics.settingRowHeight
-                    ) {
-                        HStack(spacing: 8) {
-                            ForEach(vm.iconOptions) { opt in
-                                compactAppIconButton(opt, isSelected: selectedID == opt.id, variant: variant)
-                            }
-                        }
                     }
                 }
             }
 
-            // Section 3: Mascot Companion Gallery with External Captions
-            VStack(alignment: .leading, spacing: 8) {
-                Text("伴生灵")
-                    .font(ChrysaFont.sectionTitle)
-                    .foregroundColor(.t3TextMain)
+            // Section 3: Dedicated App Icon Section (No Longer Squeezed Under Color Dots)
+            SettingsSection(
+                title: "应用图标",
+                description: "切换程序坞与访达中显示的应用图标风格",
+                trailingMeta: selectedIconTitle
+            ) {
+                T3SettingsGroupCard {
+                    HStack(spacing: 0) {
+                        ForEach(Array(vm.iconOptions.enumerated()), id: \.element.id) { idx, opt in
+                            if idx > 0 {
+                                Spacer(minLength: 6)
+                            }
+                            compactAppIconButton(opt, isSelected: selectedID == opt.id, variant: variant)
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 16)
+                }
+            }
 
-                LazyVGrid(columns: mascotColumns, spacing: 10) {
+            // Section 4: Dedicated Companion Mascot Section
+            SettingsSection(
+                title: "桌面伴生灵",
+                description: "在下载与处理过程中陪伴你的轻量动态伙伴",
+                trailingMeta: activeMascot.displayName
+            ) {
+                LazyVGrid(columns: mascotColumns, spacing: 12) {
                     ForEach(MascotTheme.allCases) { option in
-                        VStack(alignment: .leading, spacing: 5) {
+                        VStack(alignment: .leading, spacing: 7) {
                             MascotThemeCardView(
                                 option: option,
                                 isSelected: activeMascot == option,
@@ -205,7 +185,7 @@ struct SettingsView: View {
                                 vm.setMascotTheme(option)
                             }
                             Text(option.displayName)
-                                .font(ChrysaFont.caption)
+                                .font(.system(size: 12, weight: activeMascot == option ? .medium : .regular))
                                 .foregroundColor(activeMascot == option ? .t3TextMain : .t3TextMuted)
                                 .lineLimit(1)
                         }
@@ -215,17 +195,17 @@ struct SettingsView: View {
         }
     }
 
-    private var liveAppearancePreviewStrip: some View {
+    /// Airy 96pt preview stage with generous breathing room around a centered simulated task row (Vetta-grade spacing)
+    private var liveAppearancePreviewStage: some View {
         ZStack {
-            // Subtle micro-dot background texture (restrained studio feel)
             Canvas { ctx, size in
-                let step: CGFloat = 14
+                let step: CGFloat = 16
                 let dotColor = theme.isDark
-                    ? Color.white.opacity(0.055)
-                    : Color.black.opacity(0.055)
-                var y: CGFloat = 8
+                    ? Color.white.opacity(0.05)
+                    : Color.black.opacity(0.05)
+                var y: CGFloat = 10
                 while y < size.height {
-                    var x: CGFloat = 10
+                    var x: CGFloat = 12
                     while x < size.width {
                         ctx.fill(
                             Path(ellipseIn: CGRect(x: x, y: y, width: 1.5, height: 1.5)),
@@ -237,6 +217,7 @@ struct SettingsView: View {
                 }
             }
 
+            // Floating compact preview item centered inside open negative space
             HStack(alignment: .center, spacing: 10) {
                 T3PieRing(progress: 0.68, size: 15, color: theme.accent)
 
@@ -247,18 +228,25 @@ struct SettingsView: View {
 
                 T3OutlinedPill(text: "48.4 MB/s")
 
-                Spacer(minLength: 8)
-
-                Text("1.47 / 2.16 GB")
-                    .font(ChrysaFont.caption.monospacedDigit())
-                    .foregroundColor(.t3TextMuted)
+                Spacer(minLength: 10)
 
                 T3ToggleSwitch(isOn: true)
                     .allowsHitTesting(false)
             }
             .padding(.horizontal, 14)
+            .frame(height: 42)
+            .frame(maxWidth: 440)
+            .background(
+                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
+                    .fill(Color.t3CardBg)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
+                    .stroke(Color.t3CardBorder, lineWidth: 1)
+            )
+            .padding(.horizontal, 24)
         }
-        .frame(height: ChrysaMetrics.settingRowHeight)
+        .frame(height: 96)
         .background(Color.t3PreviewWellBg)
     }
 
@@ -266,8 +254,7 @@ struct SettingsView: View {
         let currentMode = vm.accentColorMode
         let currentSwatch = vm.accentSwatch
 
-        return HStack(spacing: 8) {
-            // 1. Monochrome Split Dot
+        return HStack(spacing: 9) {
             AccentDotButton(
                 isSelected: currentMode == .monochrome,
                 ringColor: theme.isDark ? Color.white.opacity(0.65) : Color.black.opacity(0.65),
@@ -287,7 +274,6 @@ struct SettingsView: View {
                 vm.setAccentColorMode(.monochrome)
             }
 
-            // 2. Follow App Icon Color Dot
             AccentDotButton(
                 isSelected: currentMode == .followAppIcon,
                 ringColor: theme.logoAccent,
@@ -306,9 +292,8 @@ struct SettingsView: View {
             Rectangle()
                 .fill(Color.t3Divider)
                 .frame(width: 1, height: 14)
-                .padding(.horizontal, 1)
+                .padding(.horizontal, 2)
 
-            // 3. Curated Low-Saturation Studio Swatches
             ForEach(AccentSwatch.allCases) { swatch in
                 let col = AppThemePalette.swatchColor(for: swatch, colorScheme: colorScheme)
                 let selected = (currentMode == .custom && currentSwatch == swatch)
@@ -336,25 +321,25 @@ struct SettingsView: View {
                 Image(nsImage: nsImg)
                     .resizable()
                     .interpolation(.high)
-                    .frame(width: 30, height: 30)
-                    .clipShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous))
+                    .frame(width: 38, height: 38)
+                    .clipShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous))
             } else {
                 let previewTint = AppThemePalette.logoAccentColor(for: opt.id, colorScheme: colorScheme)
-                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
                     .fill(previewTint.opacity(0.22))
                     .overlay(
-                        RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                        RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
                             .stroke(previewTint.opacity(0.55), lineWidth: 1)
                     )
-                    .frame(width: 30, height: 30)
+                    .frame(width: 38, height: 38)
             }
         }
-        .padding(2)
+        .padding(3)
         .overlay(
-            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
-                .stroke(ringColor, lineWidth: isSelected ? 1.6 : 1.0)
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous)
+                .stroke(ringColor, lineWidth: isSelected ? 1.8 : 1.0)
         )
-        .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous))
         .onHover { hovering in
             if hovering {
                 hoveredIconID = opt.id
@@ -368,18 +353,14 @@ struct SettingsView: View {
         .help("\(opt.title) · \(opt.subtitle)")
     }
 
-    // MARK: 2. Download Settings (Grouped Cards with Helper Subtitles)
+    // MARK: 2. Download Settings
     private var settingsDownloadView: some View {
         let dirLabel = vm.settingsStore.settings.displayDownloadDirectory
         let connCount = vm.settingsStore.settings.maxConcurrentConnections
         let maxJobsCount = vm.settingsStore.settings.maxConcurrentDownloads
 
-        return VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("存储与并发")
-                    .font(ChrysaFont.sectionTitle)
-                    .foregroundColor(.t3TextMain)
-
+        return VStack(alignment: .leading, spacing: ChrysaMetrics.settingsSectionGap) {
+            SettingsSection(title: "存储与并发") {
                 T3SettingsGroupCard {
                     groupedRow(title: "下载目录", subtitle: "新建下载任务的默认保存位置") {
                         if isSnapshotMode {
@@ -459,11 +440,7 @@ struct SettingsView: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("网络与加速")
-                    .font(ChrysaFont.sectionTitle)
-                    .foregroundColor(.t3TextMain)
-
+            SettingsSection(title: "网络与加速") {
                 T3SettingsGroupCard {
                     groupedRow(title: "代理策略", subtitle: "智能分流仅对海外受限网盘走系统代理") {
                         let policy = vm.settingsStore.settings.proxyPolicy
@@ -557,7 +534,7 @@ struct SettingsView: View {
                                     }
                                 }
                                 .padding(.horizontal, 8)
-                                .frame(width: 170, height: ChrysaMetrics.controlHeight)
+                                .frame(width: 162, height: ChrysaMetrics.controlHeight)
                                 .background(
                                     RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
                                         .fill(isCredentialFocused ? Color.t3CanvasBg : Color.t3PreviewWellBg)
@@ -574,14 +551,10 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: 3. Unpack Settings (Grouped Cards)
+    // MARK: 3. Unpack Settings
     private var settingsUnpackView: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("解压行为")
-                    .font(ChrysaFont.sectionTitle)
-                    .foregroundColor(.t3TextMain)
-
+        VStack(alignment: .leading, spacing: ChrysaMetrics.settingsSectionGap) {
+            SettingsSection(title: "解压行为") {
                 T3SettingsGroupCard {
                     T3GroupedToggleRow(
                         title: "解压后清理压缩包",
@@ -592,18 +565,12 @@ struct SettingsView: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text("密码词典")
-                        .font(ChrysaFont.sectionTitle)
-                        .foregroundColor(.t3TextMain)
-                    Text("共 \(vm.passwords.count) 条")
-                        .font(ChrysaFont.helper.monospacedDigit())
-                        .foregroundColor(.t3TextMuted)
-                }
-
+            SettingsSection(
+                title: "密码词典",
+                description: "遇到加密压缩包时按顺序自动尝试以下常用密码",
+                trailingMeta: "共 \(vm.passwords.count) 条"
+            ) {
                 T3SettingsGroupCard {
-                    // Top input bar embedded cleanly inside card
                     HStack(alignment: .center, spacing: 8) {
                         if !isSnapshotMode {
                             TextField("添加解压密码...", text: $vm.newPasswordInput)
@@ -633,11 +600,10 @@ struct SettingsView: View {
                             vm.addPassword()
                         }
                     }
-                    .padding(.leading, 14)
-                    .padding(.trailing, 8)
-                    .frame(height: ChrysaMetrics.topBoxHeight)
+                    .padding(.leading, 18)
+                    .padding(.trailing, 10)
+                    .frame(height: 42)
                     .background(isPasswordInputFocused ? Color.t3CanvasBg : Color.t3PreviewWellBg)
-                    .onHover { isPasswordBarHovered = $0 }
 
                     cardDivider
 
@@ -687,8 +653,8 @@ struct SettingsView: View {
                     .buttonStyle(.plain)
                     .help("删除该密码")
                 }
-                .padding(.horizontal, 14)
-                .frame(height: ChrysaMetrics.topBoxHeight)
+                .padding(.horizontal, 18)
+                .frame(height: 40)
                 .background(isHovered ? Color.t3HoverBg : Color.clear)
                 .onHover { hovering in
                     if hovering {
@@ -705,17 +671,13 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: 4. Patch & CrossOver Settings (Grouped Card)
+    // MARK: 4. Patch & CrossOver Settings (Split Clearly into Environment vs Automation)
     private var settingsPatchView: some View {
         let bottlesLabel = vm.settingsStore.settings.displayBottlesDirectory
         let lang = vm.settingsStore.settings.defaultLanguage
 
-        return VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("CrossOver 与补丁配置")
-                    .font(ChrysaFont.sectionTitle)
-                    .foregroundColor(.t3TextMain)
-
+        return VStack(alignment: .leading, spacing: ChrysaMetrics.settingsSectionGap) {
+            SettingsSection(title: "CrossOver 环境") {
                 T3SettingsGroupCard {
                     groupedRow(title: "容器目录", subtitle: "扫描和新建 CrossOver 游戏容器的根目录") {
                         if isSnapshotMode {
@@ -769,9 +731,11 @@ struct SettingsView: View {
                             .fixedSize()
                         }
                     }
+                }
+            }
 
-                    cardDivider
-
+            SettingsSection(title: "自动化流程") {
+                T3SettingsGroupCard {
                     T3GroupedToggleRow(
                         title: "自动流转",
                         subtitle: "下载完成自动解压，并在解压完成后自动执行补丁入库",
@@ -788,33 +752,71 @@ struct SettingsView: View {
         Rectangle()
             .fill(Color.t3Divider)
             .frame(height: 1)
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 18)
     }
 
     private func groupedRow<Trailing: View>(
         title: String,
         subtitle: String? = nil,
-        minHeight: CGFloat = 48,
+        minHeight: CGFloat = ChrysaMetrics.settingRowHeight,
         @ViewBuilder trailing: () -> Trailing
     ) -> some View {
-        HStack(alignment: .center, spacing: 14) {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(ChrysaFont.settingLabel)
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundColor(.t3TextMain)
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
-                        .font(ChrysaFont.helper)
+                        .font(.system(size: 11.5, weight: .regular))
                         .foregroundColor(.t3TextMuted)
                         .lineLimit(1)
                 }
             }
-            Spacer(minLength: 10)
+            Spacer(minLength: 12)
             trailing()
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
         .frame(minHeight: minHeight)
+    }
+}
+
+// MARK: - Editorial Section Wrapper (Clear Title / Description / Content Separation)
+private struct SettingsSection<Content: View>: View {
+    let title: String
+    var description: String? = nil
+    var trailingMeta: String? = nil
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(title)
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundColor(.t3TextMain)
+
+                    Spacer(minLength: 8)
+
+                    if let trailingMeta, !trailingMeta.isEmpty {
+                        Text(trailingMeta)
+                            .font(.system(size: 11.5, weight: .regular).monospacedDigit())
+                            .foregroundColor(.t3TextMuted)
+                    }
+                }
+
+                if let description, !description.isEmpty {
+                    Text(description)
+                        .font(.system(size: 11.5, weight: .regular))
+                        .foregroundColor(.t3TextMuted)
+                        .lineLimit(2)
+                }
+            }
+            .padding(.horizontal, 2)
+
+            content()
+        }
     }
 }
 
@@ -843,24 +845,24 @@ private struct T3GroupedToggleRow: View {
     @State private var isHovered = false
 
     var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(ChrysaFont.settingLabel)
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundColor(.t3TextMain)
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
-                        .font(ChrysaFont.helper)
+                        .font(.system(size: 11.5, weight: .regular))
                         .foregroundColor(.t3TextMuted)
                         .lineLimit(1)
                 }
             }
-            Spacer(minLength: 10)
+            Spacer(minLength: 12)
             T3ToggleSwitch(isOn: isOn)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .frame(minHeight: 48)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .frame(minHeight: ChrysaMetrics.settingRowHeight)
         .background(isHovered ? Color.t3HoverBg : Color.clear)
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
@@ -898,7 +900,7 @@ private struct AccentDotButton<Content: View>: View {
     }
 }
 
-// MARK: - Miniature Window Appearance Mode Card (Inspired by Top-Tier macOS Studio Preferences)
+// MARK: - Miniature Window Appearance Mode Card (Spacious 86pt Proportions)
 private struct AppearanceModeWindowCard: View {
     let mode: AppearanceMode
     let isSelected: Bool
@@ -908,13 +910,13 @@ private struct AppearanceModeWindowCard: View {
     @State private var isHovered = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 7) {
             ZStack {
                 backdropGradient
                 miniWindowMockup
-                    .padding(.top, 11)
-                    .padding(.horizontal, 13)
-                    .padding(.bottom, 8)
+                    .padding(.top, 13)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 9)
             }
             .frame(maxWidth: .infinity)
             .frame(height: ChrysaMetrics.showcaseCardHeight)
@@ -933,7 +935,7 @@ private struct AppearanceModeWindowCard: View {
                     ZStack {
                         Circle()
                             .fill(theme.isDark ? Color.black.opacity(0.68) : Color(red: 0.12, green: 0.13, blue: 0.16))
-                            .frame(width: 16, height: 16)
+                            .frame(width: 17, height: 17)
                             .overlay(
                                 Circle()
                                     .stroke(Color.white.opacity(theme.isDark ? 0.22 : 0.0), lineWidth: 0.75)
@@ -942,7 +944,7 @@ private struct AppearanceModeWindowCard: View {
                             .font(.system(size: 8.5, weight: .bold))
                             .foregroundColor(.white)
                     }
-                    .padding(6)
+                    .padding(7)
                 }
             }
             .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous))
@@ -950,7 +952,7 @@ private struct AppearanceModeWindowCard: View {
             .onInstantPress(action)
 
             Text(mode.displayName)
-                .font(ChrysaFont.caption)
+                .font(.system(size: 12, weight: isSelected ? .medium : .regular))
                 .foregroundColor(isSelected ? .t3TextMain : .t3TextMuted)
                 .lineLimit(1)
         }
@@ -1029,7 +1031,7 @@ private struct AppearanceModeWindowCard: View {
         }()
 
         return HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 4.5) {
                 HStack(spacing: 2.5) {
                     Circle().fill(Color(red: 1.0, green: 0.37, blue: 0.34)).frame(width: 4, height: 4)
                     Circle().fill(Color(red: 1.0, green: 0.74, blue: 0.18)).frame(width: 4, height: 4)
@@ -1041,28 +1043,28 @@ private struct AppearanceModeWindowCard: View {
                 RoundedRectangle(cornerRadius: 1.5).fill(barSoft).frame(width: 22, height: 3)
                 Spacer(minLength: 0)
             }
-            .padding(6)
-            .frame(width: 38, alignment: .leading)
+            .padding(7)
+            .frame(width: 40, alignment: .leading)
             .background(sideBg)
 
             Rectangle().fill(border).frame(width: 0.75)
 
-            VStack(alignment: .leading, spacing: 4.5) {
-                RoundedRectangle(cornerRadius: 2).fill(barStrong).frame(width: 36, height: 4)
-                RoundedRectangle(cornerRadius: 2.5).fill(barSoft).frame(maxWidth: .infinity).frame(height: 8)
+            VStack(alignment: .leading, spacing: 5) {
+                RoundedRectangle(cornerRadius: 2).fill(barStrong).frame(width: 38, height: 4)
+                RoundedRectangle(cornerRadius: 2.5).fill(barSoft).frame(maxWidth: .infinity).frame(height: 9)
                 HStack(spacing: 4) {
                     Circle().fill(pillAccent).frame(width: 5, height: 5)
-                    RoundedRectangle(cornerRadius: 1.5).fill(barStrong).frame(width: 48, height: 3)
+                    RoundedRectangle(cornerRadius: 1.5).fill(barStrong).frame(width: 50, height: 3)
                     Spacer(minLength: 0)
                 }
                 HStack(spacing: 4) {
-                    RoundedRectangle(cornerRadius: 2).fill(pillAccent).frame(width: 18, height: 5.5)
-                    RoundedRectangle(cornerRadius: 2).fill(barSoft).frame(width: 14, height: 5.5)
+                    RoundedRectangle(cornerRadius: 2).fill(pillAccent).frame(width: 20, height: 6)
+                    RoundedRectangle(cornerRadius: 2).fill(barSoft).frame(width: 15, height: 6)
                     Spacer(minLength: 0)
                 }
                 Spacer(minLength: 0)
             }
-            .padding(7)
+            .padding(8)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(winBg)
         }

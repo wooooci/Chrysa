@@ -24,9 +24,9 @@ extension Color {
     package static let t3SidebarBorder        = adaptive(light: rgb(0.000, 0.000, 0.000, 0.075), dark: rgb(1.000, 1.000, 1.000, 0.075))
 
     // Grouped Cards & Inputs (Distinct +1 Step Elevation, Zero Drop Shadows)
-    package static let t3GroupedCardBg        = adaptive(light: rgb(0.969, 0.973, 0.980), dark: rgb(0.090, 0.094, 0.110)) // #F7F8FA / #17181C
-    package static let t3GroupedCardBorder    = adaptive(light: rgb(0.000, 0.000, 0.000, 0.068), dark: rgb(1.000, 1.000, 1.000, 0.078))
-    package static let t3PreviewWellBg        = adaptive(light: rgb(0.941, 0.949, 0.961), dark: rgb(0.067, 0.071, 0.086)) // #F0F2F5 / #111216
+    package static let t3GroupedCardBg        = adaptive(light: rgb(0.965, 0.969, 0.978), dark: rgb(0.098, 0.104, 0.122)) // #F6F7FA / #191B1F
+    package static let t3GroupedCardBorder    = adaptive(light: rgb(0.000, 0.000, 0.000, 0.072), dark: rgb(1.000, 1.000, 1.000, 0.088))
+    package static let t3PreviewWellBg        = adaptive(light: rgb(0.937, 0.945, 0.957), dark: rgb(0.067, 0.071, 0.086)) // #EFF1F4 / #111216
     package static let t3TopBoxBg             = adaptive(light: rgb(0.957, 0.961, 0.969), dark: rgb(0.094, 0.098, 0.114)) // #F4F5F7 / #18191D
     package static let t3TopBoxBorder         = adaptive(light: rgb(0.000, 0.000, 0.000, 0.078), dark: rgb(1.000, 1.000, 1.000, 0.088))
     package static let t3CardBg               = adaptive(light: rgb(1.000, 1.000, 1.000), dark: rgb(0.094, 0.098, 0.114)) // #FFFFFF / #18191D
@@ -95,7 +95,8 @@ package enum ChrysaMetrics {
     package static let canvasInset: CGFloat = 32
     package static let rowOuterInset: CGFloat = 32
     package static let rowInnerInset: CGFloat = 12
-    package static let settingsMaxWidth: CGFloat = 660
+    package static let settingsMaxWidth: CGFloat = 560
+    package static let settingsSectionGap: CGFloat = 30
 
     // Unified 4-Tier Pure-Flat Corner Radius Scale
     package static let radiusCard: CGFloat = 10
@@ -104,8 +105,8 @@ package enum ChrysaMetrics {
     package static let radiusMicro: CGFloat = 4
 
     // Unified Box & Row Heights
-    package static let showcaseCardHeight: CGFloat = 72
-    package static let settingRowHeight: CGFloat = 48
+    package static let showcaseCardHeight: CGFloat = 86
+    package static let settingRowHeight: CGFloat = 56
     package static let listRowHeight: CGFloat = 38
     package static let bottomBarHeight: CGFloat = 38
     package static let topBoxHeight: CGFloat = 36
@@ -172,6 +173,24 @@ package enum SettingsCategory: String, CaseIterable, Identifiable, Codable, Send
     case unpack     = "解压"
     case patch      = "补丁"
     package var id: String { rawValue }
+
+    package var symbolName: String {
+        switch self {
+        case .appearance: return "paintbrush"
+        case .download:   return "tray.and.arrow.down"
+        case .unpack:     return "archivebox"
+        case .patch:      return "puzzlepiece"
+        }
+    }
+
+    package var pageDescription: String {
+        switch self {
+        case .appearance: return "调整明暗外观、主题强调色、应用图标与桌面伴生灵"
+        case .download:   return "管理默认下载目录、并行任务数、分片连接与网络代理"
+        case .unpack:     return "配置解压后清理规则与加密压缩包自动试密词典"
+        case .patch:      return "配置 CrossOver 容器路径、游戏默认语言与自动流转"
+        }
+    }
 }
 
 package struct AppIconOption: Identifiable, Sendable {
