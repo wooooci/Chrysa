@@ -230,8 +230,10 @@ package final class StudioViewModel: ObservableObject {
         return LaunchGame.sorted(filtered, by: launchSortOrder)
     }
 
+    package static let maxQuickLaunchGames = 6
+
     package var quickLaunchGames: [LaunchGame] {
-        LaunchGame.sorted(launchGames, by: .lastPlayed)
+        Array(LaunchGame.sorted(launchGames, by: .lastPlayed).prefix(Self.maxQuickLaunchGames))
     }
 
     package func toggleSidebarQuickLaunch() {

@@ -367,7 +367,6 @@ private struct SidebarArcFavoritesGrid: View {
 
     private let tileHeight: CGFloat = 46
     private let gridSpacing: CGFloat = 7
-    private let maxVisibleRows: Int = 4
     private let topSpacing: CGFloat = 8
 
     private var columnCount: Int {
@@ -378,21 +377,13 @@ private struct SidebarArcFavoritesGrid: View {
         Array(repeating: GridItem(.flexible(), spacing: gridSpacing), count: columnCount)
     }
 
-    private var totalRows: Int {
+    private var rowCount: Int {
         let count = max(games.count, 1)
         return (count + columnCount - 1) / columnCount
     }
 
-    private var visibleRows: Int {
-        min(totalRows, maxVisibleRows)
-    }
-
-    private var needsScroll: Bool {
-        totalRows > maxVisibleRows
-    }
-
     private var gridHeight: CGFloat {
-        CGFloat(visibleRows) * tileHeight + CGFloat(max(visibleRows - 1, 0)) * gridSpacing
+        CGFloat(rowCount) * tileHeight + CGFloat(max(rowCount - 1, 0)) * gridSpacing
     }
 
     private var activeHintGame: LaunchGame? {
@@ -411,19 +402,10 @@ private struct SidebarArcFavoritesGrid: View {
         VStack(alignment: .leading, spacing: 0) {
             Spacer().frame(height: topSpacing)
 
-            Group {
-                if needsScroll && !isSnapshotMode {
-                    ScrollView(.vertical, showsIndicators: false) {
-                        gridBody
-                    }
-                    .frame(height: gridHeight)
-                } else {
-                    gridBody
-                }
-            }
-            .opacity(isExpanded ? 1.0 : 0.0)
-            .scaleEffect(isExpanded ? 1.0 : 0.96, anchor: .top)
-            .offset(y: isExpanded ? 0 : -6)
+            gridBody
+                .opacity(isExpanded ? 1.0 : 0.0)
+                .scaleEffect(isExpanded ? 1.0 : 0.96, anchor: .top)
+                .offset(y: isExpanded ? 0 : -6)
 
             if let hintGame = activeHintGame {
                 let isDrop = (dropTargetedGame?.id == hintGame.id)
