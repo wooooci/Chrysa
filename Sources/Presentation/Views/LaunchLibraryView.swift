@@ -118,18 +118,26 @@ package struct LaunchLibraryView: View {
         let isSearching = !vm.launchSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return VStack(spacing: 8) {
             Spacer()
-            Image(systemName: isSearching ? "magnifyingglass" : "gamecontroller")
-                .font(.system(size: 28, weight: .ultraLight))
-                .foregroundColor(.t3TextMuted.opacity(0.65))
-                .padding(.bottom, 2)
+            if isSearching {
+                Image(systemName: "magnifyingglass")
+                    .symbolRenderingMode(.monochrome)
+                    .font(.system(size: 26, weight: .medium))
+                    .foregroundStyle(Color.t3TextMuted.opacity(0.78))
+                    .frame(width: 44, height: 34, alignment: .center)
+                    .padding(.bottom, 2)
+            } else {
+                T3SidebarIcon(tab: .launch, placement: .emptyState)
+                    .padding(.bottom, 2)
+            }
             Text(isSearching ? "未找到匹配的游戏" : "暂无已就绪游戏")
                 .font(ChrysaFont.navItemActive)
                 .foregroundColor(.t3TextSub)
-            if !isSearching {
-                Text("补丁完成后自动入库，或拖入本地游戏目录 / .app / .exe")
-                    .font(ChrysaFont.caption)
-                    .foregroundColor(.t3TextMuted)
-            }
+            Text(isSearching ? " " : "补丁完成后自动入库，或拖入本地游戏目录 / .app / .exe")
+                .font(ChrysaFont.caption)
+                .foregroundColor(.t3TextMuted)
+                .opacity(isSearching ? 0 : 1)
+            Color.clear
+                .frame(height: 24)
             Spacer()
         }
         .padding(.horizontal, ChrysaMetrics.canvasInset)

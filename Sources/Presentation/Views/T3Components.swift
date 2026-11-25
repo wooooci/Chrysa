@@ -9,6 +9,7 @@ struct T3SidebarIcon: View {
     enum Placement {
         case sidebar(isActive: Bool)
         case pageHeader
+        case emptyState
     }
 
     let tab: StudioTab
@@ -20,18 +21,30 @@ struct T3SidebarIcon: View {
         return false
     }
 
+    private var isEmptyState: Bool {
+        if case .emptyState = placement { return true }
+        return false
+    }
+
     private var isActiveSidebar: Bool {
         if case .sidebar(let active) = placement { return active }
         return false
     }
 
     private var basePointSize: CGFloat {
-        isHeader ? 21 : 15
+        switch placement {
+        case .pageHeader: return 21
+        case .sidebar:    return 15
+        case .emptyState: return 28
+        }
     }
 
     private var symbolWeight: Font.Weight {
-        if isHeader { return .semibold }
-        return isActiveSidebar ? .semibold : .medium
+        switch placement {
+        case .pageHeader: return .semibold
+        case .emptyState: return .medium
+        case .sidebar(let isActive): return isActive ? .semibold : .medium
+        }
     }
 
     private var opticalScaleFactor: CGFloat {
@@ -82,11 +95,19 @@ struct T3SidebarIcon: View {
             return theme.iconActive
         case .sidebar(let isActive):
             return isActive ? theme.iconActive : theme.iconInactive
+        case .emptyState:
+            return Color.t3TextMuted.opacity(0.78)
         }
     }
 
     var body: some View {
-        if isHeader {
+        if isEmptyState {
+            Image(systemName: tab.symbolName)
+                .symbolRenderingMode(.monochrome)
+                .font(.system(size: basePointSize * opticalScaleFactor, weight: symbolWeight))
+                .foregroundStyle(resolvedColor)
+                .frame(width: 44, height: 34, alignment: .center)
+        } else if isHeader {
             Image(systemName: tab.symbolName)
                 .symbolRenderingMode(.monochrome)
                 .font(.system(size: basePointSize * opticalScaleFactor, weight: symbolWeight))

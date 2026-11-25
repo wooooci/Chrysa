@@ -355,11 +355,6 @@ package struct TaskListSectionView: View {
 
     private var emptyStateView: some View {
         let hasHiddenArchived = !vm.showArchived && allRowsInActiveTab.contains(where: \.isArchived)
-        let symbol: String = switch vm.activeTab {
-        case .download: "tray.and.arrow.down"
-        case .unpack:   "archivebox"
-        case .patch, .launch, .settings: "puzzlepiece"
-        }
         let title: String = {
             if hasHiddenArchived { return "暂无进行中项目" }
             switch vm.activeTab {
@@ -379,9 +374,7 @@ package struct TaskListSectionView: View {
 
         return VStack(spacing: 8) {
             Spacer()
-            Image(systemName: symbol)
-                .font(.system(size: 28, weight: .ultraLight))
-                .foregroundColor(.t3TextMuted.opacity(0.65))
+            T3SidebarIcon(tab: vm.activeTab, placement: .emptyState)
                 .padding(.bottom, 2)
             Text(title)
                 .font(ChrysaFont.navItemActive)
@@ -390,15 +383,19 @@ package struct TaskListSectionView: View {
                 .font(ChrysaFont.caption)
                 .foregroundColor(.t3TextMuted)
                 .multilineTextAlignment(.center)
-            if hasHiddenArchived {
-                Button(action: { vm.showArchived = true }) {
-                    Text("显示已归档项目")
-                        .font(ChrysaFont.control)
-                        .foregroundColor(theme.accent)
-                        .padding(.top, 2)
+            Color.clear
+                .frame(height: 24)
+                .overlay(alignment: .top) {
+                    if hasHiddenArchived {
+                        Button(action: { vm.showArchived = true }) {
+                            Text("显示已归档项目")
+                                .font(ChrysaFont.control)
+                                .foregroundColor(theme.accent)
+                                .padding(.top, 2)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-                .buttonStyle(.plain)
-            }
             Spacer()
         }
         .padding(.horizontal, ChrysaMetrics.canvasInset)
