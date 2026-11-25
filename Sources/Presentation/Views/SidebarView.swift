@@ -14,6 +14,10 @@ struct SidebarView: View {
     @State private var hoveredSettingsCategory: SettingsCategory? = nil
     @State private var isBackHovered = false
     @State private var isLaunchChevronHovered = false
+    @State private var isSearchExpanded = false
+    @State private var sidebarSearchQuery = ""
+    @State private var hoveredSearchResultID: String? = nil
+    @FocusState private var isSidebarSearchFocused: Bool
 
     private var topBarHeight: CGFloat {
         isSnapshotMode ? 38 : 10
@@ -187,42 +191,51 @@ struct SidebarView: View {
     private var workspaceSidebarBody: some View {
         let quickGames = vm.quickLaunchGames
         let showQuickCard = vm.isSidebarQuickLaunchExpanded && !quickGames.isEmpty
+        let trimmedQuery = sidebarSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isShowingSearchResults = isSearchExpanded && !trimmedQuery.isEmpty
 
         return VStack(alignment: .leading, spacing: 0) {
             sidebarUtilityBar
-                .padding(.horizontal, 4)
-                .frame(height: 30)
+                .frame(height: ChrysaMetrics.navRowHeight)
                 .background(
-                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
-                        .fill(Color.t3ControlTrackBg)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
-                        .stroke(Color.t3GroupedCardBorder, lineWidth: 0.8)
+                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                        .fill(isSearchExpanded ? Color.t3SidebarActive : Color.t3ControlFill)
                 )
                 .padding(.horizontal, 10)
-                .padding(.bottom, 12)
+                .animation(isSnapshotMode ? nil : ChrysaMotion.tabGlide, value: isSearchExpanded)
 
-            VStack(spacing: 2) {
-                sidebarRow(tab: .download, title: "下载", count: "\(vm.jobs(of: .download).filter { !$0.isArchived }.count)")
-                sidebarRow(tab: .unpack,   title: "解压", count: "\(vm.jobs(of: .unpack).filter { !$0.isArchived }.count)")
-                sidebarRow(tab: .patch,    title: "补丁", count: "\(vm.jobs(of: .patch).filter { !$0.isArchived }.count)")
-                launchSidebarRow(hasQuickGames: !quickGames.isEmpty)
-            }
-            .padding(.horizontal, 10)
+            Rectangle()
+                .fill(Color.t3Divider)
+                .frame(height: 1)
+                .padding(.horizontal, 12)
+                .padding(.top, 4)
+                .padding(.bottom, 5)
 
-            if !quickGames.isEmpty {
-                SidebarArcFavoritesGrid(
-                    vm: vm,
-                    games: quickGames,
-                    isExpanded: showQuickCard,
-                    isSnapshotMode: isSnapshotMode
-                )
+            if isShowingSearchResults {
+                sidebarSearchResultsView(query: trimmedQuery)
+                    .transition(.opacity)
+            } else {
+                VStack(spacing: 2) {
+                    sidebarRow(tab: .download, title: "下载", count: "\(vm.jobs(of: .download).filter { !$0.isArchived }.count)")
+                    sidebarRow(tab: .unpack,   title: "解压", count: "\(vm.jobs(of: .unpack).filter { !$0.isArchived }.count)")
+                    sidebarRow(tab: .patch,    title: "补丁", count: "\(vm.jobs(of: .patch).filter { !$0.isArchived }.count)")
+                    launchSidebarRow(hasQuickGames: !quickGames.isEmpty)
+                }
                 .padding(.horizontal, 10)
-            }
 
-            WindowDragArea(isSnapshotMode: isSnapshotMode)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if !quickGames.isEmpty {
+                    SidebarArcFavoritesGrid(
+                        vm: vm,
+                        games: quickGames,
+                        isExpanded: showQuickCard,
+                        isSnapshotMode: isSnapshotMode
+                    )
+                    .padding(.horizontal, 10)
+                }
+
+                WindowDragArea(isSnapshotMode: isSnapshotMode)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
 
             Rectangle()
                 .fill(Color.t3Divider)
@@ -235,7 +248,7 @@ struct SidebarView: View {
         }
         .backgroundPreferenceValue(SidebarTabBoundsKey.self) { bounds in
             GeometryReader { proxy in
-                if let anchor = bounds[vm.activeTab] {
+                if !isShowingSearchResults, let anchor = bounds[vm.activeTab] {
                     let rect = proxy[anchor]
                     RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
                         .fill(Color.t3SidebarActive)
@@ -245,77 +258,301 @@ struct SidebarView: View {
                 }
             }
         }
+        .onChange(of: vm.searchFocusNonce) { _, _ in
+            guard !isSnapshotMode,
+                  vm.activeTab != .launch,
+                  vm.activeTab != .settings,
+                  !vm.isLogDrawerPresented else { return }
+            openSidebarSearch()
+        }
+        .onKeyPress(.escape) {
+            guard isSearchExpanded else { return .ignored }
+            closeSidebarSearch()
+            return .handled
+        }
+    }
+
+    private func openSidebarSearch() {
+        withAnimation(ChrysaMotion.tabGlide) {
+            isSearchExpanded = true
+        }
+        DispatchQueue.main.async {
+            isSidebarSearchFocused = true
+        }
+    }
+
+    private func closeSidebarSearch() {
+        isSidebarSearchFocused = false
+        withAnimation(ChrysaMotion.tabGlide) {
+            sidebarSearchQuery = ""
+            isSearchExpanded = false
+        }
     }
 
     private var sidebarUtilityBar: some View {
         HStack(alignment: .center, spacing: 0) {
-            T3ToolbarIconButton(
-                systemName: "plus",
-                opticalSize: 14,
-                tooltip: addActionTooltip
-            ) {
-                if vm.activeTab == .download {
-                    vm.requestPrimaryInputFocus()
-                } else if vm.activeTab == .launch {
-                    vm.importLaunchGameFromPanel()
-                } else {
-                    vm.pickFileForActiveTab()
+            if isSearchExpanded && !isSnapshotMode {
+                Image(systemName: "magnifyingglass")
+                    .symbolRenderingMode(.hierarchical)
+                    .font(.system(size: 13.5, weight: .medium))
+                    .imageScale(.medium)
+                    .foregroundStyle(isSidebarSearchFocused ? theme.accent : Color.t3TextSub)
+                    .frame(width: 28, height: 24)
+
+                TextField("搜索游戏或任务...", text: $sidebarSearchQuery)
+                    .textFieldStyle(.plain)
+                    .font(ChrysaFont.control)
+                    .foregroundColor(.t3TextMain)
+                    .focused($isSidebarSearchFocused)
+                    .onSubmit {
+                        submitTopSidebarSearchResult()
+                    }
+                    .padding(.leading, 1)
+                    .transition(.opacity)
+
+                Button(action: { closeSidebarSearch() }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(.t3TextMuted)
+                        .frame(width: 22, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.trailing, 2)
+                .help("收起搜索 (Esc)")
+                .transition(.opacity)
+            } else {
+                T3ToolbarIconButton(
+                    systemName: "magnifyingglass",
+                    opticalSize: 13.5,
+                    tooltip: "搜索游戏与任务 (⌘F)"
+                ) {
+                    openSidebarSearch()
+                }
+
+                Spacer(minLength: 0)
+
+                T3ToolbarIconButton(
+                    systemName: "folder",
+                    opticalSize: 13.5,
+                    tooltip: "在访达中打开下载目录"
+                ) {
+                    vm.openDownloadDirectoryInFinder()
+                }
+
+                Spacer(minLength: 0)
+
+                T3ToolbarIconButton(
+                    systemName: "folder.badge.gearshape",
+                    opticalSize: 13.5,
+                    tooltip: "在访达中打开 CrossOver 容器目录"
+                ) {
+                    vm.openBottlesDirectoryInFinder()
+                }
+
+                Spacer(minLength: 0)
+
+                T3ToolbarIconButton(
+                    systemName: "key.horizontal",
+                    opticalSize: 13.5,
+                    isActive: vm.activeTab == .settings && vm.settingsCategory == .unpack,
+                    tooltip: "解压密码词典"
+                ) {
+                    vm.openSettings(category: .unpack)
+                }
+
+                Spacer(minLength: 0)
+
+                T3ToolbarIconButton(
+                    systemName: "apple.terminal",
+                    opticalSize: 13.5,
+                    isActive: vm.isLogDrawerPresented,
+                    showBadgeDot: vm.hasUnreadErrorLogs,
+                    tooltip: "显示或隐藏诊断日志 (⇧⌘L)"
+                ) {
+                    vm.toggleLogDrawer()
                 }
             }
+        }
+        .padding(.horizontal, 4)
+    }
 
-            Spacer(minLength: 0)
+    private func matchedSidebarGames(for query: String) -> [LaunchGame] {
+        let lower = query.lowercased()
+        return vm.launchGames.filter { $0.title.lowercased().contains(lower) }
+    }
 
-            T3ToolbarIconButton(
-                systemName: "folder",
-                opticalSize: 13.5,
-                tooltip: "在访达中打开下载目录"
-            ) {
-                vm.openDownloadDirectoryInFinder()
+    private func matchedSidebarJobs(for query: String) -> [(tab: StudioTab, job: Job)] {
+        let lower = query.lowercased()
+        let stages: [(StudioTab, JobKind)] = [(.download, .download), (.unpack, .unpack), (.patch, .patch)]
+        var matches: [(StudioTab, Job)] = []
+        for (tab, stage) in stages {
+            for job in vm.jobs(of: stage) where job.title.lowercased().contains(lower) {
+                matches.append((tab, job))
             }
+        }
+        return matches
+    }
 
-            Spacer(minLength: 0)
-
-            T3ToolbarIconButton(
-                systemName: "folder.badge.gearshape",
-                opticalSize: 13.5,
-                tooltip: "在访达中打开 CrossOver 容器目录"
-            ) {
-                vm.openBottlesDirectoryInFinder()
-            }
-
-            Spacer(minLength: 0)
-
-            T3ToolbarIconButton(
-                systemName: "key.horizontal",
-                opticalSize: 13.5,
-                isActive: vm.activeTab == .settings && vm.settingsCategory == .unpack,
-                tooltip: "解压密码词典"
-            ) {
-                vm.openSettings(category: .unpack)
-            }
-
-            Spacer(minLength: 0)
-
-            T3ToolbarIconButton(
-                systemName: "apple.terminal",
-                opticalSize: 13.5,
-                isActive: vm.isLogDrawerPresented,
-                showBadgeDot: vm.hasUnreadErrorLogs,
-                tooltip: "显示或隐藏诊断日志 (⇧⌘L)"
-            ) {
-                vm.toggleLogDrawer()
-            }
+    private func submitTopSidebarSearchResult() {
+        let trimmed = sidebarSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            closeSidebarSearch()
+            return
+        }
+        if let firstGame = matchedSidebarGames(for: trimmed).first {
+            vm.launchSearchQuery = firstGame.title
+            vm.activeTab = .launch
+            closeSidebarSearch()
+            return
+        }
+        if let firstJob = matchedSidebarJobs(for: trimmed).first {
+            openMatchedJob(tab: firstJob.tab, job: firstJob.job)
+            return
         }
     }
 
-    private var addActionTooltip: String {
-        switch vm.activeTab {
-        case .download: return "新建下载任务 (⌘N)"
-        case .unpack:   return "添加压缩包 (⌘N)"
-        case .patch:    return "选择游戏目录 (⌘N)"
-        case .launch:   return "导入本地游戏 (⌘N)"
-        case .settings: return "新建任务 (⌘N)"
+    private func openMatchedJob(tab: StudioTab, job: Job) {
+        if job.isArchived {
+            vm.showArchived = true
         }
+        vm.activeTab = tab
+        Task {
+            await vm.coordinator.updateJob(job.id, expanded: true)
+        }
+        closeSidebarSearch()
+    }
+
+    private func sidebarSearchResultsView(query: String) -> some View {
+        let games = Array(matchedSidebarGames(for: query).prefix(6))
+        let jobs = Array(matchedSidebarJobs(for: query).prefix(8))
+
+        return ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 2) {
+                if games.isEmpty && jobs.isEmpty {
+                    Text("未找到匹配项")
+                        .font(ChrysaFont.caption)
+                        .foregroundColor(.t3TextMuted)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.top, 24)
+                } else {
+                    if !games.isEmpty {
+                        Text("游戏")
+                            .font(ChrysaFont.helper)
+                            .foregroundColor(.t3TextMuted)
+                            .padding(.horizontal, 8)
+                            .padding(.top, 4)
+                            .padding(.bottom, 2)
+
+                        ForEach(games) { game in
+                            let rowID = "game:\(game.id.uuidString)"
+                            let isHovered = (hoveredSearchResultID == rowID)
+                            HStack(spacing: 8) {
+                                if let icon = vm.launchGameIcon(for: game) {
+                                    Image(nsImage: icon)
+                                        .resizable()
+                                        .interpolation(.high)
+                                        .aspectRatio(contentMode: .fill)
+                                        .frame(width: 16, height: 16)
+                                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                                } else {
+                                    Image(systemName: "gamecontroller")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundColor(.t3TextSub)
+                                        .frame(width: 16, height: 16)
+                                }
+                                Text(game.title)
+                                    .font(ChrysaFont.control)
+                                    .foregroundColor(.t3TextMain)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                Spacer(minLength: 4)
+                                if isHovered {
+                                    Button(action: {
+                                        vm.launchGame(game)
+                                        closeSidebarSearch()
+                                    }) {
+                                        Image(systemName: "play.fill")
+                                            .font(.system(size: 9.5, weight: .semibold))
+                                            .foregroundColor(theme.accent)
+                                            .frame(width: 20, height: 20)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("启动游戏")
+                                }
+                            }
+                            .padding(.horizontal, 8)
+                            .frame(height: 28)
+                            .background(
+                                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                                    .fill(isHovered ? Color.t3HoverBg : Color.clear)
+                                    .animation(ChrysaMotion.hover(isHovered), value: isHovered)
+                            )
+                            .contentShape(Rectangle())
+                            .onHover { hovering in
+                                if hovering {
+                                    hoveredSearchResultID = rowID
+                                } else if hoveredSearchResultID == rowID {
+                                    hoveredSearchResultID = nil
+                                }
+                            }
+                            .onInstantPress {
+                                vm.launchSearchQuery = game.title
+                                vm.activeTab = .launch
+                                closeSidebarSearch()
+                            }
+                        }
+                    }
+
+                    if !jobs.isEmpty {
+                        Text("任务")
+                            .font(ChrysaFont.helper)
+                            .foregroundColor(.t3TextMuted)
+                            .padding(.horizontal, 8)
+                            .padding(.top, games.isEmpty ? 4 : 10)
+                            .padding(.bottom, 2)
+
+                        ForEach(jobs, id: \.job.id) { item in
+                            let rowID = "job:\(item.job.id.uuidString)"
+                            let isHovered = (hoveredSearchResultID == rowID)
+                            HStack(spacing: 8) {
+                                Image(systemName: item.tab.symbolName)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(.t3TextSub)
+                                    .frame(width: 16, height: 16)
+                                Text(item.job.title)
+                                    .font(ChrysaFont.control)
+                                    .foregroundColor(.t3TextMain)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 8)
+                            .frame(height: 28)
+                            .background(
+                                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                                    .fill(isHovered ? Color.t3HoverBg : Color.clear)
+                                    .animation(ChrysaMotion.hover(isHovered), value: isHovered)
+                            )
+                            .contentShape(Rectangle())
+                            .onHover { hovering in
+                                if hovering {
+                                    hoveredSearchResultID = rowID
+                                } else if hoveredSearchResultID == rowID {
+                                    hoveredSearchResultID = nil
+                                }
+                            }
+                            .onInstantPress {
+                                openMatchedJob(tab: item.tab, job: item.job)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 10)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func launchSidebarRow(hasQuickGames: Bool) -> some View {

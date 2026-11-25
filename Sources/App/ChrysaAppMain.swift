@@ -128,13 +128,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor @objc private func focusSearchFromMenu(_ sender: Any?) {
         guard let vm else { return }
-        if vm.activeTab == .launch || vm.isLogDrawerPresented {
-            vm.requestSearchFocus()
-        } else {
-            vm.activeTab = .launch
+        if vm.activeTab == .settings {
+            vm.exitSettings()
             DispatchQueue.main.async {
                 vm.requestSearchFocus()
             }
+        } else {
+            vm.requestSearchFocus()
         }
     }
 
