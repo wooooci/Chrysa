@@ -189,13 +189,16 @@ struct SidebarView: View {
         let showQuickCard = vm.isSidebarQuickLaunchExpanded && !quickGames.isEmpty
 
         return VStack(alignment: .leading, spacing: 0) {
+            sidebarUtilityBar
+                .padding(.leading, 10.5)
+                .padding(.trailing, 12)
+                .frame(height: 30)
+                .padding(.bottom, 12)
+
             VStack(spacing: 2) {
                 sidebarRow(tab: .download, title: "下载", count: "\(vm.jobs(of: .download).filter { !$0.isArchived }.count)")
                 sidebarRow(tab: .unpack,   title: "解压", count: "\(vm.jobs(of: .unpack).filter { !$0.isArchived }.count)")
                 sidebarRow(tab: .patch,    title: "补丁", count: "\(vm.jobs(of: .patch).filter { !$0.isArchived }.count)")
-
-                Spacer().frame(height: 14)
-
                 launchSidebarRow(hasQuickGames: !quickGames.isEmpty)
             }
             .padding(.horizontal, 10)
@@ -229,6 +232,77 @@ struct SidebarView: View {
                         .animation(isSnapshotMode ? nil : ChrysaMotion.tabGlide, value: vm.activeTab)
                 }
             }
+        }
+    }
+
+    private var sidebarUtilityBar: some View {
+        HStack(alignment: .center, spacing: 0) {
+            T3ToolbarIconButton(
+                systemName: "plus",
+                opticalSize: 14,
+                tooltip: addActionTooltip
+            ) {
+                if vm.activeTab == .download {
+                    vm.requestPrimaryInputFocus()
+                } else if vm.activeTab == .launch {
+                    vm.importLaunchGameFromPanel()
+                } else {
+                    vm.pickFileForActiveTab()
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            T3ToolbarIconButton(
+                systemName: "folder",
+                opticalSize: 13.5,
+                tooltip: "在访达中打开下载目录"
+            ) {
+                vm.openDownloadDirectoryInFinder()
+            }
+
+            Spacer(minLength: 0)
+
+            T3ToolbarIconButton(
+                systemName: "folder.badge.gearshape",
+                opticalSize: 13.5,
+                tooltip: "在访达中打开 CrossOver 容器目录"
+            ) {
+                vm.openBottlesDirectoryInFinder()
+            }
+
+            Spacer(minLength: 0)
+
+            T3ToolbarIconButton(
+                systemName: "key.horizontal",
+                opticalSize: 13.5,
+                isActive: vm.activeTab == .settings && vm.settingsCategory == .unpack,
+                tooltip: "解压密码词典"
+            ) {
+                vm.openSettings(category: .unpack)
+            }
+
+            Spacer(minLength: 0)
+
+            T3ToolbarIconButton(
+                systemName: "apple.terminal",
+                opticalSize: 13.5,
+                isActive: vm.isLogDrawerPresented,
+                showBadgeDot: vm.hasUnreadErrorLogs,
+                tooltip: "显示或隐藏诊断日志 (⇧⌘L)"
+            ) {
+                vm.toggleLogDrawer()
+            }
+        }
+    }
+
+    private var addActionTooltip: String {
+        switch vm.activeTab {
+        case .download: return "新建下载任务 (⌘N)"
+        case .unpack:   return "添加压缩包 (⌘N)"
+        case .patch:    return "选择游戏目录 (⌘N)"
+        case .launch:   return "导入本地游戏 (⌘N)"
+        case .settings: return "新建任务 (⌘N)"
         }
     }
 

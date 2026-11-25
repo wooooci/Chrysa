@@ -143,73 +143,12 @@ package struct ThingsStudioMainView: View {
                     .lineLimit(1)
             }
 
-            Spacer(minLength: 12)
-
-            HStack(spacing: 4) {
-                T3ToolbarIconButton(
-                    systemName: "plus",
-                    opticalSize: 14,
-                    tooltip: addActionTooltip
-                ) {
-                    if vm.activeTab == .download {
-                        vm.requestPrimaryInputFocus()
-                    } else if vm.activeTab == .launch {
-                        vm.importLaunchGameFromPanel()
-                    } else {
-                        vm.pickFileForActiveTab()
-                    }
-                }
-
-                T3ToolbarIconButton(
-                    systemName: "folder",
-                    opticalSize: 13.5,
-                    tooltip: "在访达中打开下载目录"
-                ) {
-                    vm.openDownloadDirectoryInFinder()
-                }
-
-                T3ToolbarIconButton(
-                    systemName: "folder.badge.gearshape",
-                    opticalSize: 13.5,
-                    tooltip: "在访达中打开 CrossOver 容器目录"
-                ) {
-                    vm.openBottlesDirectoryInFinder()
-                }
-
-                T3ToolbarIconButton(
-                    systemName: "key.horizontal",
-                    opticalSize: 13.5,
-                    isActive: vm.activeTab == .settings && vm.settingsCategory == .unpack,
-                    tooltip: "解压密码词典"
-                ) {
-                    vm.openSettings(category: .unpack)
-                }
-
-                T3ToolbarIconButton(
-                    systemName: "apple.terminal",
-                    opticalSize: 13.5,
-                    isActive: vm.isLogDrawerPresented,
-                    showBadgeDot: vm.hasUnreadErrorLogs,
-                    tooltip: "显示或隐藏诊断日志 (⇧⌘L)"
-                ) {
-                    vm.toggleLogDrawer()
-                }
-            }
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, ChrysaMetrics.canvasInset)
         .frame(maxWidth: .infinity)
         .frame(height: ChrysaMetrics.bottomBarHeight)
         .background(Color.t3CanvasBg)
-    }
-
-    private var addActionTooltip: String {
-        switch vm.activeTab {
-        case .download: return "新建下载任务 (⌘N)"
-        case .unpack:   return "添加压缩包 (⌘N)"
-        case .patch:    return "选择游戏目录 (⌘N)"
-        case .launch:   return "导入本地游戏 (⌘N)"
-        case .settings: return "新建任务 (⌘N)"
-        }
     }
 }
 
