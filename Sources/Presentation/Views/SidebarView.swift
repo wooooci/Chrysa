@@ -14,7 +14,7 @@ struct SidebarView: View {
     @State private var hoveredSettingsCategory: SettingsCategory? = nil
     @State private var isBackHovered = false
     @State private var isLaunchChevronHovered = false
-    @State private var isSearchExpanded = false
+    @State private var isSearchHovered = false
     @State private var sidebarSearchQuery = ""
     @State private var hoveredSearchResultID: String? = nil
     @FocusState private var isSidebarSearchFocused: Bool
@@ -192,24 +192,12 @@ struct SidebarView: View {
         let quickGames = vm.quickLaunchGames
         let showQuickCard = vm.isSidebarQuickLaunchExpanded && !quickGames.isEmpty
         let trimmedQuery = sidebarSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isShowingSearchResults = isSearchExpanded && !trimmedQuery.isEmpty
+        let isShowingSearchResults = !trimmedQuery.isEmpty
 
         return VStack(alignment: .leading, spacing: 0) {
-            sidebarUtilityBar
-                .frame(height: ChrysaMetrics.navRowHeight)
-                .background(
-                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
-                        .fill(isSearchExpanded ? Color.t3SidebarActive : Color.t3ControlFill)
-                )
+            sidebarSearchPill
                 .padding(.horizontal, 10)
-                .animation(isSnapshotMode ? nil : ChrysaMotion.tabGlide, value: isSearchExpanded)
-
-            Rectangle()
-                .fill(Color.t3Divider)
-                .frame(height: 1)
-                .padding(.horizontal, 12)
-                .padding(.top, 4)
-                .padding(.bottom, 5)
+                .padding(.bottom, 12)
 
             if isShowingSearchResults {
                 sidebarSearchResultsView(query: trimmedQuery)
@@ -241,10 +229,10 @@ struct SidebarView: View {
                 .fill(Color.t3Divider)
                 .frame(height: 1)
 
-            sidebarRow(tab: .settings, title: "设置", count: "")
-                .padding(.horizontal, 10)
+            sidebarFooterUtilityBar
+                .padding(.leading, 10.5)
+                .padding(.trailing, 12)
                 .frame(height: ChrysaMetrics.bottomBarHeight)
-                .help("偏好设置 (⌘,)")
         }
         .backgroundPreferenceValue(SidebarTabBoundsKey.self) { bounds in
             GeometryReader { proxy in
@@ -263,43 +251,44 @@ struct SidebarView: View {
                   vm.activeTab != .launch,
                   vm.activeTab != .settings,
                   !vm.isLogDrawerPresented else { return }
-            openSidebarSearch()
+            focusSidebarSearch()
         }
         .onKeyPress(.escape) {
-            guard isSearchExpanded else { return .ignored }
-            closeSidebarSearch()
+            guard isSidebarSearchFocused || !sidebarSearchQuery.isEmpty else { return .ignored }
+            clearSidebarSearch()
             return .handled
         }
     }
 
-    private func openSidebarSearch() {
-        withAnimation(ChrysaMotion.tabGlide) {
-            isSearchExpanded = true
-        }
+    private func focusSidebarSearch() {
         DispatchQueue.main.async {
             isSidebarSearchFocused = true
         }
     }
 
-    private func closeSidebarSearch() {
+    private func clearSidebarSearch() {
         isSidebarSearchFocused = false
         withAnimation(ChrysaMotion.tabGlide) {
             sidebarSearchQuery = ""
-            isSearchExpanded = false
         }
     }
 
-    private var sidebarUtilityBar: some View {
-        HStack(alignment: .center, spacing: 0) {
-            if isSearchExpanded && !isSnapshotMode {
-                Image(systemName: "magnifyingglass")
-                    .symbolRenderingMode(.hierarchical)
-                    .font(.system(size: 13.5, weight: .medium))
-                    .imageScale(.medium)
-                    .foregroundStyle(isSidebarSearchFocused ? theme.accent : Color.t3TextSub)
-                    .frame(width: 28, height: 24)
+    private var sidebarSearchPill: some View {
+        let pillFill: Color = {
+            if isSidebarSearchFocused {
+                return Color.t3SidebarActive
+            }
+            return isSearchHovered ? Color.t3ControlHoverFill : Color.t3ControlFill
+        }()
 
-                TextField("搜索游戏或任务...", text: $sidebarSearchQuery)
+        return HStack(alignment: .center, spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .symbolRenderingMode(.hierarchical)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(isSidebarSearchFocused ? theme.accent : Color.t3TextMuted)
+
+            if !isSnapshotMode {
+                TextField("搜索", text: $sidebarSearchQuery)
                     .textFieldStyle(.plain)
                     .font(ChrysaFont.control)
                     .foregroundColor(.t3TextMain)
@@ -307,74 +296,101 @@ struct SidebarView: View {
                     .onSubmit {
                         submitTopSidebarSearchResult()
                     }
-                    .padding(.leading, 1)
-                    .transition(.opacity)
+            } else {
+                Text("搜索")
+                    .font(ChrysaFont.control)
+                    .fontWeight(.regular)
+                    .foregroundColor(.t3TextMuted)
+                Spacer(minLength: 0)
+            }
 
-                Button(action: { closeSidebarSearch() }) {
+            if !sidebarSearchQuery.isEmpty && !isSnapshotMode {
+                Button(action: { clearSidebarSearch() }) {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 12))
+                        .font(.system(size: 11.5))
                         .foregroundColor(.t3TextMuted)
-                        .frame(width: 22, height: 24)
+                        .frame(width: 18, height: 18)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .padding(.trailing, 2)
-                .help("收起搜索 (Esc)")
-                .transition(.opacity)
-            } else {
-                T3ToolbarIconButton(
-                    systemName: "magnifyingglass",
-                    opticalSize: 13.5,
-                    tooltip: "搜索游戏与任务 (⌘F)"
-                ) {
-                    openSidebarSearch()
-                }
-
-                Spacer(minLength: 0)
-
-                T3ToolbarIconButton(
-                    systemName: "folder",
-                    opticalSize: 13.5,
-                    tooltip: "在访达中打开下载目录"
-                ) {
-                    vm.openDownloadDirectoryInFinder()
-                }
-
-                Spacer(minLength: 0)
-
-                T3ToolbarIconButton(
-                    systemName: "folder.badge.gearshape",
-                    opticalSize: 13.5,
-                    tooltip: "在访达中打开 CrossOver 容器目录"
-                ) {
-                    vm.openBottlesDirectoryInFinder()
-                }
-
-                Spacer(minLength: 0)
-
-                T3ToolbarIconButton(
-                    systemName: "key.horizontal",
-                    opticalSize: 13.5,
-                    isActive: vm.activeTab == .settings && vm.settingsCategory == .unpack,
-                    tooltip: "解压密码词典"
-                ) {
-                    vm.openSettings(category: .unpack)
-                }
-
-                Spacer(minLength: 0)
-
-                T3ToolbarIconButton(
-                    systemName: "apple.terminal",
-                    opticalSize: 13.5,
-                    isActive: vm.isLogDrawerPresented,
-                    showBadgeDot: vm.hasUnreadErrorLogs,
-                    tooltip: "显示或隐藏诊断日志 (⇧⌘L)"
-                ) {
-                    vm.toggleLogDrawer()
-                }
+                .help("清空搜索 (Esc)")
+            } else if !isSidebarSearchFocused {
+                Text("⌘F")
+                    .font(.system(size: 10.5, weight: .regular, design: .monospaced))
+                    .foregroundColor(.t3TextMuted.opacity(0.65))
             }
         }
-        .padding(.horizontal, 4)
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .background(
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                .fill(pillFill)
+                .animation(isSnapshotMode ? nil : ChrysaMotion.hover(isSearchHovered), value: isSearchHovered)
+                .animation(isSnapshotMode ? nil : ChrysaMotion.tabGlide, value: isSidebarSearchFocused)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous))
+        .onHover { isSearchHovered = $0 }
+        .onTapGesture {
+            if !isSnapshotMode {
+                isSidebarSearchFocused = true
+            }
+        }
+        .help("搜索游戏与任务 (⌘F)")
+    }
+
+    private var sidebarFooterUtilityBar: some View {
+        HStack(alignment: .center, spacing: 0) {
+            T3ToolbarIconButton(
+                systemName: StudioTab.settings.symbolName,
+                opticalSize: 14,
+                tooltip: "偏好设置 (⌘,)"
+            ) {
+                vm.openSettings()
+            }
+
+            Spacer(minLength: 0)
+
+            T3ToolbarIconButton(
+                systemName: "folder",
+                opticalSize: 13.5,
+                tooltip: "在访达中打开下载目录"
+            ) {
+                vm.openDownloadDirectoryInFinder()
+            }
+
+            Spacer(minLength: 0)
+
+            T3ToolbarIconButton(
+                systemName: "folder.badge.gearshape",
+                opticalSize: 13.5,
+                tooltip: "在访达中打开 CrossOver 容器目录"
+            ) {
+                vm.openBottlesDirectoryInFinder()
+            }
+
+            Spacer(minLength: 0)
+
+            T3ToolbarIconButton(
+                systemName: "key.horizontal",
+                opticalSize: 13.5,
+                isActive: vm.activeTab == .settings && vm.settingsCategory == .unpack,
+                tooltip: "解压密码词典"
+            ) {
+                vm.openSettings(category: .unpack)
+            }
+
+            Spacer(minLength: 0)
+
+            T3ToolbarIconButton(
+                systemName: "apple.terminal",
+                opticalSize: 13.5,
+                isActive: vm.isLogDrawerPresented,
+                showBadgeDot: vm.hasUnreadErrorLogs,
+                tooltip: "显示或隐藏诊断日志 (⇧⌘L)"
+            ) {
+                vm.toggleLogDrawer()
+            }
+        }
     }
 
     private func matchedSidebarGames(for query: String) -> [LaunchGame] {
@@ -397,13 +413,13 @@ struct SidebarView: View {
     private func submitTopSidebarSearchResult() {
         let trimmed = sidebarSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            closeSidebarSearch()
+            clearSidebarSearch()
             return
         }
         if let firstGame = matchedSidebarGames(for: trimmed).first {
             vm.launchSearchQuery = firstGame.title
             vm.activeTab = .launch
-            closeSidebarSearch()
+            clearSidebarSearch()
             return
         }
         if let firstJob = matchedSidebarJobs(for: trimmed).first {
@@ -420,7 +436,7 @@ struct SidebarView: View {
         Task {
             await vm.coordinator.updateJob(job.id, expanded: true)
         }
-        closeSidebarSearch()
+        clearSidebarSearch()
     }
 
     private func sidebarSearchResultsView(query: String) -> some View {
@@ -470,7 +486,7 @@ struct SidebarView: View {
                                 if isHovered {
                                     Button(action: {
                                         vm.launchGame(game)
-                                        closeSidebarSearch()
+                                        clearSidebarSearch()
                                     }) {
                                         Image(systemName: "play.fill")
                                             .font(.system(size: 9.5, weight: .semibold))
@@ -499,7 +515,7 @@ struct SidebarView: View {
                             .onInstantPress {
                                 vm.launchSearchQuery = game.title
                                 vm.activeTab = .launch
-                                closeSidebarSearch()
+                                clearSidebarSearch()
                             }
                         }
                     }
