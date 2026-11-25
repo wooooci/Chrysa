@@ -190,9 +190,17 @@ struct SidebarView: View {
 
         return VStack(alignment: .leading, spacing: 0) {
             sidebarUtilityBar
-                .padding(.leading, 10.5)
-                .padding(.trailing, 12)
+                .padding(.horizontal, 4)
                 .frame(height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
+                        .fill(Color.t3ControlTrackBg)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
+                        .stroke(Color.t3GroupedCardBorder, lineWidth: 0.8)
+                )
+                .padding(.horizontal, 10)
                 .padding(.bottom, 12)
 
             VStack(spacing: 2) {
@@ -216,9 +224,13 @@ struct SidebarView: View {
             WindowDragArea(isSnapshotMode: isSnapshotMode)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
+            Rectangle()
+                .fill(Color.t3Divider)
+                .frame(height: 1)
+
             sidebarRow(tab: .settings, title: "设置", count: "")
                 .padding(.horizontal, 10)
-                .padding(.bottom, 4)
+                .frame(height: ChrysaMetrics.bottomBarHeight)
                 .help("偏好设置 (⌘,)")
         }
         .backgroundPreferenceValue(SidebarTabBoundsKey.self) { bounds in
