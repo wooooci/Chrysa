@@ -612,7 +612,7 @@ struct SidebarView: View {
                             isSnapshotMode ? nil : (vm.isSidebarQuickLaunchExpanded ? ChrysaMotion.foldOpen : ChrysaMotion.foldClose),
                             value: vm.isSidebarQuickLaunchExpanded
                         )
-                        .frame(width: 20, height: 20)
+                        .frame(width: 18, height: 18)
                         .background(
                             RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
                                 .fill(isLaunchChevronHovered ? Color.t3ControlHoverFill : Color.clear)
@@ -621,7 +621,7 @@ struct SidebarView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .padding(.trailing, 4)
+                .padding(.trailing, 3)
                 .onHover { isLaunchChevronHovered = $0 }
                 .help(vm.isSidebarQuickLaunchExpanded ? "收起快捷启动" : "展开快捷启动")
             }
