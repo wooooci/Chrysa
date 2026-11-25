@@ -169,7 +169,7 @@ package struct ThingsStudioMainView: View {
                 }
 
                 T3ToolbarIconButton(
-                    systemName: "archivebox",
+                    systemName: "cube",
                     opticalSize: 13.5,
                     tooltip: "在访达中打开 CrossOver 容器目录"
                 ) {
@@ -186,8 +186,8 @@ package struct ThingsStudioMainView: View {
                 }
 
                 T3ToolbarIconButton(
-                    systemName: "rectangle.bottomthird.inset.filled",
-                    opticalSize: 14,
+                    systemName: "apple.terminal",
+                    opticalSize: 13.5,
                     isActive: vm.isLogDrawerPresented,
                     showBadgeDot: vm.hasUnreadErrorLogs,
                     tooltip: "显示或隐藏诊断日志 (⇧⌘L)"
