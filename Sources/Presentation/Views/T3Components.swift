@@ -26,7 +26,7 @@ struct T3SidebarIcon: View {
     }
 
     private var basePointSize: CGFloat {
-        isHeader ? 19 : 14
+        isHeader ? 21 : 15
     }
 
     private var symbolWeight: Font.Weight {
@@ -187,35 +187,35 @@ struct T3StatusBox: View {
             RoundedRectangle(cornerRadius: ChrysaMetrics.radiusMicro, style: .continuous)
                 .stroke(Color.t3CheckBorder, lineWidth: 1.75)
                 .background(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusMicro, style: .continuous).fill(Color.t3CanvasBg))
-                .frame(width: 14, height: 14)
+                .frame(width: 15, height: 15)
         case .running(let pct):
-            T3PieRing(progress: pct, size: 15, color: theme.accent)
+            T3PieRing(progress: pct, size: 16, color: theme.accent)
         case .locked(let pct):
-            T3PieRing(progress: pct, size: 15, color: .t3Amber)
+            T3PieRing(progress: pct, size: 16, color: .t3Amber)
         case .paused(let pct):
             ZStack {
-                T3PieRing(progress: max(0.02, pct), size: 15, color: .t3TextMuted)
+                T3PieRing(progress: max(0.02, pct), size: 16, color: .t3TextMuted)
                     .opacity(0.45)
                 Image(systemName: "pause.fill")
-                    .font(.system(size: 6.5, weight: .bold))
+                    .font(.system(size: 7, weight: .bold))
                     .foregroundColor(.t3TextSub)
             }
         case .done:
             ZStack {
                 RoundedRectangle(cornerRadius: ChrysaMetrics.radiusMicro, style: .continuous)
                     .fill(theme.accent)
-                    .frame(width: 14, height: 14)
+                    .frame(width: 15, height: 15)
                 Image(systemName: "checkmark")
-                    .font(.system(size: 8.5, weight: .bold))
+                    .font(.system(size: 9, weight: .bold))
                     .foregroundColor(theme.accentForeground)
             }
         case .failed:
             ZStack {
                 RoundedRectangle(cornerRadius: ChrysaMetrics.radiusMicro, style: .continuous)
                     .fill(Color.t3ErrorText)
-                    .frame(width: 14, height: 14)
+                    .frame(width: 15, height: 15)
                 Image(systemName: "xmark")
-                    .font(.system(size: 8.5, weight: .bold))
+                    .font(.system(size: 9, weight: .bold))
                     .foregroundColor(.white)
             }
         }
@@ -264,7 +264,7 @@ struct T3MenuPill: View {
         HStack(spacing: 5) {
             if let icon {
                 Image(systemName: icon)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.t3TextSub)
             }
             Text(text)
@@ -332,9 +332,9 @@ struct T3ToolbarIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 14, weight: isActive ? .semibold : .medium))
+                .font(.system(size: 15, weight: isActive ? .semibold : .medium))
                 .foregroundColor(isActive ? theme.accent : (isHovered ? .t3TextMain : .t3TextSub))
-                .frame(width: 28, height: 24)
+                .frame(width: 30, height: 26)
                 .background(
                     RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
                         .fill(

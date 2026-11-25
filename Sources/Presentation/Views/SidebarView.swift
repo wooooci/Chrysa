@@ -90,7 +90,8 @@ struct SidebarView: View {
             .help("返回工作台 (Esc)")
 
             Text("设置")
-                .font(.system(size: 18, weight: .semibold))
+                .font(.system(size: 20, weight: .semibold))
+                .tracking(ChrysaTracking.pageTitle)
                 .foregroundColor(.t3TextMain)
                 .padding(.leading, 18)
                 .padding(.top, 14)
@@ -142,7 +143,7 @@ struct SidebarView: View {
                 case .appearance:
                     Image(systemName: cat.symbolName)
                         .symbolRenderingMode(.monochrome)
-                        .font(.system(size: 14, weight: isHighlighted ? .semibold : .medium))
+                        .font(.system(size: 15, weight: isHighlighted ? .semibold : .medium))
                         .imageScale(.medium)
                         .foregroundStyle(isHighlighted ? theme.iconActive : theme.iconInactive)
                         .frame(width: 20, height: 20, alignment: .center)

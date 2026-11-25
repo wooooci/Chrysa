@@ -67,39 +67,39 @@ extension Color {
     package static let t3MascotStageLine      = adaptive(light: rgb(0.800, 0.769, 0.714), dark: rgb(0.220, 0.243, 0.286))
 }
 
-// MARK: - Unified macOS Typography Scale (Integer Point Scale · PingFang SC + SF Pro Optical Weight Calibrated)
+// MARK: - Unified macOS Typography Scale (Finder / Things 3 14pt Desktop Scale · PingFang SC + SF Pro Calibrated)
 package enum ChrysaFont {
-    package static let pageTitle       = Font.system(size: 22, weight: .semibold)
-    package static let settingsTitle   = Font.system(size: 20, weight: .semibold)
-    package static let sheetTitle      = Font.system(size: 15, weight: .semibold)
-    package static let sectionTitle    = Font.system(size: 14, weight: .semibold)
-    package static let rowTitle        = Font.system(size: 13, weight: .medium)
-    package static let rowTitleActive  = Font.system(size: 13, weight: .semibold)
-    package static let navItem         = Font.system(size: 13, weight: .medium)
-    package static let navItemActive   = Font.system(size: 13, weight: .semibold)
-    package static let settingLabel    = Font.system(size: 13, weight: .medium)
-    package static let input           = Font.system(size: 13, weight: .regular)
-    package static let control         = Font.system(size: 12, weight: .medium)
-    package static let controlSemibold = Font.system(size: 12, weight: .semibold)
-    package static let sectionHeader   = Font.system(size: 12, weight: .semibold)
+    package static let pageTitle       = Font.system(size: 24, weight: .semibold)
+    package static let settingsTitle   = Font.system(size: 22, weight: .semibold)
+    package static let sheetTitle      = Font.system(size: 16, weight: .semibold)
+    package static let sectionTitle    = Font.system(size: 15, weight: .semibold)
+    package static let rowTitle        = Font.system(size: 14, weight: .medium)
+    package static let rowTitleActive  = Font.system(size: 14, weight: .semibold)
+    package static let navItem         = Font.system(size: 14, weight: .medium)
+    package static let navItemActive   = Font.system(size: 14, weight: .semibold)
+    package static let settingLabel    = Font.system(size: 14, weight: .medium)
+    package static let input           = Font.system(size: 14, weight: .regular)
+    package static let control         = Font.system(size: 13, weight: .medium)
+    package static let controlSemibold = Font.system(size: 13, weight: .semibold)
+    package static let sectionHeader   = Font.system(size: 13, weight: .semibold)
     package static let caption         = Font.system(size: 12, weight: .regular)
     package static let captionMedium   = Font.system(size: 12, weight: .medium)
     package static let helper          = Font.system(size: 12, weight: .regular)
-    package static let badge           = Font.system(size: 11, weight: .medium)
-    package static let mono            = Font.system(size: 12, design: .monospaced)
-    package static let monoSmall       = Font.system(size: 11, weight: .medium, design: .monospaced)
+    package static let badge           = Font.system(size: 12, weight: .medium)
+    package static let mono            = Font.system(size: 13, design: .monospaced)
+    package static let monoSmall       = Font.system(size: 12, weight: .medium, design: .monospaced)
 }
 
 // MARK: - Optical Tracking Scale (Tight Negative Tracking on Display Titles, Calibrated Badges)
 package enum ChrysaTracking {
-    package static let pageTitle: CGFloat    = -0.35
-    package static let sectionTitle: CGFloat = -0.10
+    package static let pageTitle: CGFloat    = -0.40
+    package static let sectionTitle: CGFloat = -0.15
     package static let badge: CGFloat        = -0.05
 }
 
 // MARK: - Base-4 / Base-8 Shared Alignment Grid, Corner Radius & Box Height Tokens
 package enum ChrysaMetrics {
-    package static let sidebarWidth: CGFloat = 196
+    package static let sidebarWidth: CGFloat = 204
     package static let canvasInset: CGFloat = 32
     package static let rowOuterInset: CGFloat = 32
     package static let rowInnerInset: CGFloat = 12
@@ -112,17 +112,17 @@ package enum ChrysaMetrics {
     package static let radiusSmall: CGFloat = 6
     package static let radiusMicro: CGFloat = 4
 
-    // Unified Box & Row Heights
+    // Unified Box & Row Heights (Proportional to 14pt Desktop Scale)
     package static let showcaseCardHeight: CGFloat = 86
-    package static let settingRowHeight: CGFloat = 56
-    package static let listRowHeight: CGFloat = 38
-    package static let bottomBarHeight: CGFloat = 38
-    package static let topBoxHeight: CGFloat = 36
-    package static let sheetFieldHeight: CGFloat = 32
-    package static let navRowHeight: CGFloat = 30
-    package static let controlHeight: CGFloat = 28
-    package static let microControlHeight: CGFloat = 24
-    package static let badgeHeight: CGFloat = 20
+    package static let settingRowHeight: CGFloat = 58
+    package static let listRowHeight: CGFloat = 40
+    package static let bottomBarHeight: CGFloat = 40
+    package static let topBoxHeight: CGFloat = 38
+    package static let sheetFieldHeight: CGFloat = 34
+    package static let navRowHeight: CGFloat = 32
+    package static let controlHeight: CGFloat = 30
+    package static let microControlHeight: CGFloat = 26
+    package static let badgeHeight: CGFloat = 22
 }
 
 // MARK: - Critically-Damped Motion (Arc / Nook Measured Curves: Zero Bounce, Viscous Deceleration)

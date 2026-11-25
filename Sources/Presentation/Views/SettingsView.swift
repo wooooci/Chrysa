@@ -68,7 +68,8 @@ struct SettingsView: View {
                         .foregroundColor(.t3TextMain)
 
                     Text(vm.settingsCategory.pageDescription)
-                        .font(ChrysaFont.input)
+                        .font(ChrysaFont.control)
+                        .fontWeight(.regular)
                         .foregroundColor(.t3TextMuted)
                         .lineLimit(2)
                 }
@@ -186,7 +187,7 @@ struct SettingsView: View {
                                 vm.setMascotTheme(option)
                             }
                             Text(option.displayName)
-                                .font(.system(size: 12, weight: activeMascot == option ? .medium : .regular))
+                                .font(.system(size: 13, weight: activeMascot == option ? .medium : .regular))
                                 .foregroundColor(activeMascot == option ? .t3TextMain : .t3TextMuted)
                                 .lineLimit(1)
                         }
@@ -450,7 +451,7 @@ struct SettingsView: View {
                                 let selected = (policy == option)
                                 Button(action: { vm.setProxyPolicy(option) }) {
                                     Text(option.displayName)
-                                        .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                                        .font(.system(size: 13, weight: selected ? .semibold : .regular))
                                         .foregroundColor(selected ? .t3TextMain : .t3TextSub)
                                         .padding(.horizontal, 9)
                                         .frame(height: ChrysaMetrics.controlHeight - 4)
@@ -954,7 +955,7 @@ private struct AppearanceModeWindowCard: View {
             .onInstantPress(action)
 
             Text(mode.displayName)
-                .font(.system(size: 12, weight: isSelected ? .medium : .regular))
+                .font(.system(size: 13, weight: isSelected ? .medium : .regular))
                 .foregroundColor(isSelected ? .t3TextMain : .t3TextMuted)
                 .lineLimit(1)
         }
