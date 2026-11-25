@@ -213,6 +213,7 @@ struct T3PieRing: View {
 // MARK: - Status Checkbox
 struct T3StatusBox: View {
     let status: TaskStatus
+    var isMuted: Bool = false
     @Environment(\.appTheme) private var theme
 
     var body: some View {
@@ -235,13 +236,19 @@ struct T3StatusBox: View {
                     .foregroundColor(.t3TextSub)
             }
         case .done:
+            let fill: Color = isMuted
+                ? (theme.isDark ? Color.white.opacity(0.16) : Color.black.opacity(0.18))
+                : theme.accent
+            let fg: Color = isMuted
+                ? (theme.isDark ? Color.white.opacity(0.80) : Color.white)
+                : theme.accentForeground
             ZStack {
                 RoundedRectangle(cornerRadius: ChrysaMetrics.radiusMicro, style: .continuous)
-                    .fill(theme.accent)
+                    .fill(fill)
                     .frame(width: 15, height: 15)
                 Image(systemName: "checkmark")
                     .font(.system(size: 9, weight: .bold))
-                    .foregroundColor(theme.accentForeground)
+                    .foregroundColor(fg)
             }
         case .failed:
             ZStack {

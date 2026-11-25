@@ -100,9 +100,10 @@ package enum ChrysaTracking {
 // MARK: - Base-4 / Base-8 Shared Alignment Grid, Corner Radius & Box Height Tokens
 package enum ChrysaMetrics {
     package static let sidebarWidth: CGFloat = 204
-    package static let canvasInset: CGFloat = 32
-    package static let rowOuterInset: CGFloat = 32
-    package static let rowInnerInset: CGFloat = 12
+    /// Primary optical text/icon rail (`44pt`); box & hover pillows cushion outward by `rowInnerInset` (`10pt`) to `34pt`.
+    package static let canvasInset: CGFloat = 44
+    package static let rowOuterInset: CGFloat = 34
+    package static let rowInnerInset: CGFloat = 10
     package static let settingsMaxWidth: CGFloat = 560
     package static let settingsSectionGap: CGFloat = 30
 
@@ -115,7 +116,7 @@ package enum ChrysaMetrics {
     // Unified Box & Row Heights (Proportional to 14pt Desktop Scale)
     package static let showcaseCardHeight: CGFloat = 86
     package static let settingRowHeight: CGFloat = 48
-    package static let listRowHeight: CGFloat = 40
+    package static let listRowHeight: CGFloat = 36
     package static let bottomBarHeight: CGFloat = 40
     package static let topBoxHeight: CGFloat = 38
     package static let sheetFieldHeight: CGFloat = 34

@@ -26,8 +26,8 @@ package struct LaunchLibraryView: View {
 
         VStack(alignment: .leading, spacing: 0) {
             searchAndImportBar
-                .padding(.horizontal, ChrysaMetrics.canvasInset)
-                .padding(.bottom, 14)
+                .padding(.horizontal, ChrysaMetrics.rowOuterInset)
+                .padding(.bottom, 12)
 
             if games.isEmpty {
                 emptyStateView
@@ -95,8 +95,8 @@ package struct LaunchLibraryView: View {
                 vm.importLaunchGameFromPanel()
             }
         }
-        .padding(.leading, 12)
-        .padding(.trailing, 7)
+        .padding(.leading, ChrysaMetrics.rowInnerInset)
+        .padding(.trailing, 3)
         .frame(height: ChrysaMetrics.topBoxHeight)
         .background(
             RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
@@ -155,7 +155,7 @@ package struct LaunchLibraryView: View {
                 )
             }
         }
-        .padding(.horizontal, ChrysaMetrics.canvasInset)
+        .padding(.horizontal, ChrysaMetrics.rowOuterInset)
         .padding(.bottom, 12)
     }
 }
@@ -195,7 +195,7 @@ private struct LaunchGameRowView: View {
             Text(isPatching ? "处理中…" : (isDropTargeted ? "松开以安装补丁" : game.lastPlayedDisplayText()))
                 .font(ChrysaFont.caption.monospacedDigit())
                 .foregroundColor(isDropTargeted ? theme.accent : .t3TextMuted)
-                .padding(.trailing, isHovered && !isSnapshotMode ? 54 : 0)
+                .padding(.trailing, isHovered && !isSnapshotMode ? 52 : 0)
         }
         .padding(.horizontal, ChrysaMetrics.rowInnerInset)
         .frame(height: ChrysaMetrics.listRowHeight)
@@ -206,7 +206,7 @@ private struct LaunchGameRowView: View {
                         Image(systemName: "play.fill")
                             .font(.system(size: 10.5, weight: .medium))
                             .foregroundColor(isPlayHovered ? theme.accent : .t3TextSub)
-                            .frame(width: 24, height: 24)
+                            .frame(width: 22, height: 22)
                             .background(
                                 RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
                                     .fill(isPlayHovered ? Color.t3HoverBg : Color.clear)
@@ -223,7 +223,7 @@ private struct LaunchGameRowView: View {
                         Image(systemName: "ellipsis")
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundColor(isMenuHovered ? .t3TextMain : .t3TextSub)
-                            .frame(width: 24, height: 24)
+                            .frame(width: 22, height: 22)
                             .background(
                                 RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
                                     .fill(isMenuHovered ? Color.t3HoverBg : Color.clear)
@@ -236,7 +236,7 @@ private struct LaunchGameRowView: View {
                     .onHover { isMenuHovered = $0 }
                     .help("更多操作")
                 }
-                .padding(.trailing, 8)
+                .padding(.trailing, ChrysaMetrics.rowInnerInset)
                 .opacity(isHovered ? 1 : 0)
                 .allowsHitTesting(isHovered)
             }

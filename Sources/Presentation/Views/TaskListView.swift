@@ -220,7 +220,7 @@ package struct TaskListSectionView: View {
             guard !isSnapshotMode else { return }
             switch phase {
             case .active(let pt):
-                vm.mascot.updatePointer(x: pt.x - ChrysaMetrics.canvasInset, y: pt.y + 52.0)
+                vm.mascot.updatePointer(x: pt.x - ChrysaMetrics.rowOuterInset, y: pt.y + 52.0)
             case .ended:
                 vm.mascot.clearPointer()
             }
@@ -292,8 +292,8 @@ package struct TaskListSectionView: View {
                 }
             }
         }
-        .padding(.leading, 12)
-        .padding(.trailing, 7)
+        .padding(.leading, ChrysaMetrics.rowInnerInset)
+        .padding(.trailing, 3)
         .padding(.vertical, 6)
         .frame(minHeight: ChrysaMetrics.topBoxHeight)
         .background(
@@ -403,7 +403,7 @@ package struct TaskListSectionView: View {
     }
 
     private var taskListContent: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 2) {
             ForEach(currentRows) { row in
                 TaskRowView(
                     vm: vm,
@@ -413,7 +413,7 @@ package struct TaskListSectionView: View {
                 )
             }
         }
-        .padding(.horizontal, ChrysaMetrics.canvasInset)
+        .padding(.horizontal, ChrysaMetrics.rowOuterInset)
         .padding(.top, 2)
         .padding(.bottom, 12)
     }
@@ -427,11 +427,41 @@ private struct TaskRowView: View {
     @Environment(\.appTheme) private var theme
     @State private var isHovered = false
 
+    private var showsHoverControls: Bool {
+        !isSnapshotMode && (isHovered || row.expanded)
+    }
+
+    private var hasVisibleActionButton: Bool {
+        if row.isArchived {
+            guard showsHoverControls else { return false }
+            if let local = row.localPath, FileManager.default.fileExists(atPath: local) {
+                return true
+            }
+            switch row.status {
+            case .failed, .paused:
+                return true
+            default:
+                return false
+            }
+        }
+        switch row.status {
+        case .failed, .paused, .running, .locked:
+            return true
+        case .done:
+            if showsHoverControls, let local = row.localPath, FileManager.default.fileExists(atPath: local) {
+                return true
+            }
+            return false
+        case .queued:
+            return false
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 10) {
                 Button(action: { vm.archiveTask(row) }) {
-                    T3StatusBox(status: row.isArchived ? .done : row.status)
+                    T3StatusBox(status: row.isArchived ? .done : row.status, isMuted: row.isArchived)
                         .frame(width: 16, height: 16, alignment: .center)
                 }
                 .buttonStyle(.plain)
@@ -439,33 +469,33 @@ private struct TaskRowView: View {
 
                 Text(row.title)
                     .font(row.expanded ? ChrysaFont.rowTitleActive : ChrysaFont.rowTitle)
-                    .strikethrough(row.isArchived, color: .t3TextMuted)
+                    .strikethrough(row.isArchived, color: .t3TextMuted.opacity(0.65))
                     .foregroundColor(rowTitleColor)
                     .lineLimit(1)
                     .truncationMode(.tail)
 
-                if row.isArchived {
-                    T3OutlinedPill(text: "已归档", icon: "archivebox")
-                } else if let pill = row.pill {
+                if !row.isArchived, let pill = row.pill {
                     T3OutlinedPill(
                         text: pill,
                         icon: pill == "试密中" ? "key.fill" : nil
                     )
                 }
 
-                Spacer(minLength: 8)
+                Spacer(minLength: 10)
 
                 HStack(alignment: .center, spacing: 4) {
                     Text(rowRightText)
                         .font(ChrysaFont.caption.monospacedDigit())
-                        .foregroundColor(.t3TextMuted)
+                        .foregroundColor(row.isArchived ? .t3TextMuted.opacity(0.85) : .t3TextMuted)
                         .lineLimit(1)
-                        .padding(.trailing, 4)
+                        .padding(.trailing, (hasVisibleActionButton || showsHoverControls) ? 2 : 0)
 
-                    rowActionSlot
-                        .frame(width: 24, height: 24, alignment: .center)
+                    if hasVisibleActionButton {
+                        rowActionSlot
+                            .frame(width: 22, height: 22, alignment: .center)
+                    }
 
-                    if !isSnapshotMode {
+                    if showsHoverControls {
                         Menu {
                             taskMenuItems
                         } label: {
@@ -534,63 +564,107 @@ private struct TaskRowView: View {
 
     @ViewBuilder
     private var rowActionSlot: some View {
-        switch row.status {
-        case .failed:
-            TaskRowActionIconButton(
-                systemName: "arrow.clockwise",
-                tint: theme.accent,
-                tooltip: "重试"
-            ) {
-                vm.retryTask(row)
-            }
-        case .paused:
-            TaskRowActionIconButton(
-                systemName: "play",
-                tint: theme.accent,
-                tooltip: "继续"
-            ) {
-                vm.resumeTask(row)
-            }
-        case .running:
-            if vm.activeTab == .download {
-                TaskRowActionIconButton(
-                    systemName: "pause",
-                    tint: .t3TextMain,
-                    tooltip: "暂停"
-                ) {
-                    vm.pauseTask(row)
-                }
-            } else {
-                TaskRowActionIconButton(
-                    systemName: "stop",
-                    tint: .t3TextMain,
-                    tooltip: "停止"
-                ) {
-                    vm.stopTask(row)
-                }
-            }
-        case .locked:
-            TaskRowActionIconButton(
-                systemName: "stop",
-                tint: .t3TextMain,
-                tooltip: "停止"
-            ) {
-                vm.stopTask(row)
-            }
-        case .done:
-            if isHovered, !isSnapshotMode, let local = row.localPath, FileManager.default.fileExists(atPath: local) {
+        if row.isArchived {
+            if let local = row.localPath, FileManager.default.fileExists(atPath: local) {
                 TaskRowActionIconButton(
                     systemName: "folder",
                     tint: theme.accent,
-                    tooltip: "在访达中显示"
+                    tooltip: "在访达中显示",
+                    size: 22,
+                    iconSize: 11.5
                 ) {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: local)])
                 }
-            } else {
-                Color.clear
+            } else if case .failed = row.status {
+                TaskRowActionIconButton(
+                    systemName: "arrow.clockwise",
+                    tint: theme.accent,
+                    tooltip: "重试",
+                    size: 22,
+                    iconSize: 11.5
+                ) {
+                    vm.retryTask(row)
+                }
+            } else if case .paused = row.status {
+                TaskRowActionIconButton(
+                    systemName: "play",
+                    tint: theme.accent,
+                    tooltip: "继续",
+                    size: 22,
+                    iconSize: 11.5
+                ) {
+                    vm.resumeTask(row)
+                }
             }
-        case .queued:
-            Color.clear
+        } else {
+            switch row.status {
+            case .failed:
+                TaskRowActionIconButton(
+                    systemName: "arrow.clockwise",
+                    tint: theme.accent,
+                    tooltip: "重试",
+                    size: 22,
+                    iconSize: 11.5
+                ) {
+                    vm.retryTask(row)
+                }
+            case .paused:
+                TaskRowActionIconButton(
+                    systemName: "play",
+                    tint: theme.accent,
+                    tooltip: "继续",
+                    size: 22,
+                    iconSize: 11.5
+                ) {
+                    vm.resumeTask(row)
+                }
+            case .running:
+                if vm.activeTab == .download {
+                    TaskRowActionIconButton(
+                        systemName: "pause",
+                        tint: .t3TextMain,
+                        tooltip: "暂停",
+                        size: 22,
+                        iconSize: 11.5
+                    ) {
+                        vm.pauseTask(row)
+                    }
+                } else {
+                    TaskRowActionIconButton(
+                        systemName: "stop",
+                        tint: .t3TextMain,
+                        tooltip: "停止",
+                        size: 22,
+                        iconSize: 11.5
+                    ) {
+                        vm.stopTask(row)
+                    }
+                }
+            case .locked:
+                TaskRowActionIconButton(
+                    systemName: "stop",
+                    tint: .t3TextMain,
+                    tooltip: "停止",
+                    size: 22,
+                    iconSize: 11.5
+                ) {
+                    vm.stopTask(row)
+                }
+            case .done:
+                if showsHoverControls, let local = row.localPath, FileManager.default.fileExists(atPath: local) {
+                    TaskRowActionIconButton(
+                        systemName: "folder",
+                        tint: theme.accent,
+                        tooltip: "在访达中显示",
+                        size: 22,
+                        iconSize: 11.5
+                    ) {
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: local)])
+                    }
+                }
+            case .queued:
+                EmptyView()
+            }
         }
     }
 
@@ -694,7 +768,7 @@ struct TaskExpandedDetailView: View {
             Rectangle()
                 .fill(Color.t3Divider)
                 .frame(height: 1)
-                .padding(.leading, 38)
+                .padding(.leading, 36)
                 .padding(.trailing, ChrysaMetrics.rowInnerInset)
                 .padding(.vertical, 6)
 
@@ -867,21 +941,21 @@ struct TaskExpandedDetailView: View {
                     }
                 }
             }
-            .padding(.leading, 38)
+            .padding(.leading, 36)
             .padding(.trailing, ChrysaMetrics.rowInnerInset)
             .padding(.bottom, 10)
         } else {
             Rectangle()
                 .fill(Color.t3Divider)
                 .frame(height: 1)
-                .padding(.leading, 38)
+                .padding(.leading, 36)
                 .padding(.trailing, ChrysaMetrics.rowInnerInset)
                 .padding(.vertical, 6)
 
             Text("暂无记录")
                 .font(ChrysaFont.caption)
                 .foregroundColor(.t3TextMuted)
-                .padding(.leading, 38)
+                .padding(.leading, 36)
                 .padding(.bottom, 10)
         }
     }
@@ -1222,7 +1296,7 @@ private struct TaskRowMenuIconLabel: View {
         Image(systemName: "ellipsis")
             .font(.system(size: 12, weight: .semibold))
             .foregroundColor(isHovered ? .t3TextMain : (isRowHovered ? .t3TextSub : .t3TextMuted))
-            .frame(width: 24, height: 24)
+            .frame(width: 22, height: 22)
             .background(
                 RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
                     .fill(isHovered ? Color.t3HoverBg : Color.clear)
