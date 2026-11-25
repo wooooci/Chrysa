@@ -688,6 +688,72 @@ struct LifecycleAndPatchTests {
         return Data(bytes)
     }
 
+    @Test
+    func testToolchainLocatorPrefersBundledExecutableOverSystemFallback() throws {
+        let fm = FileManager.default
+        let root = try makeTempDir()
+        defer { try? fm.removeItem(at: root) }
+
+        let fakeBundle = root.appendingPathComponent("Portable.app", isDirectory: true)
+        let fakeBundleMacOS = fakeBundle.appendingPathComponent("Contents/MacOS", isDirectory: true)
+        let fakeInstalled = root.appendingPathComponent("Installed.app", isDirectory: true)
+        let fakeInstalledMacOS = fakeInstalled.appendingPathComponent("Contents/MacOS", isDirectory: true)
+        let fakeSystemDir = root.appendingPathComponent("homebrew/bin", isDirectory: true)
+
+        try fm.createDirectory(at: fakeBundleMacOS, withIntermediateDirectories: true)
+        try fm.createDirectory(at: fakeInstalledMacOS, withIntermediateDirectories: true)
+        try fm.createDirectory(at: fakeSystemDir, withIntermediateDirectories: true)
+
+        let systemBin = fakeSystemDir.appendingPathComponent("7zz")
+        try Data("#!/bin/sh\n".utf8).write(to: systemBin)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: systemBin.path)
+
+        // 1. Falls back to system path when neither bundle contains the binary
+        let fallbackHit = ToolchainLocator.locateBundledOrSystemBinary(
+            bundledName: "7zz",
+            bundlePath: fakeBundle.path,
+            installedAppPath: fakeInstalled.path,
+            systemCandidates: [systemBin.path]
+        )
+        #expect(fallbackHit == systemBin.path)
+
+        // 2. Ignores non-executable placeholders inside the app bundle
+        let bundleBin = fakeBundleMacOS.appendingPathComponent("7zz")
+        try Data("not-executable".utf8).write(to: bundleBin)
+        try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: bundleBin.path)
+        let nonExecFallback = ToolchainLocator.locateBundledOrSystemBinary(
+            bundledName: "7zz",
+            bundlePath: fakeBundle.path,
+            installedAppPath: fakeInstalled.path,
+            systemCandidates: [systemBin.path]
+        )
+        #expect(nonExecFallback == systemBin.path)
+
+        // 3. Prefers executable inside Bundle.main over installed app and system fallback
+        let installedBin = fakeInstalledMacOS.appendingPathComponent("7zz")
+        try Data("#!/bin/sh\n".utf8).write(to: installedBin)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: installedBin.path)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: bundleBin.path)
+
+        let bundledHit = ToolchainLocator.locateBundledOrSystemBinary(
+            bundledName: "7zz",
+            bundlePath: fakeBundle.path,
+            installedAppPath: fakeInstalled.path,
+            systemCandidates: [systemBin.path]
+        )
+        #expect(bundledHit == bundleBin.path)
+
+        // 4. Falls back to installed app bundle when current Bundle.main lacks the helper
+        try fm.removeItem(at: bundleBin)
+        let installedHit = ToolchainLocator.locateBundledOrSystemBinary(
+            bundledName: "7zz",
+            bundlePath: fakeBundle.path,
+            installedAppPath: fakeInstalled.path,
+            systemCandidates: [systemBin.path]
+        )
+        #expect(installedHit == installedBin.path)
+    }
+
     private func writeUInt16(_ buffer: inout [UInt8], _ value: UInt16, at offset: Int) {
         let le = value.littleEndian
         buffer[offset] = UInt8(truncatingIfNeeded: le)

@@ -98,7 +98,7 @@ package struct StageLog: Sendable, Equatable {
             || lower.contains("未生成")
             || lower.contains("已中止") {
             inferred = .error
-        } else if lower.hasPrefix("warning")
+        } else if lower.hasPrefix("warn")
                     || lower.hasPrefix("unar")
                     || lower.contains("限速")
                     || lower.contains("过期")

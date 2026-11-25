@@ -353,4 +353,39 @@ struct CoreModelTests {
             "https://workupload.com/file/ccc333"
         ])
     }
+
+    @Test
+    func testLogEntryPrecisionTimestampLegacyDecodingAndFormatting() throws {
+        // Legacy persisted LogEntry JSON without `timestamp` field decodes cleanly
+        let legacyJSON = Data(#"{"id":"22222222-2222-2222-2222-222222222222","level":"info","message":"warn ▸ 检测到新解压目录缺少可执行文件","module":"unpack","time":"10:59:37"}"#.utf8)
+        let decodedLegacy = try JSONDecoder().decode(LogEntry.self, from: legacyJSON)
+        #expect(decodedLegacy.timestamp == nil)
+        #expect(decodedLegacy.time == "10:59:37")
+        #expect(decodedLegacy.fullTimestampString == "10:59:37")
+        #expect(decodedLegacy.displayLevel == .warning)
+        #expect(decodedLegacy.parsedStagePrefix?.tag == "warn")
+        #expect(decodedLegacy.parsedStagePrefix?.body == "检测到新解压目录缺少可执行文件")
+
+        // New LogEntry with precise Date round-trips and formats date + ms + delta
+        let fixedDate = Date(timeIntervalSince1970: 1_795_589_367.384)
+        let modern = LogEntry(
+            module: .patch,
+            level: .info,
+            timestamp: fixedDate,
+            message: "config ▸ 已写入 AppID=2057760"
+        )
+        let roundTrip = try JSONDecoder().decode(LogEntry.self, from: JSONEncoder().encode(modern))
+        #expect(roundTrip.timestamp != nil)
+        #expect(roundTrip.fullTimestampString.contains(".384"))
+        #expect(roundTrip.datePartString?.count == 10)
+        #expect(roundTrip.millisSuffixString == ".384")
+        #expect(roundTrip.isSuccessMilestone)
+        #expect(roundTrip.parsedStagePrefix?.tag == "config")
+
+        #expect(LogEntry.formatDelta(0.042) == "+42ms")
+        #expect(LogEntry.formatDelta(1.25) == "+1.25s")
+        #expect(LogEntry.formatDelta(18.4) == "+18.4s")
+        #expect(LogEntry.formatDelta(125.0) == "+2m05s")
+        #expect(LogEntry.formatDelta(3720.0) == "+1h02m")
+    }
 }

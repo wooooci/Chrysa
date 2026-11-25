@@ -24,9 +24,7 @@ fi
 if [[ -d "$ASSET_APP/Contents/Resources" ]]; then
   /usr/bin/ditto "$ASSET_APP/Contents/Resources" "$BUNDLE/Contents/Resources"
 fi
-if [[ -f "$ASSET_APP/Contents/MacOS/sf-dl" ]]; then
-  /usr/bin/ditto "$ASSET_APP/Contents/MacOS/sf-dl" "$BUNDLE/Contents/MacOS/sf-dl"
-fi
+python3 "$DIR/scripts/bundle-runtime-tools.py" "$BUNDLE" "$ASSET_APP"
 
 cp "$DIR/packaging/Info.plist" "$BUNDLE/Contents/Info.plist"
 if [[ -n "${CHRYSA_VERSION:-}" ]]; then
@@ -38,6 +36,16 @@ SHORT_VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" 
 cp "$BIN_DIR/Chrysa" "$BUNDLE/Contents/MacOS/Chrysa"
 chmod +x "$BUNDLE/Contents/MacOS/Chrysa"
 xattr -cr "$BUNDLE"
+if [[ -d "$BUNDLE/Contents/Frameworks" ]]; then
+  for dylib in "$BUNDLE/Contents/Frameworks/"*.dylib(N); do
+    codesign --force --sign - "$dylib"
+  done
+fi
+for helper in "$BUNDLE/Contents/MacOS/"*(N); do
+  if [[ "$(basename "$helper")" != "Chrysa" ]]; then
+    codesign --force --sign - "$helper"
+  fi
+done
 codesign --force --deep --sign - "$BUNDLE"
 codesign --verify --deep --strict "$BUNDLE"
 

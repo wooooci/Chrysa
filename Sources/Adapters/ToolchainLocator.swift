@@ -3,62 +3,57 @@ import ChrysaApplication
 import Foundation
 
 package enum ToolchainLocator {
-    package static func locateDownloadEngineBinary() -> String? {
+    package static func locateBundledOrSystemBinary(
+        bundledName: String,
+        bundlePath: String = Bundle.main.bundlePath,
+        installedAppPath: String = ("~/Applications/Chrysa.app" as NSString).expandingTildeInPath,
+        systemCandidates: [String]
+    ) -> String? {
         let fm = FileManager.default
-        let bundleHelper = (Bundle.main.bundlePath as NSString).appendingPathComponent("Contents/MacOS/sf-dl")
-        if fm.fileExists(atPath: bundleHelper) {
-            return bundleHelper
-        }
-        let installedHelper = ("~/Applications/Chrysa.app/Contents/MacOS/sf-dl" as NSString).expandingTildeInPath
-        if fm.fileExists(atPath: installedHelper) {
-            return installedHelper
-        }
-        for candidate in ["/opt/homebrew/bin/aria2c", "/usr/local/bin/aria2c"] {
-            if fm.fileExists(atPath: candidate) {
-                return candidate
-            }
-        }
-        return nil
+        let candidates = [
+            (bundlePath as NSString).appendingPathComponent("Contents/MacOS/\(bundledName)"),
+            (installedAppPath as NSString).appendingPathComponent("Contents/MacOS/\(bundledName)")
+        ] + systemCandidates
+        return candidates.first { fm.isExecutableFile(atPath: $0) }
+    }
+
+    package static func locateDownloadEngineBinary() -> String? {
+        locateBundledOrSystemBinary(
+            bundledName: "sf-dl",
+            systemCandidates: ["/opt/homebrew/bin/aria2c", "/usr/local/bin/aria2c"]
+        )
     }
 
     package static func locateSevenZip() -> String? {
-        let fm = FileManager.default
-        for candidate in ["/opt/homebrew/bin/7zz", "/usr/local/bin/7zz"] {
-            if fm.fileExists(atPath: candidate) {
-                return candidate
-            }
-        }
-        return nil
+        locateBundledOrSystemBinary(
+            bundledName: "7zz",
+            systemCandidates: ["/opt/homebrew/bin/7zz", "/usr/local/bin/7zz"]
+        )
     }
 
     package static func locateUnrar() -> String? {
-        let fm = FileManager.default
-        let candidates = [
-            "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/unrar",
-            "/opt/homebrew/bin/unrar",
-            "/usr/local/bin/unrar"
-        ]
-        return candidates.first { fm.fileExists(atPath: $0) }
+        locateBundledOrSystemBinary(
+            bundledName: "unrar",
+            systemCandidates: [
+                "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/unrar",
+                "/opt/homebrew/bin/unrar",
+                "/usr/local/bin/unrar"
+            ]
+        )
     }
 
     package static func locateUnar() -> String? {
-        let fm = FileManager.default
-        for candidate in ["/opt/homebrew/bin/unar", "/usr/local/bin/unar"] {
-            if fm.fileExists(atPath: candidate) {
-                return candidate
-            }
-        }
-        return nil
+        locateBundledOrSystemBinary(
+            bundledName: "unar",
+            systemCandidates: ["/opt/homebrew/bin/unar", "/usr/local/bin/unar"]
+        )
     }
 
     package static func locateInnoextract() -> String? {
-        let fm = FileManager.default
-        for candidate in ["/opt/homebrew/bin/innoextract", "/usr/local/bin/innoextract"] {
-            if fm.fileExists(atPath: candidate) {
-                return candidate
-            }
-        }
-        return nil
+        locateBundledOrSystemBinary(
+            bundledName: "innoextract",
+            systemCandidates: ["/opt/homebrew/bin/innoextract", "/usr/local/bin/innoextract"]
+        )
     }
 
     package static func locateGbeDLL(is64Bit: Bool) -> String? {

@@ -365,7 +365,7 @@ package actor UnpackService {
 
         // Branch 2: Standard 7zz / unrar / unar pipeline
         guard let sevenZip = ToolchainLocator.locateSevenZip() else {
-            await onLog("error ▸ 未找到 7zz 解压内核 (/opt/homebrew/bin/7zz)", true)
+            await onLog("error ▸ 未找到 7zz 解压内核 (应用内置或 Homebrew 7zz)", true)
             return .failed(pill: "缺少 7zz")
         }
 

@@ -216,6 +216,7 @@ struct ChrysaAppMain {
         let appearance: AppearanceMode
         let accentMode: AccentColorMode
         let siphonSteps: Int
+        let showLogs: Bool
         let suffix: String
 
         init(
@@ -225,6 +226,7 @@ struct ChrysaAppMain {
             appearance: AppearanceMode = .light,
             accentMode: AccentColorMode = .monochrome,
             siphonSteps: Int = 0,
+            showLogs: Bool = false,
             suffix: String
         ) {
             self.tab = tab
@@ -233,6 +235,7 @@ struct ChrysaAppMain {
             self.appearance = appearance
             self.accentMode = accentMode
             self.siphonSteps = siphonSteps
+            self.showLogs = showLogs
             self.suffix = suffix
         }
     }
@@ -257,6 +260,7 @@ struct ChrysaAppMain {
                 SnapshotPreset(.download, .appearance, .forestCube, siphonSteps: 83, suffix: "dl_chomp_cube"),
                 SnapshotPreset(.download, .appearance, .roundMochi, siphonSteps: 96, suffix: "dl_chew_mochi"),
                 SnapshotPreset(.download, .appearance, .none, suffix: "dl_quiet"),
+                SnapshotPreset(.download, .appearance, .forestCube, showLogs: true, suffix: "dl_logs"),
                 SnapshotPreset(.unpack, .appearance, .forestCube, suffix: "un"),
                 SnapshotPreset(.patch, .appearance, .forestCube, suffix: "pa"),
                 SnapshotPreset(.launch, .appearance, .forestCube, suffix: "launch"),
@@ -266,6 +270,7 @@ struct ChrysaAppMain {
                 SnapshotPreset(.settings, .patch, .forestCube, suffix: "settings_patch"),
                 // Dark mode presets
                 SnapshotPreset(.download, .appearance, .forestCube, appearance: .dark, suffix: "dl_dark"),
+                SnapshotPreset(.download, .appearance, .forestCube, appearance: .dark, showLogs: true, suffix: "dl_logs_dark"),
                 SnapshotPreset(.download, .appearance, .forestCube, appearance: .dark, accentMode: .followAppIcon, suffix: "dl_dark_accent"),
                 SnapshotPreset(.unpack, .appearance, .forestCube, appearance: .dark, suffix: "un_dark"),
                 SnapshotPreset(.patch, .appearance, .forestCube, appearance: .dark, suffix: "pa_dark"),
@@ -285,6 +290,10 @@ struct ChrysaAppMain {
                 vm.setAppearanceMode(preset.appearance)
                 vm.setAccentColorMode(preset.accentMode)
                 vm.setMascotTheme(preset.mascot)
+                vm.isLogDrawerPresented = preset.showLogs
+                if preset.showLogs {
+                    vm.logDrawerHeight = 260
+                }
                 if preset.siphonSteps > 0 {
                     var t: TimeInterval = 0.20
                     _ = vm.mascot.stepTopFrame(at: t, theme: preset.mascot, width: 605, boxTopY: 52, isTypingURL: false, isSnapshotMode: false)

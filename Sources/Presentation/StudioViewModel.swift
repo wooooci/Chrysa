@@ -36,8 +36,12 @@ package final class StudioViewModel: ObservableObject {
     @Published package var isLogDrawerPresented: Bool = false
     @Published package var logModuleFilter: LogModule? = nil
     @Published package var logErrorsOnly: Bool = false
+    @Published package var logWarningsAndErrorsOnly: Bool = false
     @Published package var logSearchQuery: String = ""
     @Published package var hasUnreadErrorLogs: Bool = false
+    @Published package var logTimestampShowFullDate: Bool = true
+    @Published package var logAutoScrollEnabled: Bool = true
+    @Published package var logDrawerHeight: CGFloat = 260
     @Published package var isSidebarQuickLaunchExpanded: Bool = true
     @Published package var inputFocusNonce: Int = 0
     @Published package var searchFocusNonce: Int = 0
@@ -192,9 +196,22 @@ package final class StudioViewModel: ObservableObject {
             jobs = restoredJobs
         }
         launchGames = await coordinator.gameLibrary.all()
-        let persistedLogs = jobs.flatMap(\.logs)
-        if !persistedLogs.isEmpty {
-            logs = Array((persistedLogs + logs).suffix(300))
+        let persistedPairs: [(date: Date, seq: Int, entry: LogEntry)] = jobs.enumerated().flatMap { jobIdx, job in
+            job.logs.enumerated().map { logIdx, entry in
+                let inferred = entry.timestamp
+                    ?? LogEntry.combine(legacyTime: entry.time, onCalendarDayOf: job.updatedAt)
+                    ?? job.updatedAt
+                return (date: inferred, seq: jobIdx * 1000 + logIdx, entry: entry)
+            }
+        }
+        if !persistedPairs.isEmpty {
+            let sortedPersisted = persistedPairs
+                .sorted { lhs, rhs in
+                    if lhs.date != rhs.date { return lhs.date < rhs.date }
+                    return lhs.seq < rhs.seq
+                }
+                .map(\.entry)
+            logs = Array((sortedPersisted + logs).suffix(300))
         }
         rescanCrossOverBottles()
     }
@@ -1382,14 +1399,14 @@ package final class StudioViewModel: ObservableObject {
         if entry.level == .error && !isLogDrawerPresented {
             hasUnreadErrorLogs = true
         }
-        print("[\(entry.time)] [\(entry.module.rawValue):\(entry.level.rawValue)] \(entry.message)")
+        print("[\(entry.fullTimestampString)] [\(entry.module.rawValue):\(entry.level.rawValue)] \(entry.message)")
     }
 
     package func appendLog(_ text: String, highlight: Bool = false) {
         let lower = text.lowercased()
         let level: LogLevel = (lower.hasPrefix("error") || lower.contains("失败") || lower.contains("异常") || lower.contains("不足"))
             ? .error
-            : (lower.hasPrefix("warning") || lower.contains("限速") ? .warning : .info)
+            : (lower.hasPrefix("warn") || lower.contains("限速") ? .warning : .info)
         appendLog(LogEntry(module: .patch, level: level, message: text))
     }
 
@@ -1400,10 +1417,80 @@ package final class StudioViewModel: ObservableObject {
         return logs.filter { $0.taskID == taskID }
     }
 
+    package func taskTitle(for taskID: UUID?) -> String? {
+        guard let taskID else { return nil }
+        return jobs.first(where: { $0.id == taskID })?.title
+    }
+
+    /// Resolves the best available `Date` for display and delta calculation:
+    /// uses `entry.timestamp` when present, or combines legacy `HH:mm:ss` with the owning job's `updatedAt` date.
+    package func resolvedTimestampDate(for entry: LogEntry) -> Date? {
+        if let ts = entry.timestamp {
+            return ts
+        }
+        if let taskID = entry.taskID, let job = jobs.first(where: { $0.id == taskID }) {
+            return LogEntry.combine(legacyTime: entry.time, onCalendarDayOf: job.updatedAt) ?? job.updatedAt
+        }
+        return nil
+    }
+
+    package func resolvedDateString(for entry: LogEntry) -> String? {
+        if let explicit = entry.datePartString {
+            return explicit
+        }
+        if let inferred = resolvedTimestampDate(for: entry) {
+            return LogEntry.formatDateString(date: inferred)
+        }
+        return nil
+    }
+
+    package func formattedLogLine(_ entry: LogEntry) -> String {
+        let tsText: String
+        if let ts = entry.timestamp {
+            tsText = LogEntry.formatFullTimestamp(date: ts)
+        } else if let datePart = resolvedDateString(for: entry) {
+            tsText = "\(datePart) \(entry.time)"
+        } else {
+            tsText = entry.time
+        }
+        let levelTag = entry.displayLevel.shortTag
+        let moduleTag = entry.module.label
+        if let title = taskTitle(for: entry.taskID), !title.isEmpty {
+            return "[\(tsText)] [\(levelTag)] [\(moduleTag)] [\(title)] \(entry.message)"
+        }
+        return "[\(tsText)] [\(levelTag)] [\(moduleTag)] \(entry.message)"
+    }
+
     package func rawErrorOutput(for taskID: UUID) -> String? {
         let chunks = logs(for: taskID).compactMap(\.rawOutput).filter { !$0.isEmpty }
         guard !chunks.isEmpty else { return nil }
         return chunks.joined(separator: "\n\n")
+    }
+
+    package func copySingleLog(_ entry: LogEntry) {
+        var text = formattedLogLine(entry)
+        if let raw = entry.rawOutput, !raw.isEmpty {
+            text += "\n\(raw)"
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    package func copyGlobalLogs() {
+        let entries = filteredGlobalLogs
+        guard !entries.isEmpty else { return }
+        let output = entries.map { entry in
+            var line = formattedLogLine(entry)
+            if let raw = entry.rawOutput, !raw.isEmpty {
+                let indented = raw.split(separator: "\n", omittingEmptySubsequences: false)
+                    .map { "    \($0)" }
+                    .joined(separator: "\n")
+                line += "\n\(indented)"
+            }
+            return line
+        }.joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(output, forType: .string)
     }
 
     package func copyTaskLogs(taskID: UUID, includeRawOnly: Bool = false) {
@@ -1413,7 +1500,7 @@ package final class StudioViewModel: ObservableObject {
         if includeRawOnly, let rawText {
             output = rawText
         } else {
-            var lines = taskLogs.map { "[\($0.time)] \($0.message)" }
+            var lines = taskLogs.map { formattedLogLine($0) }
             if let rawText, !rawText.isEmpty {
                 lines.append("\n--- Raw Output ---\n\(rawText)")
             }
@@ -1429,13 +1516,20 @@ package final class StudioViewModel: ObservableObject {
         return logs.filter { entry in
             if let mod = logModuleFilter, entry.module != mod { return false }
             if logErrorsOnly && entry.level != .error { return false }
+            if logWarningsAndErrorsOnly && entry.displayLevel == .info { return false }
             if !query.isEmpty {
                 let matchMsg = entry.message.localizedCaseInsensitiveContains(query)
                 let matchRaw = entry.rawOutput?.localizedCaseInsensitiveContains(query) == true
-                if !matchMsg && !matchRaw { return false }
+                let matchTask = taskTitle(for: entry.taskID)?.localizedCaseInsensitiveContains(query) == true
+                let matchTime = entry.fullTimestampString.localizedCaseInsensitiveContains(query)
+                if !matchMsg && !matchRaw && !matchTask && !matchTime { return false }
             }
             return true
         }
+    }
+
+    package var activeRunningJobCount: Int {
+        jobs.filter { !$0.isArchived && $0.status == .running }.count
     }
 
     package func toggleLogDrawer() {
@@ -1451,17 +1545,24 @@ package final class StudioViewModel: ObservableObject {
     }
 
     package func seedShowcaseState() {
+        let now = Date()
+        let dlJob1ID = UUID()
+        let dlJob2ID = UUID()
+        let unJob1ID = UUID()
+        let paJob1ID = UUID()
+
         let downloadTasks = [
-            StudioTask(title: "Esoteric_Ebb_Build_1402.7z", status: .running(0.68), pill: "48.4 MB/s", rightText: "1.47 / 2.16 GB"),
-            StudioTask(title: "Order_of_the_Sinking_Star_v1.02.rar", status: .running(0.28), pill: "19.2 MB/s", rightText: "0.27 / 0.95 GB"),
+            StudioTask(id: dlJob1ID, title: "Esoteric_Ebb_Build_1402.7z", status: .running(0.68), pill: "48.4 MB/s", rightText: "1.47 / 2.16 GB"),
+            StudioTask(id: dlJob2ID, title: "Order_of_the_Sinking_Star_v1.02.rar", status: .running(0.28), pill: "19.2 MB/s", rightText: "0.27 / 0.95 GB"),
             StudioTask(title: "Animal_Well_v1.0.7z", status: .done, pill: nil, rightText: "38.4 MB")
         ]
         let unpackTasks = [
-            StudioTask(title: "Esoteric_Ebb_Build_1402.7z", status: .locked(0.55), pill: "试密中", rightText: "2.16 GB"),
+            StudioTask(id: unJob1ID, title: "Esoteric_Ebb_Build_1402.7z", status: .locked(0.55), pill: "试密中", rightText: "2.16 GB"),
             StudioTask(title: "Animal_Well_v1.0.7z", status: .done, pill: "已解锁", rightText: "38.4 MB")
         ]
         let patchTasks = [
             StudioTask(
+                id: paJob1ID,
                 title: "Esoteric Ebb",
                 status: .done,
                 pill: "Goldberg x64",
@@ -1486,11 +1587,34 @@ package final class StudioViewModel: ObservableObject {
                 ]
             )
         ]
-        jobs = downloadTasks.map { Job.fromLegacy($0, kind: .download) }
+
+        var seededJobs = downloadTasks.map { Job.fromLegacy($0, kind: .download) }
             + unpackTasks.map { Job.fromLegacy($0, kind: .unpack) }
             + patchTasks.map { Job.fromLegacy($0, kind: .patch) }
 
-        let now = Date()
+        let demoPatchLogs: [LogEntry] = [
+            LogEntry(taskID: paJob1ID, module: .patch, level: .info, timestamp: now.addingTimeInterval(-95.420), message: "pe-scan ▸ 开始扫描目录与 PE 导入表: Esoteric Ebb"),
+            LogEntry(taskID: paJob1ID, module: .patch, level: .info, timestamp: now.addingTimeInterval(-94.812), message: "gbe_fork ▸ [Esoteric Ebb] 已就绪 (Goldberg x64, AppID: 2057760)"),
+            LogEntry(taskID: paJob1ID, module: .patch, level: .info, timestamp: now.addingTimeInterval(-94.105), message: "dlc ▸ 已写入 2 条 Steam DLC 解锁清单至 steam_settings/configs.app.ini"),
+            LogEntry(taskID: paJob1ID, module: .patch, level: .info, timestamp: now.addingTimeInterval(-91.640), message: "config ▸ [Esoteric Ebb] 已写入 AppID=2057760、简中配置及 [DXMT + MSync]")
+        ]
+
+        if let paIdx = seededJobs.firstIndex(where: { $0.id == paJob1ID }) {
+            seededJobs[paIdx].logs = demoPatchLogs
+        }
+        jobs = seededJobs
+
+        logs = [
+            LogEntry(taskID: dlJob1ID, module: .download, level: .info, timestamp: now.addingTimeInterval(-142.830), message: "sniff ▸ 解析链接: https://pixeldrain.com/u/Hk46yJoF"),
+            LogEntry(taskID: dlJob1ID, module: .download, level: .info, timestamp: now.addingTimeInterval(-142.215), message: "proxy ▸ 直连探测畅通，通过 sf-dl 启用 16 线程下载"),
+            LogEntry(taskID: dlJob2ID, module: .download, level: .warning, timestamp: now.addingTimeInterval(-118.490), message: "warn ▸ 服务端触发 1MB/s 限速，可在设置配置 Pixeldrain API Key 或切换节点"),
+            LogEntry(taskID: unJob1ID, module: .unpack, level: .info, timestamp: now.addingTimeInterval(-108.110), message: "7zz ▸ 检测到加密分卷，正在匹配密码词典 (3/12)..."),
+            LogEntry(taskID: unJob1ID, module: .unpack, level: .info, timestamp: now.addingTimeInterval(-104.302), message: "perm ▸ 已修复读写权限 (chmod u+rwX) 并清除隔离锁 (xattr -cr)"),
+        ] + demoPatchLogs + [
+            LogEntry(taskID: dlJob2ID, module: .download, level: .error, timestamp: now.addingTimeInterval(-22.148), message: "error ▸ 解析直链失败 (HTTP 403 · 直链签名已过期)，尝试刷新镜像失败", rawOutput: "curl: (22) The requested URL returned error: 403 Forbidden\nX-Cache: Error from cloudfront\nRetry-After: 30"),
+            LogEntry(taskID: nil, module: .launch, level: .info, timestamp: now.addingTimeInterval(-4.615), message: "容器目录扫描新增 2 款游戏 · CrossOver 25.1 已就绪")
+        ]
+
         launchGames = [
             LaunchGame(title: "Esoteric Ebb", source: .patchPipeline, addedAt: now.addingTimeInterval(-7200), lastPlayedAt: now.addingTimeInterval(-1800)),
             LaunchGame(title: "Order of the Sinking Star", source: .patchPipeline, addedAt: now.addingTimeInterval(-86400), lastPlayedAt: now.addingTimeInterval(-86400)),

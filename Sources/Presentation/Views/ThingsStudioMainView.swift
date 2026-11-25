@@ -100,7 +100,7 @@ package struct ThingsStudioMainView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
 
-                if vm.isLogDrawerPresented && !isSnapshotMode {
+                if vm.isLogDrawerPresented {
                     Rectangle()
                         .fill(Color.t3Divider)
                         .frame(height: 1)
@@ -108,8 +108,8 @@ package struct ThingsStudioMainView: View {
                             MascotBottomProgressOverlay(vm: vm, isSnapshotMode: isSnapshotMode)
                         }
                         .zIndex(2)
-                    GlobalLogDrawerView(vm: vm)
-                        .frame(height: 200)
+                    GlobalLogDrawerView(vm: vm, isSnapshotMode: isSnapshotMode)
+                        .frame(height: vm.logDrawerHeight)
                     Rectangle()
                         .fill(Color.t3Divider)
                         .frame(height: 1)
