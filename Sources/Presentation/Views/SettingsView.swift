@@ -105,8 +105,15 @@ struct SettingsView: View {
         let selectedIconTitle = vm.iconOptions.first(where: { $0.id == selectedID })?.title
             .components(separatedBy: " · ").last ?? theme.logoColorTitle
 
+        let activeSelectionStroke: Color = theme.mode == .monochrome
+            ? Color.t3TextMain.opacity(theme.isDark ? 0.72 : 0.80)
+            : theme.accent
+        let activeIconStroke: Color = theme.mode == .monochrome
+            ? Color.t3TextMain.opacity(theme.isDark ? 0.75 : 0.85)
+            : theme.accent
+
         return VStack(alignment: .leading, spacing: ChrysaMetrics.settingsSectionGap) {
-            // Section 1: Appearance Mode Miniature Windows
+            // Section 1: Appearance Mode Miniature Windows (Shared Gliding Selection Frame)
             SettingsSection(title: "外观模式") {
                 HStack(spacing: 14) {
                     ForEach(AppearanceMode.allCases) { mode in
@@ -116,6 +123,23 @@ struct SettingsView: View {
                             accent: theme.accent
                         ) {
                             vm.setAppearanceMode(mode)
+                        }
+                    }
+                }
+                .overlayPreferenceValue(SelectionBoundsKey<AppearanceMode>.self) { bounds in
+                    GeometryReader { proxy in
+                        if let anchor = bounds[activeAppearance] {
+                            let rect = proxy[anchor]
+                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous)
+                                .stroke(activeSelectionStroke, lineWidth: 1.6)
+                                .overlay(alignment: .topTrailing) {
+                                    T3SelectionCheckBadge(size: 17)
+                                        .padding(7)
+                                }
+                                .frame(width: rect.width, height: rect.height)
+                                .offset(x: rect.minX, y: rect.minY)
+                                .allowsHitTesting(false)
+                                .animation(isSnapshotMode ? nil : ChrysaMotion.tabGlide, value: activeAppearance)
                         }
                     }
                 }
@@ -137,7 +161,7 @@ struct SettingsView: View {
                 }
             }
 
-            // Section 3: Dedicated App Icon Section (No Longer Squeezed Under Color Dots)
+            // Section 3: Dedicated App Icon Section (Shared Gliding Selection Ring)
             SettingsSection(
                 title: "应用图标",
                 trailingMeta: selectedIconTitle
@@ -151,12 +175,25 @@ struct SettingsView: View {
                             compactAppIconButton(opt, isSelected: selectedID == opt.id, variant: variant)
                         }
                     }
+                    .overlayPreferenceValue(SelectionBoundsKey<String>.self) { bounds in
+                        GeometryReader { proxy in
+                            if let anchor = bounds[selectedID] {
+                                let rect = proxy[anchor]
+                                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous)
+                                    .stroke(activeIconStroke, lineWidth: 1.8)
+                                    .frame(width: rect.width, height: rect.height)
+                                    .offset(x: rect.minX, y: rect.minY)
+                                    .allowsHitTesting(false)
+                                    .animation(isSnapshotMode ? nil : ChrysaMotion.tabGlide, value: selectedID)
+                            }
+                        }
+                    }
                     .padding(.horizontal, 20)
                     .padding(.vertical, 16)
                 }
             }
 
-            // Section 4: Dedicated Companion Mascot Section
+            // Section 4: Dedicated Companion Mascot Section (Shared Gliding Selection Frame)
             SettingsSection(
                 title: "桌面伴生灵",
                 trailingMeta: activeMascot.displayName
@@ -176,6 +213,24 @@ struct SettingsView: View {
                                 .font(.system(size: 13, weight: activeMascot == option ? .medium : .regular))
                                 .foregroundColor(activeMascot == option ? .t3TextMain : .t3TextMuted)
                                 .lineLimit(1)
+                                .animation(isSnapshotMode ? nil : ChrysaMotion.tabGlide, value: activeMascot)
+                        }
+                    }
+                }
+                .overlayPreferenceValue(SelectionBoundsKey<MascotTheme>.self) { bounds in
+                    GeometryReader { proxy in
+                        if let anchor = bounds[activeMascot] {
+                            let rect = proxy[anchor]
+                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous)
+                                .stroke(activeSelectionStroke, lineWidth: 1.6)
+                                .overlay(alignment: .topTrailing) {
+                                    T3SelectionCheckBadge(size: 16)
+                                        .padding(6)
+                                }
+                                .frame(width: rect.width, height: rect.height)
+                                .offset(x: rect.minX, y: rect.minY)
+                                .allowsHitTesting(false)
+                                .animation(isSnapshotMode ? nil : ChrysaMotion.tabGlide, value: activeMascot)
                         }
                     }
                 }
@@ -241,11 +296,28 @@ struct SettingsView: View {
     private var accentSwatchStrip: some View {
         let currentMode = vm.accentColorMode
         let currentSwatch = vm.accentSwatch
+        let activeSelectionID: AccentSelectionID = {
+            switch currentMode {
+            case .monochrome:    return .monochrome
+            case .followAppIcon: return .followAppIcon
+            case .custom:        return .swatch(currentSwatch)
+            }
+        }()
+        let activeRingColor: Color = {
+            switch currentMode {
+            case .monochrome:
+                return theme.isDark ? Color.white.opacity(0.65) : Color.black.opacity(0.65)
+            case .followAppIcon:
+                return theme.logoAccent
+            case .custom:
+                return AppThemePalette.swatchColor(for: currentSwatch, colorScheme: colorScheme)
+            }
+        }()
 
         return HStack(spacing: 9) {
             AccentDotButton(
+                selectionID: .monochrome,
                 isSelected: currentMode == .monochrome,
-                ringColor: theme.isDark ? Color.white.opacity(0.65) : Color.black.opacity(0.65),
                 tooltip: "纯色墨韵"
             ) {
                 ZStack {
@@ -263,8 +335,8 @@ struct SettingsView: View {
             }
 
             AccentDotButton(
+                selectionID: .followAppIcon,
                 isSelected: currentMode == .followAppIcon,
-                ringColor: theme.logoAccent,
                 tooltip: "跟随当前图标（\(theme.logoColorTitle)）"
             ) {
                 ZStack {
@@ -286,8 +358,8 @@ struct SettingsView: View {
                 let col = AppThemePalette.swatchColor(for: swatch, colorScheme: colorScheme)
                 let selected = (currentMode == .custom && currentSwatch == swatch)
                 AccentDotButton(
+                    selectionID: .swatch(swatch),
                     isSelected: selected,
-                    ringColor: col,
                     tooltip: swatch.displayName
                 ) {
                     Circle().fill(col)
@@ -296,13 +368,23 @@ struct SettingsView: View {
                 }
             }
         }
+        .overlayPreferenceValue(SelectionBoundsKey<AccentSelectionID>.self) { bounds in
+            GeometryReader { proxy in
+                if let anchor = bounds[activeSelectionID] {
+                    let rect = proxy[anchor]
+                    Circle()
+                        .stroke(activeRingColor, lineWidth: 1.6)
+                        .frame(width: rect.width, height: rect.height)
+                        .offset(x: rect.minX, y: rect.minY)
+                        .allowsHitTesting(false)
+                        .animation(isSnapshotMode ? nil : ChrysaMotion.tabGlide, value: activeSelectionID)
+                }
+            }
+        }
     }
 
     private func compactAppIconButton(_ opt: AppIconOption, isSelected: Bool, variant: String) -> some View {
         let isHovered = (hoveredIconID == opt.id && !isSelected)
-        let ringColor: Color = isSelected
-            ? (theme.mode == .monochrome ? Color.t3TextMain.opacity(theme.isDark ? 0.75 : 0.85) : theme.accent)
-            : (isHovered ? Color.t3PillBorder : Color.clear)
 
         return ZStack {
             if let nsImg = vm.iconPreviewImage(id: opt.id, variant: variant) {
@@ -325,8 +407,10 @@ struct SettingsView: View {
         .padding(3)
         .overlay(
             RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous)
-                .stroke(ringColor, lineWidth: isSelected ? 1.8 : 1.0)
+                .stroke(isHovered ? Color.t3PillBorder : Color.clear, lineWidth: 1.0)
+                .animation(ChrysaMotion.hover(isHovered), value: isHovered)
         )
+        .anchorPreference(key: SelectionBoundsKey<String>.self, value: .bounds) { [opt.id: $0] }
         .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous))
         .onHover { hovering in
             if hovering {
@@ -431,38 +515,16 @@ struct SettingsView: View {
             SettingsSection(title: "网络与加速") {
                 T3SettingsGroupCard {
                     groupedRow(title: "代理策略") {
-                        let policy = vm.settingsStore.settings.proxyPolicy
-                        HStack(spacing: 2) {
-                            ForEach(ProxyPolicy.allCases) { option in
-                                let selected = (policy == option)
-                                Button(action: { vm.setProxyPolicy(option) }) {
-                                    Text(option.displayName)
-                                        .font(.system(size: 13, weight: selected ? .semibold : .regular))
-                                        .foregroundColor(selected ? .t3TextMain : .t3TextSub)
-                                        .padding(.horizontal, 9)
-                                        .frame(height: ChrysaMetrics.controlHeight - 4)
-                                        .background(
-                                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
-                                                .fill(selected ? Color.t3ControlSelectedFill : Color.clear)
-                                        )
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
-                                                .stroke(selected ? Color.t3ControlSelectedStroke : Color.clear, lineWidth: 0.8)
-                                        )
-                                }
-                                .buttonStyle(.plain)
-                            }
+                        T3SlidingSegmentedControl(
+                            options: ProxyPolicy.allCases,
+                            selection: vm.settingsStore.settings.proxyPolicy,
+                            label: \.displayName,
+                            equalWidth: false,
+                            fontSize: 13,
+                            isSnapshotMode: isSnapshotMode
+                        ) { option in
+                            vm.setProxyPolicy(option)
                         }
-                        .padding(2)
-                        .frame(height: ChrysaMetrics.controlHeight)
-                        .background(
-                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
-                                .fill(Color.t3ControlTrackBg)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
-                                .stroke(Color.t3GroupedCardBorder, lineWidth: 0.8)
-                        )
                         .help("智能分流仅对海外受限网盘走系统代理")
                     }
 
@@ -849,10 +911,16 @@ private struct T3GroupedToggleRow: View {
     }
 }
 
-// MARK: - Circular Color Swatch Button with Double-Ring Selection Halo
+// MARK: - Circular Color Swatch Button (Gliding Halo Rendered by Parent Overlay)
+private enum AccentSelectionID: Hashable {
+    case monochrome
+    case followAppIcon
+    case swatch(AccentSwatch)
+}
+
 private struct AccentDotButton<Content: View>: View {
+    let selectionID: AccentSelectionID
     let isSelected: Bool
-    let ringColor: Color
     let tooltip: String
     @ViewBuilder let content: () -> Content
     let action: () -> Void
@@ -867,11 +935,10 @@ private struct AccentDotButton<Content: View>: View {
         .frame(width: 22, height: 22)
         .overlay(
             Circle()
-                .stroke(
-                    isSelected ? ringColor : (isHovered ? Color.t3PillBorder : Color.clear),
-                    lineWidth: isSelected ? 1.6 : 1.0
-                )
+                .stroke((!isSelected && isHovered) ? Color.t3PillBorder : Color.clear, lineWidth: 1.0)
+                .animation(ChrysaMotion.hover(isHovered), value: isHovered)
         )
+        .anchorPreference(key: SelectionBoundsKey<AccentSelectionID>.self, value: .bounds) { [selectionID: $0] }
         .contentShape(Circle())
         .onHover { isHovered = $0 }
         .onInstantPress(action)
@@ -879,7 +946,7 @@ private struct AccentDotButton<Content: View>: View {
     }
 }
 
-// MARK: - Miniature Window Appearance Mode Card (Spacious 86pt Proportions)
+// MARK: - Miniature Window Appearance Mode Card (Spacious 86pt Proportions + Gliding Selection)
 private struct AppearanceModeWindowCard: View {
     let mode: AppearanceMode
     let isSelected: Bool
@@ -903,29 +970,12 @@ private struct AppearanceModeWindowCard: View {
             .overlay(
                 RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous)
                     .stroke(
-                        isSelected
-                            ? (theme.mode == .monochrome ? Color.t3TextMain.opacity(theme.isDark ? 0.72 : 0.80) : theme.accent)
-                            : (isHovered ? Color.t3PillBorder : Color.t3GroupedCardBorder),
-                        lineWidth: isSelected ? 1.6 : 1.0
+                        (!isSelected && isHovered) ? Color.t3PillBorder : Color.t3GroupedCardBorder,
+                        lineWidth: 1.0
                     )
+                    .animation(ChrysaMotion.hover(isHovered), value: isHovered)
             )
-            .overlay(alignment: .topTrailing) {
-                if isSelected {
-                    ZStack {
-                        Circle()
-                            .fill(theme.isDark ? Color.black.opacity(0.68) : Color(red: 0.12, green: 0.13, blue: 0.16))
-                            .frame(width: 17, height: 17)
-                            .overlay(
-                                Circle()
-                                    .stroke(Color.white.opacity(theme.isDark ? 0.22 : 0.0), lineWidth: 0.75)
-                            )
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 8.5, weight: .bold))
-                            .foregroundColor(.white)
-                    }
-                    .padding(7)
-                }
-            }
+            .anchorPreference(key: SelectionBoundsKey<AppearanceMode>.self, value: .bounds) { [mode: $0] }
             .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous))
             .onHover { isHovered = $0 }
             .onInstantPress(action)

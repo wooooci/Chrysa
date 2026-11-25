@@ -953,18 +953,48 @@ struct GlobalLogDrawerView: View {
     @ObservedObject var vm: StudioViewModel
     @Environment(\.appTheme) private var theme
     @FocusState private var isLogSearchFocused: Bool
+    @State private var hoveredFilter: LogFilterID? = nil
+    @State private var isErrorsFilterHovered = false
+
+    private enum LogFilterID: Hashable {
+        case all
+        case module(LogModule)
+    }
+
+    private var activeLogFilter: LogFilterID? {
+        if let mod = vm.logModuleFilter {
+            return .module(mod)
+        }
+        return vm.logErrorsOnly ? nil : .all
+    }
 
     var body: some View {
         let entries = vm.filteredGlobalLogs
 
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 6) {
-                filterPill(title: "全部", isSelected: vm.logModuleFilter == nil && !vm.logErrorsOnly) {
-                    vm.logModuleFilter = nil
+                HStack(alignment: .center, spacing: 4) {
+                    filterPill(id: .all, title: "全部", isSelected: activeLogFilter == .all) {
+                        vm.logModuleFilter = nil
+                    }
+                    ForEach(LogModule.allCases) { mod in
+                        let id = LogFilterID.module(mod)
+                        filterPill(id: id, title: mod.label, isSelected: activeLogFilter == id) {
+                            vm.logModuleFilter = (vm.logModuleFilter == mod) ? nil : mod
+                        }
+                    }
                 }
-                ForEach(LogModule.allCases) { mod in
-                    filterPill(title: mod.label, isSelected: vm.logModuleFilter == mod) {
-                        vm.logModuleFilter = (vm.logModuleFilter == mod) ? nil : mod
+                .backgroundPreferenceValue(SelectionBoundsKey<LogFilterID>.self) { bounds in
+                    GeometryReader { proxy in
+                        if let active = activeLogFilter, let anchor = bounds[active] {
+                            let rect = proxy[anchor]
+                            let useAccent = theme.mode != .monochrome
+                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                                .fill(useAccent ? theme.accent : Color.t3ControlSelectedFill)
+                                .frame(width: rect.width, height: rect.height)
+                                .offset(x: rect.minX, y: rect.minY)
+                                .animation(ChrysaMotion.tabGlide, value: activeLogFilter)
+                        }
                     }
                 }
 
@@ -973,23 +1003,24 @@ struct GlobalLogDrawerView: View {
                     .frame(width: 1, height: 12)
                     .padding(.horizontal, 2)
 
-                Button(action: { vm.logErrorsOnly.toggle() }) {
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(Color.t3ErrorText)
-                            .frame(width: 5, height: 5)
-                        Text("仅错误")
-                            .font(.system(size: 11, weight: vm.logErrorsOnly ? .semibold : .regular))
-                            .foregroundColor(vm.logErrorsOnly ? .t3ErrorText : .t3TextSub)
-                    }
-                    .padding(.horizontal, 7)
-                    .frame(height: 22)
-                    .background(
-                        RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
-                            .fill(vm.logErrorsOnly ? Color.t3ErrorPillBg : Color.clear)
-                    )
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(Color.t3ErrorText)
+                        .frame(width: 5, height: 5)
+                    Text("仅错误")
+                        .font(.system(size: 11, weight: vm.logErrorsOnly ? .semibold : .regular))
+                        .foregroundColor(vm.logErrorsOnly ? .t3ErrorText : (isErrorsFilterHovered ? .t3TextMain : .t3TextSub))
                 }
-                .buttonStyle(.plain)
+                .padding(.horizontal, 7)
+                .frame(height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                        .fill(vm.logErrorsOnly ? Color.t3ErrorPillBg : (isErrorsFilterHovered ? Color.t3HoverBg : Color.clear))
+                        .animation(vm.logErrorsOnly ? ChrysaMotion.tabGlide : ChrysaMotion.hover(isErrorsFilterHovered), value: vm.logErrorsOnly)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous))
+                .onHover { isErrorsFilterHovered = $0 }
+                .onInstantPress { vm.logErrorsOnly.toggle() }
 
                 Spacer()
 
@@ -1114,20 +1145,30 @@ struct GlobalLogDrawerView: View {
         }
     }
 
-    private func filterPill(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+    private func filterPill(id: LogFilterID, title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
         let useAccent = isSelected && theme.mode != .monochrome
-        return Button(action: action) {
-            Text(title)
-                .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
-                .foregroundColor(useAccent ? theme.accentForeground : (isSelected ? .t3TextMain : .t3TextSub))
-                .padding(.horizontal, 8)
-                .frame(height: 22)
-                .background(
-                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
-                        .fill(useAccent ? theme.accent : (isSelected ? Color.t3ControlSelectedFill : Color.clear))
-                )
-        }
-        .buttonStyle(.plain)
+        let isHovered = (hoveredFilter == id && !isSelected)
+        return Text(title)
+            .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+            .foregroundColor(useAccent ? theme.accentForeground : (isSelected || isHovered ? .t3TextMain : .t3TextSub))
+            .padding(.horizontal, 8)
+            .frame(height: 22)
+            .background(
+                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                    .fill(isHovered ? Color.t3HoverBg : Color.clear)
+                    .animation(ChrysaMotion.hover(isHovered), value: isHovered)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous))
+            .anchorPreference(key: SelectionBoundsKey<LogFilterID>.self, value: .bounds) { [id: $0] }
+            .onHover { hovering in
+                if hovering {
+                    hoveredFilter = id
+                } else if hoveredFilter == id {
+                    hoveredFilter = nil
+                }
+            }
+            .onInstantPress(action)
+            .animation(ChrysaMotion.tabGlide, value: isSelected)
     }
 
     private func drawerLevelColor(_ level: LogLevel) -> Color {

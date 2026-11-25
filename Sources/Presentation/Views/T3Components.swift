@@ -391,7 +391,102 @@ struct T3ToggleSwitch: View {
                 .frame(width: 12.5, height: 12.5)
                 .padding(.horizontal, 1.8)
         }
-        .animation(.easeOut(duration: 0.14), value: isOn)
+        .animation(ChrysaMotion.tabGlide, value: isOn)
+    }
+}
+
+// MARK: - Shared Sliding Segmented Control (Magpie / Sidebar `ChrysaMotion.tabGlide` Pattern)
+struct T3SlidingSegmentedControl<Option: Hashable & Identifiable>: View {
+    let options: [Option]
+    let selection: Option
+    let label: (Option) -> String
+    var equalWidth: Bool = false
+    var fontSize: CGFloat = 13
+    var isSnapshotMode: Bool = false
+    let onSelect: (Option) -> Void
+
+    @State private var hoveredOption: Option? = nil
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(options) { option in
+                let isSelected = (selection == option)
+                let isHovered = (hoveredOption == option && !isSelected)
+
+                Text(label(option))
+                    .font(.system(size: fontSize, weight: isSelected ? .semibold : .regular))
+                    .foregroundColor(isSelected ? .t3TextMain : (isHovered ? .t3TextMain : .t3TextSub))
+                    .padding(.horizontal, equalWidth ? 4 : 9)
+                    .frame(maxWidth: equalWidth ? .infinity : nil)
+                    .frame(height: ChrysaMetrics.controlHeight - 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                            .fill(isHovered ? Color.t3HoverBg : Color.clear)
+                            .animation(ChrysaMotion.hover(isHovered), value: isHovered)
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous))
+                    .anchorPreference(key: SelectionBoundsKey<Option>.self, value: .bounds) { [option: $0] }
+                    .onHover { hovering in
+                        if hovering {
+                            hoveredOption = option
+                        } else if hoveredOption == option {
+                            hoveredOption = nil
+                        }
+                    }
+                    .onInstantPress {
+                        if selection != option {
+                            onSelect(option)
+                        }
+                    }
+            }
+        }
+        .backgroundPreferenceValue(SelectionBoundsKey<Option>.self) { bounds in
+            GeometryReader { proxy in
+                if let anchor = bounds[selection] {
+                    let rect = proxy[anchor]
+                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                        .fill(Color.t3ControlSelectedFill)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                                .stroke(Color.t3ControlSelectedStroke, lineWidth: 0.8)
+                        )
+                        .frame(width: rect.width, height: rect.height)
+                        .offset(x: rect.minX, y: rect.minY)
+                        .animation(isSnapshotMode ? nil : ChrysaMotion.tabGlide, value: selection)
+                }
+            }
+        }
+        .padding(2)
+        .frame(height: ChrysaMetrics.controlHeight)
+        .background(
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
+                .fill(Color.t3ControlTrackBg)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
+                .stroke(Color.t3GroupedCardBorder, lineWidth: 0.8)
+        )
+        .animation(isSnapshotMode ? nil : ChrysaMotion.tabGlide, value: selection)
+    }
+}
+
+struct T3SelectionCheckBadge: View {
+    var size: CGFloat = 17
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(theme.isDark ? Color.black.opacity(0.68) : Color(red: 0.12, green: 0.13, blue: 0.16))
+                .frame(width: size, height: size)
+                .overlay(
+                    Circle()
+                        .stroke(Color.white.opacity(theme.isDark ? 0.22 : 0.0), lineWidth: 0.75)
+                )
+            Image(systemName: "checkmark")
+                .font(.system(size: 8.5, weight: .bold))
+                .foregroundColor(.white)
+        }
     }
 }
 
@@ -477,6 +572,13 @@ extension View {
 }
 
 // MARK: - Magpie-Style Shared Tab Follower Preference Keys & Interaction
+struct SelectionBoundsKey<ID: Hashable>: PreferenceKey {
+    static var defaultValue: [ID: Anchor<CGRect>] { [:] }
+    static func reduce(value: inout [ID: Anchor<CGRect>], nextValue: () -> [ID: Anchor<CGRect>]) {
+        value.merge(nextValue(), uniquingKeysWith: { $1 })
+    }
+}
+
 struct SidebarTabBoundsKey: PreferenceKey {
     static var defaultValue: [StudioTab: Anchor<CGRect>] = [:]
     static func reduce(value: inout [StudioTab: Anchor<CGRect>], nextValue: () -> [StudioTab: Anchor<CGRect>]) {

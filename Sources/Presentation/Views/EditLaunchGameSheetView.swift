@@ -168,37 +168,15 @@ struct EditLaunchGameSheetView: View {
                 Text("图标模式")
                     .font(ChrysaFont.sectionHeader)
                     .foregroundColor(.t3TextSub)
-                HStack(spacing: 2) {
-                    ForEach(LaunchGameIconPreference.allCases) { mode in
-                        let selected = (iconPreference == mode)
-                        Button(action: { iconPreference = mode }) {
-                            Text(mode.label)
-                                .font(.system(size: 12, weight: selected ? .semibold : .regular))
-                                .foregroundColor(selected ? .t3TextMain : .t3TextSub)
-                                .frame(maxWidth: .infinity)
-                                .frame(height: ChrysaMetrics.controlHeight - 4)
-                                .background(
-                                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
-                                        .fill(selected ? Color.t3ControlSelectedFill : Color.clear)
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
-                                        .stroke(selected ? Color.t3ControlSelectedStroke : Color.clear, lineWidth: 0.8)
-                                )
-                        }
-                        .buttonStyle(.plain)
-                    }
+                T3SlidingSegmentedControl(
+                    options: LaunchGameIconPreference.allCases,
+                    selection: iconPreference,
+                    label: \.label,
+                    equalWidth: true,
+                    fontSize: 12
+                ) { mode in
+                    iconPreference = mode
                 }
-                .padding(2)
-                .frame(height: ChrysaMetrics.controlHeight)
-                .background(
-                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
-                        .fill(Color.t3ControlTrackBg)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
-                        .stroke(Color.t3GroupedCardBorder, lineWidth: 0.8)
-                )
             }
 
             Rectangle()
@@ -309,37 +287,15 @@ struct EditLaunchGameSheetView: View {
                         Text("图形后端")
                             .font(ChrysaFont.sectionHeader)
                             .foregroundColor(.t3TextSub)
-                        HStack(spacing: 2) {
-                            ForEach(CrossOverGraphicsBackend.allCases) { backend in
-                                let selected = (graphicsBackend == backend)
-                                Button(action: { graphicsBackend = backend }) {
-                                    Text(backend.displayName)
-                                        .font(.system(size: 12, weight: selected ? .semibold : .regular))
-                                        .foregroundColor(selected ? .t3TextMain : .t3TextSub)
-                                        .frame(maxWidth: .infinity)
-                                        .frame(height: ChrysaMetrics.controlHeight - 4)
-                                        .background(
-                                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
-                                                .fill(selected ? Color.t3ControlSelectedFill : Color.clear)
-                                        )
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
-                                                .stroke(selected ? Color.t3ControlSelectedStroke : Color.clear, lineWidth: 0.8)
-                                        )
-                                }
-                                .buttonStyle(.plain)
-                            }
+                        T3SlidingSegmentedControl(
+                            options: CrossOverGraphicsBackend.allCases,
+                            selection: graphicsBackend,
+                            label: \.displayName,
+                            equalWidth: true,
+                            fontSize: 12
+                        ) { backend in
+                            graphicsBackend = backend
                         }
-                        .padding(2)
-                        .frame(height: ChrysaMetrics.controlHeight)
-                        .background(
-                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
-                                .fill(Color.t3ControlTrackBg)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
-                                .stroke(Color.t3GroupedCardBorder, lineWidth: 0.8)
-                        )
                     }
 
                     HStack {

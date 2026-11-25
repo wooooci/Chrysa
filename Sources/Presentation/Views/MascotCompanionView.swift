@@ -2137,29 +2137,12 @@ struct MascotThemeCardView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous)
                     .stroke(
-                        isSelected
-                            ? (appTheme.mode == .monochrome ? Color.t3TextMain.opacity(appTheme.isDark ? 0.72 : 0.80) : appTheme.accent)
-                            : (isHovered ? Color.t3PillBorder : Color.t3GroupedCardBorder),
-                        lineWidth: isSelected ? 1.6 : 1.0
+                        (!isSelected && isHovered) ? Color.t3PillBorder : Color.t3GroupedCardBorder,
+                        lineWidth: 1.0
                     )
+                    .animation(ChrysaMotion.hover(isHovered), value: isHovered)
             )
-            .overlay(alignment: .topTrailing) {
-                if isSelected {
-                    ZStack {
-                        Circle()
-                            .fill(appTheme.isDark ? Color.black.opacity(0.68) : Color(red: 0.12, green: 0.13, blue: 0.16))
-                            .frame(width: 16, height: 16)
-                            .overlay(
-                                Circle()
-                                    .stroke(Color.white.opacity(appTheme.isDark ? 0.22 : 0.0), lineWidth: 0.75)
-                            )
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 8.5, weight: .bold))
-                            .foregroundColor(.white)
-                    }
-                    .padding(6)
-                }
-            }
+            .anchorPreference(key: SelectionBoundsKey<MascotTheme>.self, value: .bounds) { [option: $0] }
             .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous))
             .onHover { isHovered = $0 }
             .onInstantPress(onSelect)
