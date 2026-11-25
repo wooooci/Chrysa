@@ -342,8 +342,8 @@ private struct LaunchGameIconView: View {
                         RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
                             .stroke(Color.t3TopBoxBorder, lineWidth: 0.6)
                     )
-                Image(systemName: "gamecontroller")
-                    .font(.system(size: 10.5, weight: .regular))
+                    Image(systemName: "gamecontroller")
+                        .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.t3TextMuted)
             }
         }

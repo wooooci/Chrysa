@@ -26,12 +26,12 @@ struct T3SidebarIcon: View {
     }
 
     private var basePointSize: CGFloat {
-        isHeader ? 18.5 : 13.5
+        isHeader ? 19 : 14
     }
 
     private var symbolWeight: Font.Weight {
-        if isHeader { return .medium }
-        return isActiveSidebar ? .medium : .regular
+        if isHeader { return .semibold }
+        return isActiveSidebar ? .semibold : .medium
     }
 
     private var opticalScaleFactor: CGFloat {
@@ -156,10 +156,10 @@ struct T3PieRing: View {
         let resolvedColor = color ?? theme.accent
         ZStack {
             Circle()
-                .stroke(resolvedColor, lineWidth: 1.5)
+                .stroke(resolvedColor, lineWidth: 1.75)
             Path { path in
                 let center = CGPoint(x: size / 2, y: size / 2)
-                let radius = (size / 2) - 2.6
+                let radius = (size / 2) - 2.8
                 path.move(to: center)
                 path.addArc(
                     center: center,
@@ -185,7 +185,7 @@ struct T3StatusBox: View {
         switch status {
         case .queued:
             RoundedRectangle(cornerRadius: ChrysaMetrics.radiusMicro, style: .continuous)
-                .stroke(Color.t3CheckBorder, lineWidth: 1.5)
+                .stroke(Color.t3CheckBorder, lineWidth: 1.75)
                 .background(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusMicro, style: .continuous).fill(Color.t3CanvasBg))
                 .frame(width: 14, height: 14)
         case .running(let pct):
@@ -264,7 +264,7 @@ struct T3MenuPill: View {
         HStack(spacing: 5) {
             if let icon {
                 Image(systemName: icon)
-                    .font(.system(size: 10.5, weight: .medium))
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.t3TextSub)
             }
             Text(text)
@@ -273,7 +273,7 @@ struct T3MenuPill: View {
                 .lineLimit(1)
             if showChevron {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(.system(size: 10, weight: .semibold))
                     .foregroundColor(.t3TextMuted)
             }
         }
@@ -332,7 +332,7 @@ struct T3ToolbarIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 13, weight: isActive ? .medium : .regular))
+                .font(.system(size: 14, weight: isActive ? .semibold : .medium))
                 .foregroundColor(isActive ? theme.accent : (isHovered ? .t3TextMain : .t3TextSub))
                 .frame(width: 28, height: 24)
                 .background(

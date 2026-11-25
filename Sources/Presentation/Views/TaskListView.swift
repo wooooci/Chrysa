@@ -69,7 +69,7 @@ struct PageHeaderView: View {
                     }
                 } label: {
                     Image(systemName: "ellipsis")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(isEllipsisHovered ? .t3TextMain : .t3TextMuted)
                         .frame(width: 24, height: 22)
                         .background(
@@ -124,7 +124,7 @@ struct PageHeaderView: View {
     private var launchSortLabel: some View {
         HStack(spacing: 5) {
             Image(systemName: "arrow.up.arrow.down")
-                .font(.system(size: 10, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
             Text(vm.launchSortOrder.label)
                 .font(ChrysaFont.control)
         }

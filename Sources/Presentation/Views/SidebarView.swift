@@ -65,10 +65,10 @@ struct SidebarView: View {
             Button(action: { vm.exitSettings() }) {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(isBackHovered ? .t3TextMain : .t3TextSub)
                     Text("返回")
-                        .font(ChrysaFont.control)
+                        .font(ChrysaFont.navItem)
                         .foregroundColor(isBackHovered ? .t3TextMain : .t3TextSub)
                     Spacer(minLength: 0)
                     Text("Esc")
@@ -142,7 +142,7 @@ struct SidebarView: View {
                 case .appearance:
                     Image(systemName: cat.symbolName)
                         .symbolRenderingMode(.monochrome)
-                        .font(.system(size: 13.5, weight: isHighlighted ? .medium : .regular))
+                        .font(.system(size: 14, weight: isHighlighted ? .semibold : .medium))
                         .imageScale(.medium)
                         .foregroundStyle(isHighlighted ? theme.iconActive : theme.iconInactive)
                         .frame(width: 20, height: 20, alignment: .center)
@@ -269,7 +269,7 @@ struct SidebarView: View {
                     vm.toggleSidebarQuickLaunch()
                 }) {
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(isLaunchChevronHovered ? .t3TextMain : .t3TextMuted)
                         .rotationEffect(.degrees(vm.isSidebarQuickLaunchExpanded ? 0 : -90))
                         .animation(
@@ -659,7 +659,7 @@ private struct ArcGameGlyph: View {
                 .clipShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous))
         } else {
             Text(monogram)
-                .font(.system(size: 14, weight: .medium, design: .rounded))
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
                 .foregroundColor(isHovered ? .t3TextMain : .t3TextSub)
         }
     }
