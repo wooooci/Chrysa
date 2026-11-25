@@ -32,15 +32,32 @@
 - **芯片**：Apple Silicon（M1 / M2 / M3 / M4 等 `arm64` 机型）
 - **运行环境**：已安装 [CrossOver](https://www.codeweavers.com/crossover)
 
-### 下载整包
+### 安装方式
+
+#### 方式一：一键脚本安装（推荐，免「已损坏」弹窗，无需 Homebrew）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/wooooci/Chrysa/main/install.sh | bash
+```
+
+脚本会自动拉取最新 Release 整包、校验 SHA-256、安装至 `/Applications/Chrysa.app` 并清除隔离属性，装完可直接双击打开。
+
+#### 方式二：Homebrew Cask 安装（推荐，方便后续升级）
+
+```bash
+brew install --cask --no-quarantine wooooci/tap/chrysa
+```
+
+#### 方式三：手动下载整包
 
 1. 前往 [Releases](https://github.com/wooooci/Chrysa/releases) 下载最新的 `Chrysa-0.9.0-macos-arm64.zip`。
 2. 解压后将 `Chrysa.app` 拖入 `/Applications`（或 `~/Applications`）。
-3. 由于当前采用本地临时签名（ad-hoc），首次打开若系统提示「已损坏」或「无法验证开发者」，在终端执行以下命令清除隔离属性即可：
-
-```bash
-xattr -cr /Applications/Chrysa.app
-```
+3. 由于当前采用本地临时签名（ad-hoc），浏览器下载后首次打开若提示「已损坏」或「无法验证开发者」，二选一放行即可：
+   - **终端一行命令**：
+     ```bash
+     xattr -cr /Applications/Chrysa.app
+     ```
+   - **纯鼠标操作**（macOS 15+）：双击弹出提示后点「完成/取消」→ 打开「系统设置 → 隐私与安全性」→ 滑到底部点击「仍要打开」并输入密码确认（仅需一次）。
 
 ### 从源码构建
 
