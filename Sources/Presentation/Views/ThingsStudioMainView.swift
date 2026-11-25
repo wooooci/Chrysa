@@ -99,7 +99,6 @@ package struct ThingsStudioMainView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
-                .padding(.bottom, 10)
 
                 if vm.isLogDrawerPresented && !isSnapshotMode {
                     Rectangle()
@@ -108,6 +107,7 @@ package struct ThingsStudioMainView: View {
                         .overlay(alignment: .bottom) {
                             MascotBottomProgressOverlay(vm: vm, isSnapshotMode: isSnapshotMode)
                         }
+                        .zIndex(2)
                     GlobalLogDrawerView(vm: vm)
                         .frame(height: 200)
                     Rectangle()
@@ -120,6 +120,7 @@ package struct ThingsStudioMainView: View {
                         .overlay(alignment: .bottom) {
                             MascotBottomProgressOverlay(vm: vm, isSnapshotMode: isSnapshotMode)
                         }
+                        .zIndex(2)
                 }
 
                 bottomToolbar(theme: theme)

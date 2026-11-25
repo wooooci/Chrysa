@@ -83,6 +83,9 @@ package enum MascotVectorRenderer {
     package static let colPaperBg     = Color(red: 245 / 255, green: 240 / 255, blue: 230 / 255)
     package static let colPaperLine   = Color(red: 204 / 255, green: 196 / 255, blue: 182 / 255)
     package static let colPaperShadow = Color(red: 214 / 255, green: 206 / 255, blue: 190 / 255).opacity(0.68)
+    package static func shadowColor(isDark: Bool) -> Color {
+        isDark ? Color.black.opacity(0.42) : colPaperShadow
+    }
     package static let colTerracotta  = Color(red: 216 / 255, green: 118 / 255, blue: 86 / 255)
     package static let colWindInk     = Color(red: 104 / 255, green: 122 / 255, blue: 138 / 255).opacity(0.72)
 
@@ -598,7 +601,8 @@ package enum MascotVectorRenderer {
         isBig: Bool,
         includeShadow: Bool = true,
         includeBody: Bool = true,
-        includeForepaws: Bool = true
+        includeForepaws: Bool = true,
+        isDark: Bool = false
     ) -> CGPoint {
         guard theme.isEnabled else {
             return CGPoint(x: anchorX, y: anchorY)
@@ -643,7 +647,7 @@ package enum MascotVectorRenderer {
                     rx: (24.5 + sim.cubeLegRetract * 3.0) * scale,
                     ry: 4.0 * scale
                 )
-                context.fill(pShadow, with: .color(colPaperShadow))
+                context.fill(pShadow, with: .color(shadowColor(isDark: isDark)))
             }
 
             var pPedInk = Path()
@@ -824,7 +828,7 @@ package enum MascotVectorRenderer {
                 if includeShadow {
                     var pShadow = Path()
                     addEllipseCW(&pShadow, cx: anchorX + 1.5 * scale, cy: anchorY + 25.0 * scale, rx: 26.5 * scale, ry: 4.2 * scale)
-                    context.fill(pShadow, with: .color(colPaperShadow))
+                    context.fill(pShadow, with: .color(shadowColor(isDark: isDark)))
                 }
 
                 var pInk = Path()
@@ -959,7 +963,7 @@ package enum MascotVectorRenderer {
             if includeShadow {
                 var pShadow = Path()
                 addEllipseCW(&pShadow, cx: anchorX + 1.5 * scale, cy: anchorY + 30.5 * scale, rx: 16.5 * scale, ry: 2.7 * scale)
-                context.fill(pShadow, with: .color(colPaperShadow))
+                context.fill(pShadow, with: .color(shadowColor(isDark: isDark)))
             }
 
             let ringTilt = -0.22 + sim.ringLagTilt
@@ -1426,7 +1430,8 @@ package enum MascotVectorRenderer {
         cheerHop: CGFloat,
         cheerProgress: CGFloat = 0.0,
         cheerSquash: CGFloat = 0.0,
-        clock: CGFloat
+        clock: CGFloat,
+        isDark: Bool = false
     ) {
         guard theme.isEnabled else { return }
         let inkPad = max(0.82, 1.80 * scale)
@@ -1446,7 +1451,7 @@ package enum MascotVectorRenderer {
 
             let cubeH = 23.0 * sy * scale
             let cubeW = 28.0 * sx * scale
-            let cy = seamY - legLen - cubeH * 0.5 - trotBob - cheerHop
+            let cy = seamY - legLen - cubeH * 0.5 - inkPad * (1.0 - legBlend) - trotBob - cheerHop
             let cx = rx
 
             var pShadow = Path()
@@ -1458,7 +1463,7 @@ package enum MascotVectorRenderer {
                 rx: (13.5 - airShrink) * scale,
                 ry: 2.0 * scale
             )
-            context.fill(pShadow, with: .color(colPaperShadow))
+            context.fill(pShadow, with: .color(shadowColor(isDark: isDark)))
 
             var pBackInk = Path()
             if legBlend > 0.08 {
@@ -1574,13 +1579,13 @@ package enum MascotVectorRenderer {
             let flipAng: CGFloat = isCheering ? (MascotController.smootherstep(0.11, 0.84, cheerProgress) * .pi * 2.0) : 0.0
             let cf = cos(flipAng), sf = sin(flipAng)
 
-            let cy = seamY - 18.8 * sy * scale - hopLift - cheerHop
+            let cy = seamY - 20.6 * sy * scale - inkPad * 0.6 - hopLift - cheerHop
             let cx = rx
 
             var pShadow = Path()
             let airAmt = max(hopAbs, isCheering ? min(1.0, cheerHop / max(1.0, 13.4)) : 0.0)
             addEllipseCW(&pShadow, cx: rx, cy: seamY + 0.5, rx: lerp(15.5, 8.2, airAmt) * scale, ry: 2.0 * scale)
-            context.fill(pShadow, with: .color(colPaperShadow))
+            context.fill(pShadow, with: .color(shadowColor(isDark: isDark)))
 
             if isCheering {
                 var pFlipHalo = Path()
@@ -1696,7 +1701,7 @@ package enum MascotVectorRenderer {
             var pShadow = Path()
             let airShrink = isCheering ? min(1.0, cheerHop / max(1.0, 11.2)) * 2.8 : 0.0
             addEllipseCW(&pShadow, cx: rx, cy: seamY + 0.5, rx: (10.0 - airShrink) * scale, ry: 1.6 * scale)
-            context.fill(pShadow, with: .color(colPaperShadow))
+            context.fill(pShadow, with: .color(shadowColor(isDark: isDark)))
 
             if isCheering {
                 let burstR = lerp(14.0, 36.0, cheerProgress) * scale
@@ -1969,7 +1974,8 @@ struct MascotTopDropZoneContainer<Content: View>: View {
                         isBig: false,
                         includeShadow: false,
                         includeBody: true,
-                        includeForepaws: false
+                        includeForepaws: false,
+                        isDark: appTheme.isDark
                     )
                 }
             }
@@ -2010,7 +2016,8 @@ struct MascotTopDropZoneContainer<Content: View>: View {
                     isBig: false,
                     includeShadow: true,
                     includeBody: true,
-                    includeForepaws: true
+                    includeForepaws: true,
+                    isDark: appTheme.isDark
                 )
             } else {
                 intakePt = MascotVectorRenderer.drawTopMascot(
@@ -2023,7 +2030,8 @@ struct MascotTopDropZoneContainer<Content: View>: View {
                     isBig: false,
                     includeShadow: false,
                     includeBody: false,
-                    includeForepaws: true
+                    includeForepaws: true,
+                    isDark: appTheme.isDark
                 )
             }
             MascotVectorRenderer.drawIntakeEffects(
@@ -2042,8 +2050,10 @@ struct MascotTopDropZoneContainer<Content: View>: View {
 struct MascotBottomProgressOverlay: View {
     @ObservedObject var vm: StudioViewModel
     let isSnapshotMode: Bool
+    @Environment(\.appTheme) private var appTheme
 
-    private let overlayHeight: CGFloat = 48.0
+    private let bottomOverflow: CGFloat = 4.0
+    private let overlayHeight: CGFloat = 52.0
     private let horizontalInset: CGFloat = ChrysaMetrics.canvasInset
 
     var body: some View {
@@ -2053,6 +2063,7 @@ struct MascotBottomProgressOverlay: View {
         } else if isSnapshotMode {
             runnerCanvas(at: 0.55, theme: theme, status: vm.activePipelineProgressSummary)
                 .frame(height: overlayHeight)
+                .offset(y: bottomOverflow)
                 .allowsHitTesting(false)
         } else {
             let status = vm.activePipelineProgressSummary
@@ -2064,6 +2075,7 @@ struct MascotBottomProgressOverlay: View {
                 )
             }
             .frame(height: overlayHeight)
+            .offset(y: bottomOverflow)
             .allowsHitTesting(false)
         }
     }
@@ -2078,7 +2090,7 @@ struct MascotBottomProgressOverlay: View {
             let w = max(200, geo.size.width)
             let seamX1 = horizontalInset
             let seamX2 = max(seamX1 + 40, w - horizontalInset)
-            let seamY = overlayHeight - 0.5
+            let seamY = overlayHeight - bottomOverflow - 0.5
             let frame = vm.mascot.stepRunnerFrame(
                 at: now,
                 theme: theme,
@@ -2096,7 +2108,7 @@ struct MascotBottomProgressOverlay: View {
                     ctx.stroke(
                         pSeam,
                         with: .color(MascotVectorRenderer.seamColor(for: frame.theme)),
-                        style: StrokeStyle(lineWidth: 2.4, lineCap: .round)
+                        style: StrokeStyle(lineWidth: 2.2, lineCap: .round)
                     )
                 }
                 MascotVectorRenderer.drawBottomRunner(
@@ -2111,7 +2123,8 @@ struct MascotBottomProgressOverlay: View {
                     cheerHop: frame.cheerHop,
                     cheerProgress: frame.cheerProgress,
                     cheerSquash: frame.cheerSquash,
-                    clock: frame.clock
+                    clock: frame.clock,
+                    isDark: appTheme.isDark
                 )
             }
             .frame(width: w, height: overlayHeight)
@@ -2226,7 +2239,8 @@ struct MascotThemeCardView: View {
                 anchorX: topCx,
                 anchorY: topAnchorY,
                 scale: topScale,
-                isBig: true
+                isBig: true,
+                isDark: appTheme.isDark
             )
 
             MascotVectorRenderer.drawBottomRunner(
@@ -2239,7 +2253,8 @@ struct MascotThemeCardView: View {
                 activeBlend: 1.0,
                 walkPhase: t * 8.5,
                 cheerHop: 0,
-                clock: t
+                clock: t,
+                isDark: appTheme.isDark
             )
         }
         .background(Color.t3MascotStageBg)

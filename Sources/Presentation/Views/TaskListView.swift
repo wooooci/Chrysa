@@ -415,7 +415,7 @@ package struct TaskListSectionView: View {
         }
         .padding(.horizontal, ChrysaMetrics.rowOuterInset)
         .padding(.top, 2)
-        .padding(.bottom, 12)
+        .padding(.bottom, 26)
     }
 }
 
