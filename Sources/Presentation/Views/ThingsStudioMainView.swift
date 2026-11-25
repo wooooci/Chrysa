@@ -145,9 +145,10 @@ package struct ThingsStudioMainView: View {
 
             Spacer(minLength: 12)
 
-            HStack(spacing: 6) {
+            HStack(spacing: 4) {
                 T3ToolbarIconButton(
                     systemName: "plus",
+                    opticalSize: 14,
                     tooltip: addActionTooltip
                 ) {
                     if vm.activeTab == .download {
@@ -161,20 +162,23 @@ package struct ThingsStudioMainView: View {
 
                 T3ToolbarIconButton(
                     systemName: "folder",
+                    opticalSize: 13.5,
                     tooltip: "在访达中打开下载目录"
                 ) {
                     vm.openDownloadDirectoryInFinder()
                 }
 
                 T3ToolbarIconButton(
-                    systemName: "shippingbox",
+                    systemName: "archivebox",
+                    opticalSize: 13.5,
                     tooltip: "在访达中打开 CrossOver 容器目录"
                 ) {
                     vm.openBottlesDirectoryInFinder()
                 }
 
                 T3ToolbarIconButton(
-                    systemName: "key",
+                    systemName: "key.horizontal",
+                    opticalSize: 13.5,
                     isActive: vm.activeTab == .settings && vm.settingsCategory == .unpack,
                     tooltip: "解压密码词典"
                 ) {
@@ -182,7 +186,8 @@ package struct ThingsStudioMainView: View {
                 }
 
                 T3ToolbarIconButton(
-                    systemName: "terminal",
+                    systemName: "rectangle.bottomthird.inset.filled",
+                    opticalSize: 14,
                     isActive: vm.isLogDrawerPresented,
                     showBadgeDot: vm.hasUnreadErrorLogs,
                     tooltip: "显示或隐藏诊断日志 (⇧⌘L)"

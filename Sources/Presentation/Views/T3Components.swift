@@ -319,9 +319,10 @@ struct T3InlineActionButton: View {
     }
 }
 
-// MARK: - Bottom Toolbar Icon Button (Honest Semantics + Hover Pill + Mandatory Tooltip)
+// MARK: - Bottom Toolbar Icon Button (Native macOS Hierarchical SF Symbols + Optical Sizing)
 struct T3ToolbarIconButton: View {
     let systemName: String
+    var opticalSize: CGFloat = 13.5
     var isActive: Bool = false
     var showBadgeDot: Bool = false
     let tooltip: String
@@ -332,9 +333,11 @@ struct T3ToolbarIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 15, weight: isActive ? .semibold : .medium))
-                .foregroundColor(isActive ? theme.accent : (isHovered ? .t3TextMain : .t3TextSub))
-                .frame(width: 30, height: 26)
+                .symbolRenderingMode(.hierarchical)
+                .font(.system(size: opticalSize, weight: isActive ? .semibold : .medium))
+                .imageScale(.medium)
+                .foregroundStyle(isActive ? theme.accent : (isHovered ? Color.t3TextMain : Color.t3TextSub))
+                .frame(width: 28, height: 24)
                 .background(
                     RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
                         .fill(
@@ -343,12 +346,13 @@ struct T3ToolbarIconButton: View {
                                 : (isHovered ? Color.t3HoverBg : Color.clear)
                         )
                 )
+                .animation(ChrysaMotion.hover(isHovered), value: isHovered)
                 .overlay(alignment: .topTrailing) {
                     if showBadgeDot {
                         Circle()
                             .fill(Color.t3ErrorText)
                             .frame(width: 5.5, height: 5.5)
-                            .offset(x: -3, y: 3)
+                            .offset(x: -3, y: 2.5)
                     }
                 }
                 .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous))
