@@ -52,7 +52,7 @@ xattr -cr /Applications/Chrysa.app
 ./build.sh
 ```
 
-> 说明：应用图标、`gbe_fork` DLL 等运行时资源不随源码仓库分发，`build.sh` 会自动从已有 `~/Applications/Chrysa.app`（或 `CHRYSA_ASSET_APP`）复用资源，并将本机 `aria2c`、`7zz`、`unar` 及其依赖库重定位打包进应用内。
+> 说明：`gbe_fork`（x64 / x86）DLL 已内置在源码仓库 `packaging/Resources/gbe_fork/` 中；应用图标资源会从已有 `~/Applications/Chrysa.app`（或 `CHRYSA_ASSET_APP`）复用，`build.sh` 同时会将本机 `aria2c`、`7zz`、`unar` 及其依赖库重定位打包进应用内。
 
 ## 友情链接
 

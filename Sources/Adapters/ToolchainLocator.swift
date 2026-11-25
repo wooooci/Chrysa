@@ -68,6 +68,9 @@ package enum ToolchainLocator {
 
         let appSupport = ("~/Library/Application Support/Chrysa/gbe_fork/\(sub)" as NSString).expandingTildeInPath
         if fm.fileExists(atPath: appSupport) { return appSupport }
+
+        let repoBundled = (fm.currentDirectoryPath as NSString).appendingPathComponent("packaging/Resources/gbe_fork/\(sub)")
+        if fm.fileExists(atPath: repoBundled) { return repoBundled }
         return nil
     }
 

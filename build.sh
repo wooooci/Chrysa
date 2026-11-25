@@ -24,6 +24,9 @@ fi
 if [[ -d "$ASSET_APP/Contents/Resources" ]]; then
   /usr/bin/ditto "$ASSET_APP/Contents/Resources" "$BUNDLE/Contents/Resources"
 fi
+if [[ -d "$DIR/packaging/Resources" ]]; then
+  /usr/bin/ditto "$DIR/packaging/Resources" "$BUNDLE/Contents/Resources"
+fi
 python3 "$DIR/scripts/bundle-runtime-tools.py" "$BUNDLE" "$ASSET_APP"
 
 cp "$DIR/packaging/Info.plist" "$BUNDLE/Contents/Info.plist"
