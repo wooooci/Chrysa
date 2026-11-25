@@ -169,7 +169,7 @@ package struct ThingsStudioMainView: View {
                 }
 
                 T3ToolbarIconButton(
-                    systemName: "cube",
+                    systemName: "folder.badge.gearshape",
                     opticalSize: 13.5,
                     tooltip: "在访达中打开 CrossOver 容器目录"
                 ) {
