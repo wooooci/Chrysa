@@ -23,12 +23,14 @@ struct PageHeaderView: View {
         let archivedCount = activeTabArchivedCount
 
         HStack(alignment: .center, spacing: 9) {
-            T3SidebarIcon(tab: vm.activeTab, placement: .pageHeader)
+            HStack(alignment: .center, spacing: 6) {
+                T3SidebarIcon(tab: vm.activeTab, placement: .pageHeader)
 
-            Text(tabTitle)
-                .font(ChrysaFont.pageTitle)
-                .tracking(ChrysaTracking.pageTitle)
-                .foregroundColor(.t3TextMain)
+                Text(tabTitle)
+                    .font(ChrysaFont.pageTitle)
+                    .tracking(ChrysaTracking.pageTitle)
+                    .foregroundColor(.t3TextMain)
+            }
 
             if vm.activeTab != .settings && vm.activeTab != .launch && !isSnapshotMode {
                 Menu {

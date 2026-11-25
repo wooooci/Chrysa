@@ -56,11 +56,23 @@ struct T3SidebarIcon: View {
 
     private var headerOpticalOffset: CGSize {
         switch tab {
-        case .download: return CGSize(width: 0.0, height: 0.5)
-        case .unpack:   return CGSize(width: 0.0, height: 0.25)
-        case .patch:    return CGSize(width: 0.0, height: 0.5)
-        case .launch:   return CGSize(width: 0.0, height: 0.5)
+        case .download: return CGSize(width: 0.0, height: 0.75)
+        case .unpack:   return CGSize(width: 0.0, height: -0.25)
+        case .patch:    return CGSize(width: 0.0, height: 1.0)
+        case .launch:   return CGSize(width: 0.0, height: 0.75)
         case .settings: return CGSize(width: 0.0, height: 0.5)
+        }
+    }
+
+    /// Compensates per-symbol SF Symbol right side-bearing (notably `folder.badge.plus` negative overhang)
+    /// so visual ink-to-ink spacing to the 24pt page title stays identical across all tabs.
+    private var headerTrailingOpticalPadding: CGFloat {
+        switch tab {
+        case .download: return 1.0
+        case .unpack:   return 5.5
+        case .patch:    return 1.5
+        case .launch:   return 2.0
+        case .settings: return 1.0
         }
     }
 
@@ -81,6 +93,7 @@ struct T3SidebarIcon: View {
                 .imageScale(.medium)
                 .foregroundStyle(resolvedColor)
                 .offset(headerOpticalOffset)
+                .padding(.trailing, headerTrailingOpticalPadding)
                 .frame(height: 26, alignment: .leading)
         } else {
             Image(systemName: tab.symbolName)
