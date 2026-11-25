@@ -103,7 +103,7 @@ struct SettingsView: View {
             ? Color.t3TextMain.opacity(theme.isDark ? 0.75 : 0.85)
             : theme.accent
 
-        return VStack(alignment: .leading, spacing: 28) {
+        return VStack(alignment: .leading, spacing: ChrysaMetrics.settingsSectionGap) {
             // Section 1: Visual Style
             EditorialSection(title: "视觉风格") {
                 // Row 1: Inline Miniature Window Thumbnails (ChatGPT macOS Signature Row)
@@ -190,11 +190,11 @@ struct SettingsView: View {
                 }
             }
 
-            // Section 2: Companion Mascot (Open Frameless Grid)
-            EditorialSection(title: "桌面伴生灵", trailingMeta: activeMascot.displayName) {
+            // Section 2: Companion (Open Frameless Grid)
+            EditorialSection(title: "伙伴", trailingMeta: activeMascot.displayName) {
                 LazyVGrid(columns: mascotColumns, spacing: 12) {
                     ForEach(MascotTheme.allCases) { option in
-                        VStack(alignment: .leading, spacing: 6) {
+                        VStack(alignment: .center, spacing: 6) {
                             MascotThemeCardView(
                                 option: option,
                                 isSelected: activeMascot == option,
@@ -371,7 +371,7 @@ struct SettingsView: View {
         let connCount = vm.settingsStore.settings.maxConcurrentConnections
         let maxJobsCount = vm.settingsStore.settings.maxConcurrentDownloads
 
-        return VStack(alignment: .leading, spacing: 28) {
+        return VStack(alignment: .leading, spacing: ChrysaMetrics.settingsSectionGap) {
             EditorialSection(title: "存储与并发") {
                 editorialRow(title: "下载目录") {
                     HStack(spacing: 8) {
@@ -518,7 +518,7 @@ struct SettingsView: View {
 
     // MARK: 3. Unpack Settings
     private var settingsUnpackView: some View {
-        VStack(alignment: .leading, spacing: 28) {
+        VStack(alignment: .leading, spacing: ChrysaMetrics.settingsSectionGap) {
             EditorialSection(title: "解压行为") {
                 EditorialToggleRow(
                     title: "解压后清理压缩包",
@@ -652,7 +652,7 @@ struct SettingsView: View {
         let bottlesLabel = vm.settingsStore.settings.displayBottlesDirectory
         let lang = vm.settingsStore.settings.defaultLanguage
 
-        return VStack(alignment: .leading, spacing: 28) {
+        return VStack(alignment: .leading, spacing: ChrysaMetrics.settingsSectionGap) {
             EditorialSection(title: "CrossOver 环境") {
                 editorialRow(title: "容器目录") {
                     HStack(spacing: 8) {
@@ -758,28 +758,34 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Editorial Section (ChatGPT macOS Style: 13pt Semibold Label + Crisp 1px Hairline + Open Rows)
+// MARK: - Editorial Section (Recessed 12pt Eyebrow Header + 1px Hairline + High-Contrast 14pt Setting Rows)
 private struct EditorialSection<Content: View>: View {
     let title: String
     var trailingMeta: String? = nil
     @ViewBuilder let content: () -> Content
+    @Environment(\.appTheme) private var theme
 
     var body: some View {
+        let headerColor: Color = theme.isDark
+            ? Color.t3TextSub.opacity(0.84)
+            : Color.t3TextMuted
+
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(title)
-                    .font(ChrysaFont.sectionHeader)
-                    .foregroundColor(.t3TextMain)
+                    .font(.system(size: 12, weight: .semibold))
+                    .tracking(0.45)
+                    .foregroundColor(headerColor)
 
                 Spacer(minLength: 8)
 
                 if let trailingMeta, !trailingMeta.isEmpty {
                     Text(trailingMeta)
-                        .font(ChrysaFont.caption.monospacedDigit())
-                        .foregroundColor(.t3TextMuted)
+                        .font(.system(size: 12, weight: .regular).monospacedDigit())
+                        .foregroundColor(.t3TextMuted.opacity(0.85))
                 }
             }
-            .padding(.bottom, 10)
+            .padding(.bottom, 8)
 
             Rectangle()
                 .fill(Color.t3Divider)

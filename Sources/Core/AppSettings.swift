@@ -70,13 +70,13 @@ package enum MascotTheme: String, CaseIterable, Codable, Equatable, Sendable, Id
     package var displayName: String {
         switch self {
         case .forestCube:
-            return "森林方块芽"
+            return "块块"
         case .roundMochi:
-            return "趴边圆白团"
+            return "糯糯"
         case .grokAstral:
-            return "星轨墨陶球"
+            return "球球"
         case .none:
-            return "极简关闭"
+            return "无"
         }
     }
 

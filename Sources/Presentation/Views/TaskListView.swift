@@ -63,7 +63,7 @@ struct PageHeaderView: View {
                             }
                         }
                     } label: {
-                        Label("伴生灵主题（\(vm.mascotTheme.displayName)）", systemImage: "sparkles")
+                        Label("伙伴（\(vm.mascotTheme.displayName)）", systemImage: "sparkles")
                     }
                     Divider()
                     Button(role: .destructive, action: { vm.clearAllInActiveTab() }) {

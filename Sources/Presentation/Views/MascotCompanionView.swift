@@ -1914,7 +1914,7 @@ struct MascotTopDropZoneContainer<Content: View>: View {
                                     vm.mascot.triggerBoing()
                                 }
                                 .contextMenu {
-                                    Section("切换伴生灵主题") {
+                                    Section("切换伙伴") {
                                         ForEach(MascotTheme.allCases) { opt in
                                             Button {
                                                 vm.setMascotTheme(opt)
