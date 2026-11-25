@@ -8,15 +8,26 @@ struct PageHeaderView: View {
     let isSnapshotMode: Bool
     @Environment(\.appTheme) private var theme
     @State private var isEllipsisHovered = false
-    @State private var isArchivePillHovered = false
     @State private var isSortPillHovered = false
 
+    private var activeTabArchivedCount: Int {
+        switch vm.activeTab {
+        case .download: return vm.jobs(of: .download).filter(\.isArchived).count
+        case .unpack:   return vm.jobs(of: .unpack).filter(\.isArchived).count
+        case .patch:    return vm.jobs(of: .patch).filter(\.isArchived).count
+        case .launch, .settings: return 0
+        }
+    }
+
     var body: some View {
+        let archivedCount = activeTabArchivedCount
+
         HStack(alignment: .center, spacing: 9) {
             T3SidebarIcon(tab: vm.activeTab, placement: .pageHeader)
 
             Text(tabTitle)
                 .font(ChrysaFont.pageTitle)
+                .tracking(ChrysaTracking.pageTitle)
                 .foregroundColor(.t3TextMain)
 
             if vm.activeTab != .settings && vm.activeTab != .launch && !isSnapshotMode {
@@ -32,7 +43,11 @@ struct PageHeaderView: View {
                     }
                     Divider()
                     Button(action: { vm.showArchived.toggle() }) {
-                        Label(vm.showArchived ? "隐藏已归档项目" : "显示已归档项目", systemImage: vm.showArchived ? "eye.slash" : "eye")
+                        let suffix = archivedCount > 0 ? "（\(archivedCount)）" : ""
+                        Label(
+                            vm.showArchived ? "隐藏已归档项目\(suffix)" : "显示已归档项目\(suffix)",
+                            systemImage: vm.showArchived ? "eye.slash" : "eye"
+                        )
                     }
                     Divider()
                     Menu {
@@ -54,7 +69,7 @@ struct PageHeaderView: View {
                     }
                 } label: {
                     Image(systemName: "ellipsis")
-                        .font(.system(size: 13.5, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(isEllipsisHovered ? .t3TextMain : .t3TextMuted)
                         .frame(width: 24, height: 22)
                         .background(
@@ -70,7 +85,7 @@ struct PageHeaderView: View {
                 .help("列表操作")
             } else if vm.activeTab != .settings && vm.activeTab != .launch {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 13.5, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(.t3TextMuted)
                     .padding(.leading, 4)
             }
@@ -102,55 +117,29 @@ struct PageHeaderView: View {
                     .onHover { isSortPillHovered = $0 }
                     .help("排序方式")
                 }
-            } else if vm.activeTab != .settings {
-                let useAccentFill = (vm.showArchived && theme.mode != .monochrome)
-                Button(action: { vm.showArchived.toggle() }) {
-                    Text(vm.showArchived ? "含已归档" : "进行中")
-                        .font(ChrysaFont.captionMedium)
-                        .foregroundColor(
-                            useAccentFill
-                                ? theme.accentForeground
-                                : (vm.showArchived || isArchivePillHovered ? .t3TextMain : .t3TextSub)
-                        )
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 3.5)
-                        .background(
-                            Capsule().fill(
-                                useAccentFill
-                                    ? theme.accent
-                                    : (vm.showArchived ? Color.t3ControlSelectedFill : (isArchivePillHovered ? Color.t3ControlHoverFill : Color.t3ControlFill))
-                            )
-                        )
-                        .overlay(
-                            Capsule().stroke(
-                                useAccentFill ? Color.clear : (vm.showArchived ? Color.t3ControlSelectedStroke : Color.t3GroupedCardBorder),
-                                lineWidth: 0.8
-                            )
-                        )
-                }
-                .buttonStyle(.plain)
-                .onHover { isArchivePillHovered = $0 }
-                .help(vm.showArchived ? "点击仅显示进行中项目" : "点击包含已归档项目")
             }
         }
     }
 
     private var launchSortLabel: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 5) {
             Image(systemName: "arrow.up.arrow.down")
                 .font(.system(size: 10, weight: .medium))
             Text(vm.launchSortOrder.label)
-                .font(ChrysaFont.captionMedium)
+                .font(ChrysaFont.control)
         }
         .foregroundColor(isSortPillHovered ? .t3TextMain : .t3TextSub)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 3)
+        .padding(.horizontal, 8)
+        .frame(height: ChrysaMetrics.microControlHeight)
         .background(
-            Capsule().fill(isSortPillHovered ? Color.t3HoverBg : Color.t3TopBoxBg)
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                .fill(isSortPillHovered ? Color.t3ControlHoverFill : Color.t3ControlFill)
         )
         .overlay(
-            Capsule().stroke(Color.t3TopBoxBorder, lineWidth: 0.8)
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                .stroke(Color.t3GroupedCardBorder, lineWidth: 0.75)
         )
+        .animation(ChrysaMotion.hover(isSortPillHovered), value: isSortPillHovered)
     }
 
     private var tabTitle: String {
@@ -992,9 +981,9 @@ struct GlobalLogDrawerView: View {
                             .foregroundColor(vm.logErrorsOnly ? .t3ErrorText : .t3TextSub)
                     }
                     .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
+                    .frame(height: 22)
                     .background(
-                        Capsule(style: .continuous)
+                        RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
                             .fill(vm.logErrorsOnly ? Color.t3ErrorPillBg : Color.clear)
                     )
                 }
@@ -1130,9 +1119,9 @@ struct GlobalLogDrawerView: View {
                 .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
                 .foregroundColor(useAccent ? theme.accentForeground : (isSelected ? .t3TextMain : .t3TextSub))
                 .padding(.horizontal, 8)
-                .padding(.vertical, 2.5)
+                .frame(height: 22)
                 .background(
-                    Capsule(style: .continuous)
+                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
                         .fill(useAccent ? theme.accent : (isSelected ? Color.t3ControlSelectedFill : Color.clear))
                 )
         }

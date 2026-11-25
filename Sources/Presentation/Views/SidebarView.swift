@@ -65,10 +65,10 @@ struct SidebarView: View {
             Button(action: { vm.exitSettings() }) {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(isBackHovered ? .t3TextMain : .t3TextSub)
                     Text("返回")
-                        .font(.system(size: 12.5, weight: .medium))
+                        .font(ChrysaFont.control)
                         .foregroundColor(isBackHovered ? .t3TextMain : .t3TextSub)
                     Spacer(minLength: 0)
                     Text("Esc")

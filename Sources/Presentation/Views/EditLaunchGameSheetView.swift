@@ -173,7 +173,7 @@ struct EditLaunchGameSheetView: View {
                         let selected = (iconPreference == mode)
                         Button(action: { iconPreference = mode }) {
                             Text(mode.label)
-                                .font(.system(size: 11.5, weight: selected ? .semibold : .regular))
+                                .font(.system(size: 12, weight: selected ? .semibold : .regular))
                                 .foregroundColor(selected ? .t3TextMain : .t3TextSub)
                                 .frame(maxWidth: .infinity)
                                 .frame(height: ChrysaMetrics.controlHeight - 4)
@@ -314,7 +314,7 @@ struct EditLaunchGameSheetView: View {
                                 let selected = (graphicsBackend == backend)
                                 Button(action: { graphicsBackend = backend }) {
                                     Text(backend.displayName)
-                                        .font(.system(size: 11.5, weight: selected ? .semibold : .regular))
+                                        .font(.system(size: 12, weight: selected ? .semibold : .regular))
                                         .foregroundColor(selected ? .t3TextMain : .t3TextSub)
                                         .frame(maxWidth: .infinity)
                                         .frame(height: ChrysaMetrics.controlHeight - 4)

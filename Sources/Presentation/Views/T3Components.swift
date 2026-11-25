@@ -222,27 +222,33 @@ struct T3StatusBox: View {
     }
 }
 
-// MARK: - Read-Only Outlined Status Pill Badge (Monospaced Digits to Prevent Live Width Jitter)
+// MARK: - Read-Only Soft-Tinted Inline Tag (Linear / Vercel Geist 20pt × 6pt Radius Proportion)
 struct T3OutlinedPill: View {
     let text: String
     var icon: String? = nil
 
     var body: some View {
-        HStack(spacing: 3.5) {
+        HStack(spacing: 4) {
             if let icon = icon {
                 Image(systemName: icon)
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(.system(size: 10, weight: .medium))
                     .foregroundColor(.t3TextSub)
             }
             Text(text)
                 .font(ChrysaFont.badge.monospacedDigit())
+                .tracking(ChrysaTracking.badge)
                 .foregroundColor(.t3TextSub)
+                .lineLimit(1)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 2)
+        .padding(.horizontal, 7)
+        .frame(height: ChrysaMetrics.badgeHeight)
+        .background(
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                .fill(Color.t3ControlFill)
+        )
         .overlay(
-            Capsule()
-                .stroke(Color.t3PillBorder, lineWidth: 1)
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                .stroke(Color.t3GroupedCardBorder, lineWidth: 0.75)
         )
     }
 }

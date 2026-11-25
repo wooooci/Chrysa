@@ -63,11 +63,12 @@ struct SettingsView: View {
                 // Editorial Category Page Header
                 VStack(alignment: .leading, spacing: 5) {
                     Text(vm.settingsCategory.rawValue)
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(ChrysaFont.settingsTitle)
+                        .tracking(ChrysaTracking.pageTitle)
                         .foregroundColor(.t3TextMain)
 
                     Text(vm.settingsCategory.pageDescription)
-                        .font(.system(size: 12.5, weight: .regular))
+                        .font(ChrysaFont.input)
                         .foregroundColor(.t3TextMuted)
                         .lineLimit(2)
                 }
@@ -449,7 +450,7 @@ struct SettingsView: View {
                                 let selected = (policy == option)
                                 Button(action: { vm.setProxyPolicy(option) }) {
                                     Text(option.displayName)
-                                        .font(.system(size: 11.5, weight: selected ? .semibold : .regular))
+                                        .font(.system(size: 12, weight: selected ? .semibold : .regular))
                                         .foregroundColor(selected ? .t3TextMain : .t3TextSub)
                                         .padding(.horizontal, 9)
                                         .frame(height: ChrysaMetrics.controlHeight - 4)
@@ -764,11 +765,11 @@ struct SettingsView: View {
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(ChrysaFont.settingLabel)
                     .foregroundColor(.t3TextMain)
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
-                        .font(.system(size: 11.5, weight: .regular))
+                        .font(ChrysaFont.helper)
                         .foregroundColor(.t3TextMuted)
                         .lineLimit(1)
                 }
@@ -794,21 +795,22 @@ private struct SettingsSection<Content: View>: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(title)
-                        .font(.system(size: 13.5, weight: .semibold))
+                        .font(ChrysaFont.sectionTitle)
+                        .tracking(ChrysaTracking.sectionTitle)
                         .foregroundColor(.t3TextMain)
 
                     Spacer(minLength: 8)
 
                     if let trailingMeta, !trailingMeta.isEmpty {
                         Text(trailingMeta)
-                            .font(.system(size: 11.5, weight: .regular).monospacedDigit())
+                            .font(ChrysaFont.caption.monospacedDigit())
                             .foregroundColor(.t3TextMuted)
                     }
                 }
 
                 if let description, !description.isEmpty {
                     Text(description)
-                        .font(.system(size: 11.5, weight: .regular))
+                        .font(ChrysaFont.helper)
                         .foregroundColor(.t3TextMuted)
                         .lineLimit(2)
                 }
@@ -848,11 +850,11 @@ private struct T3GroupedToggleRow: View {
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(ChrysaFont.settingLabel)
                     .foregroundColor(.t3TextMain)
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
-                        .font(.system(size: 11.5, weight: .regular))
+                        .font(ChrysaFont.helper)
                         .foregroundColor(.t3TextMuted)
                         .lineLimit(1)
                 }
