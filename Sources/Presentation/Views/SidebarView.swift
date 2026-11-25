@@ -2,6 +2,8 @@ import ChrysaCore
 import ChrysaApplication
 import SwiftUI
 import AppKit
+import CoreImage
+import CoreImage.CIFilterBuiltins
 
 struct SidebarView: View {
     @ObservedObject var vm: StudioViewModel
@@ -48,15 +50,14 @@ struct SidebarView: View {
             }
             .padding(.horizontal, 10)
 
-            if showQuickCard {
+            if !quickGames.isEmpty {
                 SidebarArcFavoritesGrid(
                     vm: vm,
                     games: quickGames,
+                    isExpanded: showQuickCard,
                     isSnapshotMode: isSnapshotMode
                 )
                 .padding(.horizontal, 10)
-                .padding(.top, 8)
-                .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
             WindowDragArea(isSnapshotMode: isSnapshotMode)
@@ -67,7 +68,6 @@ struct SidebarView: View {
                 .padding(.bottom, 4)
                 .help("偏好设置 (⌘,)")
         }
-        .animation(.spring(response: 0.22, dampingFraction: 0.90), value: showQuickCard)
         .backgroundPreferenceValue(SidebarTabBoundsKey.self) { bounds in
             GeometryReader { proxy in
                 if let anchor = bounds[vm.activeTab] {
@@ -76,7 +76,7 @@ struct SidebarView: View {
                         .fill(Color.t3SidebarActive)
                         .frame(width: rect.width, height: rect.height)
                         .offset(x: rect.minX, y: rect.minY)
-                        .animation(.spring(response: 0.18, dampingFraction: 0.92), value: vm.activeTab)
+                        .animation(isSnapshotMode ? nil : ChrysaMotion.tabGlide, value: vm.activeTab)
                 }
             }
         }
@@ -121,25 +121,28 @@ struct SidebarView: View {
 
             if hasQuickGames {
                 Button(action: {
-                    withAnimation(.spring(response: 0.22, dampingFraction: 0.90)) {
-                        vm.toggleSidebarQuickLaunch()
-                    }
+                    vm.toggleSidebarQuickLaunch()
                 }) {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(isLaunchChevronHovered ? .t3TextMain : .t3TextMuted)
                         .rotationEffect(.degrees(vm.isSidebarQuickLaunchExpanded ? 0 : -90))
+                        .animation(
+                            isSnapshotMode ? nil : (vm.isSidebarQuickLaunchExpanded ? ChrysaMotion.foldOpen : ChrysaMotion.foldClose),
+                            value: vm.isSidebarQuickLaunchExpanded
+                        )
                         .frame(width: 20, height: 20)
                         .background(
                             RoundedRectangle(cornerRadius: ChrysaMetrics.radiusMicro, style: .continuous)
                                 .fill(isLaunchChevronHovered ? Color.t3ControlHoverFill : Color.clear)
                         )
+                        .animation(ChrysaMotion.hover(isLaunchChevronHovered), value: isLaunchChevronHovered)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .padding(.trailing, 4)
                 .onHover { isLaunchChevronHovered = $0 }
-                .help(vm.isSidebarQuickLaunchExpanded ? "收起快捷启动坞" : "展开快捷启动坞")
+                .help(vm.isSidebarQuickLaunchExpanded ? "收起快捷启动" : "展开快捷启动")
             }
         }
         .frame(height: ChrysaMetrics.navRowHeight)
@@ -204,19 +207,21 @@ struct SidebarView: View {
     }
 }
 
-// MARK: - Arc-Style Unboxed Adaptive Favorites Grid (Content-Sized, Floating Directly on Translucent Sidebar)
+// MARK: - Authentic Arc / Nook Favorites Grid (Flat Borderless Tiles + Off-Screen CI Glow + Critically-Damped Fold)
 private struct SidebarArcFavoritesGrid: View {
     @ObservedObject var vm: StudioViewModel
     let games: [LaunchGame]
+    let isExpanded: Bool
     let isSnapshotMode: Bool
     @Environment(\.appTheme) private var theme
 
     @State private var hoveredGame: LaunchGame? = nil
     @State private var dropTargetedGame: LaunchGame? = nil
 
-    private let tileHeight: CGFloat = 44
-    private let gridSpacing: CGFloat = 6
+    private let tileHeight: CGFloat = 46
+    private let gridSpacing: CGFloat = 7
     private let maxVisibleRows: Int = 4
+    private let topSpacing: CGFloat = 8
 
     private var columnCount: Int {
         min(max(games.count, 1), 3)
@@ -231,28 +236,47 @@ private struct SidebarArcFavoritesGrid: View {
         return (count + columnCount - 1) / columnCount
     }
 
+    private var visibleRows: Int {
+        min(totalRows, maxVisibleRows)
+    }
+
     private var needsScroll: Bool {
         totalRows > maxVisibleRows
     }
 
-    private var maxGridHeight: CGFloat {
-        CGFloat(maxVisibleRows) * tileHeight + CGFloat(maxVisibleRows - 1) * gridSpacing
+    private var gridHeight: CGFloat {
+        CGFloat(visibleRows) * tileHeight + CGFloat(max(visibleRows - 1, 0)) * gridSpacing
     }
 
     private var activeHintGame: LaunchGame? {
-        dropTargetedGame ?? hoveredGame
+        guard isExpanded else { return nil }
+        return dropTargetedGame ?? hoveredGame
+    }
+
+    private var expandedHeight: CGFloat {
+        let hintHeight: CGFloat = (activeHintGame != nil) ? 22 : 0
+        return topSpacing + gridHeight + hintHeight
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if needsScroll && !isSnapshotMode {
-                ScrollView(.vertical, showsIndicators: false) {
+        let foldAnim: Animation? = isSnapshotMode ? nil : (isExpanded ? ChrysaMotion.foldOpen : ChrysaMotion.foldClose)
+
+        VStack(alignment: .leading, spacing: 0) {
+            Spacer().frame(height: topSpacing)
+
+            Group {
+                if needsScroll && !isSnapshotMode {
+                    ScrollView(.vertical, showsIndicators: false) {
+                        gridBody
+                    }
+                    .frame(height: gridHeight)
+                } else {
                     gridBody
                 }
-                .frame(height: maxGridHeight)
-            } else {
-                gridBody
             }
+            .opacity(isExpanded ? 1.0 : 0.0)
+            .scaleEffect(isExpanded ? 1.0 : 0.96, anchor: .top)
+            .offset(y: isExpanded ? 0 : -6)
 
             if let hintGame = activeHintGame {
                 let isDrop = (dropTargetedGame?.id == hintGame.id)
@@ -274,11 +298,24 @@ private struct SidebarArcFavoritesGrid: View {
                     }
                 }
                 .padding(.horizontal, 4)
-                .frame(height: 16)
+                .padding(.top, 6)
+                .frame(height: 22, alignment: .center)
                 .transition(.opacity)
             }
         }
-        .animation(.easeOut(duration: 0.14), value: activeHintGame?.id)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(height: isExpanded ? expandedHeight : 0, alignment: .top)
+        .clipped()
+        .allowsHitTesting(isExpanded)
+        .accessibilityHidden(!isExpanded)
+        .animation(foldAnim, value: isExpanded)
+        .animation(isSnapshotMode ? nil : .easeOut(duration: 0.14), value: activeHintGame?.id)
+        .onChange(of: isExpanded) { _, expanded in
+            if !expanded {
+                hoveredGame = nil
+                dropTargetedGame = nil
+            }
+        }
     }
 
     private var gridBody: some View {
@@ -321,32 +358,33 @@ private struct ArcFavoriteTile: View {
     let onHoverChange: (Bool) -> Void
     let onDropTargetChange: (Bool) -> Void
     @Environment(\.appTheme) private var theme
+    @State private var glowImage: CGImage? = nil
 
+    // Pure flat borderless fill matching Arc / Nook measured ratios (no specular bevels, no gradients)
     private var tileFill: Color {
         if isDropTargeted {
-            return theme.accent.opacity(theme.isDark ? 0.22 : 0.14)
+            return theme.accent.opacity(theme.isDark ? 0.18 : 0.12)
         }
-        if isHovered {
-            return theme.isDark ? Color.white.opacity(0.115) : Color.white.opacity(0.82)
+        if theme.isDark {
+            return Color.white.opacity(isHovered ? 0.115 : 0.065)
+        } else {
+            return Color.black.opacity(isHovered ? 0.085 : 0.048)
         }
-        return theme.isDark ? Color.white.opacity(0.056) : Color.black.opacity(0.035)
     }
 
-    private var tileBorder: Color {
-        if isDropTargeted {
-            return theme.accent
+    // Exact Nook / Arc FaviconGlow opacities: subtle wash in Dark, zero at rest in Light
+    private var glowOpacity: Double {
+        if theme.isDark {
+            return isHovered ? 0.30 : 0.20
+        } else {
+            return isHovered ? 0.10 : 0.0
         }
-        if isHovered {
-            if theme.mode != .monochrome {
-                return theme.accent.opacity(theme.isDark ? 0.58 : 0.48)
-            }
-            return theme.isDark ? Color.white.opacity(0.18) : Color.black.opacity(0.12)
-        }
-        return theme.isDark ? Color.white.opacity(0.075) : Color.black.opacity(0.062)
     }
 
     var body: some View {
         let icon = vm.launchGameIcon(for: game)
+        let iconSignature = StudioViewModel.launchGameIconSignature(for: game)
+        let shape = RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous)
         let dropBinding = Binding<Bool>(
             get: { isDropTargeted },
             set: { onDropTargetChange($0) }
@@ -354,25 +392,41 @@ private struct ArcFavoriteTile: View {
 
         Button(action: { vm.launchGame(game) }) {
             ZStack {
-                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous)
+                shape
                     .fill(tileFill)
-                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous)
-                    .stroke(tileBorder, lineWidth: isDropTargeted ? 1.5 : 0.9)
+                    .animation(isSnapshotMode ? nil : ChrysaMotion.hover(isHovered), value: isHovered)
+
+                // Off-screen CoreImage CIGaussianBlur atmospheric icon wash (only for real icons)
+                if let glowImage {
+                    Color.clear
+                        .overlay {
+                            Image(decorative: glowImage, scale: 2.0)
+                                .resizable()
+                                .scaledToFill()
+                        }
+                        .clipped()
+                        .opacity(glowOpacity)
+                        .clipShape(shape)
+                        .allowsHitTesting(false)
+                        .animation(isSnapshotMode ? nil : ChrysaMotion.hover(isHovered), value: isHovered)
+                }
+
+                if isDropTargeted {
+                    shape
+                        .strokeBorder(theme.accent, lineWidth: 1.5)
+                }
 
                 ArcGameGlyph(
                     icon: icon,
                     title: game.title,
-                    iconSize: 28,
-                    monogramSize: 26
+                    isHovered: isHovered
                 )
-                .scaleEffect(isHovered ? 1.05 : 1.0)
             }
             .frame(maxWidth: .infinity)
             .frame(height: tileHeight)
-            .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous))
+            .contentShape(shape)
         }
         .buttonStyle(ArcTilePressStyle())
-        .animation(.easeOut(duration: 0.14), value: isHovered)
         .onHover { onHoverChange($0) }
         .conditionalDrop(enabled: !isSnapshotMode, of: [.fileURL], isTargeted: dropBinding) { providers in
             vm.handleDroppedPatchProviders(providers, for: game)
@@ -396,9 +450,15 @@ private struct ArcFavoriteTile: View {
                 }
             }
         }
-        .task(id: StudioViewModel.launchGameIconSignature(for: game)) {
+        .task(id: iconSignature) {
             guard !isSnapshotMode else { return }
             await vm.loadLaunchGameIconIfNeeded(for: game)
+            if let loaded = vm.launchGameIcon(for: game),
+               let cg = loaded.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+                glowImage = await ArcIconGlowCache.shared.glow(forKey: iconSignature, source: cg)
+            } else {
+                glowImage = nil
+            }
         }
     }
 }
@@ -406,41 +466,58 @@ private struct ArcFavoriteTile: View {
 private struct ArcTilePressStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
-            .animation(.spring(response: 0.22, dampingFraction: 0.72), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
+            .animation(ChrysaMotion.press, value: configuration.isPressed)
+    }
+}
+
+/// Off-screen CoreImage CIGaussianBlur cache matching Arc / Nook `FaviconGlow` (`radius = side * 0.25`, `clampedToExtent`)
+private actor ArcIconGlowCache {
+    static let shared = ArcIconGlowCache()
+
+    private let limit = 64
+    private var cache: [String: CGImage] = [:]
+    private var order: [String] = []
+    private let context = CIContext()
+
+    func glow(forKey key: String, source: CGImage) -> CGImage? {
+        if let hit = cache[key] { return hit }
+        guard let rendered = render(source) else { return nil }
+        cache[key] = rendered
+        order.append(key)
+        if order.count > limit {
+            cache[order.removeFirst()] = nil
+        }
+        return rendered
+    }
+
+    private func render(_ source: CGImage) -> CGImage? {
+        let side: CGFloat = 96
+        let rect = CGRect(x: 0, y: 0, width: side, height: side)
+        let input = CIImage(cgImage: source)
+        let fill = max(side / input.extent.width, side / input.extent.height)
+        let scaled = input.transformed(by: CGAffineTransform(scaleX: fill, y: fill))
+        let centered = scaled.transformed(by: CGAffineTransform(
+            translationX: (side - scaled.extent.width) / 2 - scaled.extent.minX,
+            y: (side - scaled.extent.height) / 2 - scaled.extent.minY
+        ))
+        let blur = CIFilter.gaussianBlur()
+        blur.inputImage = centered.clampedToExtent()
+        blur.radius = Float(side * 0.25)
+        guard let out = blur.outputImage else { return nil }
+        return context.createCGImage(out, from: rect)
     }
 }
 
 private struct ArcGameGlyph: View {
     let icon: NSImage?
     let title: String
-    let iconSize: CGFloat
-    let monogramSize: CGFloat
-    @Environment(\.appTheme) private var theme
+    let isHovered: Bool
 
     private var monogram: String {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let first = trimmed.first else { return "?" }
         return String(first).uppercased()
-    }
-
-    private var mutedTone: Color {
-        let palette: [Color] = [
-            Color(red: 0.36, green: 0.58, blue: 0.90), // Slate Blue
-            Color(red: 0.28, green: 0.70, blue: 0.54), // Sage Emerald
-            Color(red: 0.84, green: 0.58, blue: 0.28), // Warm Ochre
-            Color(red: 0.68, green: 0.48, blue: 0.86), // Muted Lavender
-            Color(red: 0.82, green: 0.44, blue: 0.52), // Dusty Rose
-            Color(red: 0.32, green: 0.66, blue: 0.76), // Muted Teal
-            Color(red: 0.52, green: 0.56, blue: 0.88), // Periwinkle
-            Color(red: 0.76, green: 0.66, blue: 0.34)  // Soft Brass
-        ]
-        var hash: UInt64 = 14695981039346656037
-        for byte in title.utf8 {
-            hash ^= UInt64(byte)
-            hash &*= 1099511628211
-        }
-        return palette[Int(hash % UInt64(palette.count))]
     }
 
     var body: some View {
@@ -449,21 +526,12 @@ private struct ArcGameGlyph: View {
                 .resizable()
                 .interpolation(.high)
                 .aspectRatio(contentMode: .fill)
-                .frame(width: iconSize, height: iconSize)
+                .frame(width: 24, height: 24)
                 .clipShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
-                        .stroke(Color.black.opacity(theme.isDark ? 0.22 : 0.08), lineWidth: 0.5)
-                )
         } else {
-            ZStack {
-                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
-                    .fill(mutedTone.opacity(theme.isDark ? 0.20 : 0.14))
-                    .frame(width: monogramSize, height: monogramSize)
-                Text(monogram)
-                    .font(.system(size: monogramSize * 0.48, weight: .semibold, design: .rounded))
-                    .foregroundColor(theme.isDark ? mutedTone.opacity(0.95) : mutedTone.opacity(0.88))
-            }
+            Text(monogram)
+                .font(.system(size: 14, weight: .medium, design: .rounded))
+                .foregroundColor(isHovered ? .t3TextMain : .t3TextSub)
         }
     }
 }

@@ -114,6 +114,22 @@ package enum ChrysaMetrics {
     package static let controlHeight: CGFloat = 28
 }
 
+// MARK: - Critically-Damped Motion (Arc / Nook Measured Curves: Zero Bounce, Viscous Deceleration)
+package enum ChrysaMotion {
+    /// Critically-damped hydraulic unfold (dampingFraction 1.0: weighted deceleration, zero bounce)
+    package static let foldOpen  = Animation.spring(response: 0.36, dampingFraction: 1.0)
+    /// Crisp critically-damped fold close
+    package static let foldClose = Animation.spring(response: 0.28, dampingFraction: 1.0)
+    /// Smooth viscous glide for active sidebar & settings selection pills
+    package static let tabGlide  = Animation.spring(response: 0.28, dampingFraction: 1.0)
+    /// Tactile press down/up
+    package static let press     = Animation.easeOut(duration: 0.10)
+    /// Arc / Nook hover rule: highlight engages immediately on enter; fades smoothly on leave
+    package static func hover(_ isOn: Bool) -> Animation? {
+        isOn ? nil : .easeOut(duration: 0.14)
+    }
+}
+
 extension AppearanceMode {
     package var preferredColorScheme: ColorScheme? {
         switch self {

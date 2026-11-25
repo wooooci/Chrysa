@@ -38,7 +38,7 @@ struct SettingsView: View {
                             )
                             .frame(width: rect.width, height: rect.height)
                             .offset(x: rect.minX, y: rect.minY)
-                            .animation(.spring(response: 0.18, dampingFraction: 0.92), value: vm.settingsCategory)
+                            .animation(ChrysaMotion.tabGlide, value: vm.settingsCategory)
                     }
                 }
             }
