@@ -177,9 +177,9 @@ package enum SettingsCategory: String, CaseIterable, Identifiable, Codable, Send
     package var symbolName: String {
         switch self {
         case .appearance: return "paintbrush"
-        case .download:   return "tray.and.arrow.down"
-        case .unpack:     return "archivebox"
-        case .patch:      return "puzzlepiece"
+        case .download:   return StudioTab.download.symbolName
+        case .unpack:     return StudioTab.unpack.symbolName
+        case .patch:      return StudioTab.patch.symbolName
         }
     }
 

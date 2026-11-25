@@ -131,11 +131,23 @@ struct SidebarView: View {
         let isHovered = (hoveredSettingsCategory == cat && !isHighlighted)
 
         return HStack(alignment: .center, spacing: 8) {
-            Image(systemName: cat.symbolName)
-                .symbolRenderingMode(.monochrome)
-                .font(.system(size: 13, weight: isHighlighted ? .medium : .regular))
-                .foregroundStyle(isHighlighted ? theme.iconActive : theme.iconInactive)
-                .frame(width: 20, height: 20, alignment: .center)
+            Group {
+                switch cat {
+                case .download:
+                    T3SidebarIcon(tab: .download, placement: .sidebar(isActive: isHighlighted))
+                case .unpack:
+                    T3SidebarIcon(tab: .unpack, placement: .sidebar(isActive: isHighlighted))
+                case .patch:
+                    T3SidebarIcon(tab: .patch, placement: .sidebar(isActive: isHighlighted))
+                case .appearance:
+                    Image(systemName: cat.symbolName)
+                        .symbolRenderingMode(.monochrome)
+                        .font(.system(size: 13.5, weight: isHighlighted ? .medium : .regular))
+                        .imageScale(.medium)
+                        .foregroundStyle(isHighlighted ? theme.iconActive : theme.iconInactive)
+                        .frame(width: 20, height: 20, alignment: .center)
+                }
+            }
 
             Text(cat.rawValue)
                 .font(isHighlighted ? ChrysaFont.navItemActive : ChrysaFont.navItem)
