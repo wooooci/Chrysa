@@ -57,3 +57,4 @@ xattr -cr /Applications/Chrysa.app
 ## 友情链接
 
 - [LINUX DO](https://linux.do) — 真诚、友善、团结、专业，共建你我引以为荣之社区
+- [gbe_fork](https://github.com/Detanup01/gbe_fork) — Goldberg Steam Emulator 社区维护分支（Chrysa 内置 Steam 离线模拟核心）
