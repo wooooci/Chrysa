@@ -314,14 +314,14 @@ struct T3MenuPill: View {
         .padding(.horizontal, 10)
         .frame(height: ChrysaMetrics.controlHeight)
         .background(
-            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
                 .fill(isHovered ? Color.t3ControlHoverFill : Color.t3ControlFill)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
                 .stroke(Color.t3GroupedCardBorder, lineWidth: 1)
         )
-        .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous))
         .onHover { isHovered = $0 }
     }
 }

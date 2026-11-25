@@ -82,11 +82,11 @@ struct SidebarView: View {
                 .padding(.horizontal, 8)
                 .frame(height: 28)
                 .background(
-                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
                         .fill(isBackHovered ? Color.t3HoverBg : Color.clear)
                 )
                 .animation(ChrysaMotion.hover(isBackHovered), value: isBackHovered)
-                .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous))
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 10)
@@ -121,7 +121,7 @@ struct SidebarView: View {
             GeometryReader { proxy in
                 if let anchor = bounds[vm.settingsCategory] {
                     let rect = proxy[anchor]
-                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
                         .fill(Color.t3SidebarActive)
                         .frame(width: rect.width, height: rect.height)
                         .offset(x: rect.minX, y: rect.minY)
@@ -167,7 +167,7 @@ struct SidebarView: View {
         .padding(.horizontal, 8)
         .frame(height: ChrysaMetrics.navRowHeight)
         .background(
-            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
                 .fill(isHovered ? Color.t3HoverBg : Color.clear)
                 .animation(ChrysaMotion.hover(isHovered), value: isHovered)
         )
@@ -238,7 +238,7 @@ struct SidebarView: View {
             GeometryReader { proxy in
                 if !isShowingSearchResults, let anchor = bounds[vm.activeTab] {
                     let rect = proxy[anchor]
-                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
                         .fill(Color.t3SidebarActive)
                         .frame(width: rect.width, height: rect.height)
                         .offset(x: rect.minX, y: rect.minY)
@@ -323,12 +323,12 @@ struct SidebarView: View {
         .padding(.horizontal, 10)
         .frame(height: 30)
         .background(
-            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
                 .fill(pillFill)
                 .animation(isSnapshotMode ? nil : ChrysaMotion.hover(isSearchHovered), value: isSearchHovered)
                 .animation(isSnapshotMode ? nil : ChrysaMotion.tabGlide, value: isSidebarSearchFocused)
         )
-        .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous))
         .onHover { isSearchHovered = $0 }
         .onTapGesture {
             if !isSnapshotMode {
@@ -470,7 +470,7 @@ struct SidebarView: View {
                                         .interpolation(.high)
                                         .aspectRatio(contentMode: .fill)
                                         .frame(width: 16, height: 16)
-                                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                                        .clipShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusMicro, style: .continuous))
                                 } else {
                                     Image(systemName: "gamecontroller")
                                         .font(.system(size: 12, weight: .medium))
@@ -500,7 +500,7 @@ struct SidebarView: View {
                             .padding(.horizontal, 8)
                             .frame(height: 28)
                             .background(
-                                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
                                     .fill(isHovered ? Color.t3HoverBg : Color.clear)
                                     .animation(ChrysaMotion.hover(isHovered), value: isHovered)
                             )
@@ -546,7 +546,7 @@ struct SidebarView: View {
                             .padding(.horizontal, 8)
                             .frame(height: 28)
                             .background(
-                                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                                RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
                                     .fill(isHovered ? Color.t3HoverBg : Color.clear)
                                     .animation(ChrysaMotion.hover(isHovered), value: isHovered)
                             )
@@ -614,7 +614,7 @@ struct SidebarView: View {
                         )
                         .frame(width: 20, height: 20)
                         .background(
-                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusMicro, style: .continuous)
+                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
                                 .fill(isLaunchChevronHovered ? Color.t3ControlHoverFill : Color.clear)
                         )
                         .animation(ChrysaMotion.hover(isLaunchChevronHovered), value: isLaunchChevronHovered)
@@ -628,7 +628,7 @@ struct SidebarView: View {
         }
         .frame(height: ChrysaMetrics.navRowHeight)
         .background(
-            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
                 .fill(isHovered ? Color.t3HoverBg : Color.clear)
         )
         .anchorPreference(key: SidebarTabBoundsKey.self, value: .bounds) { [tab: $0] }
@@ -668,7 +668,7 @@ struct SidebarView: View {
         .padding(.horizontal, 8)
         .frame(height: ChrysaMetrics.navRowHeight)
         .background(
-            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
                 .fill(isHovered ? Color.t3HoverBg : Color.clear)
         )
         .contentShape(Rectangle())
@@ -849,7 +849,7 @@ private struct ArcFavoriteTile: View {
     var body: some View {
         let icon = vm.launchGameIcon(for: game)
         let iconSignature = StudioViewModel.launchGameIconSignature(for: game)
-        let shape = RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
         let dropBinding = Binding<Bool>(
             get: { isDropTargeted },
             set: { onDropTargetChange($0) }

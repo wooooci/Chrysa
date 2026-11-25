@@ -587,11 +587,11 @@ struct SettingsView: View {
                                 .padding(.horizontal, 8)
                                 .frame(width: 162, height: ChrysaMetrics.controlHeight)
                                 .background(
-                                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
                                         .fill(isCredentialFocused ? Color.t3CanvasBg : Color.t3PreviewWellBg)
                                 )
                                 .overlay(
-                                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
+                                    RoundedRectangle(cornerRadius: ChrysaMetrics.radiusControl, style: .continuous)
                                         .stroke(isCredentialFocused ? theme.accent.opacity(0.55) : Color.t3GroupedCardBorder, lineWidth: isCredentialFocused ? 1.2 : 1)
                                 )
                             }

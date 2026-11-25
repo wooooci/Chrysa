@@ -326,9 +326,9 @@ struct ChrysaAppMain {
 
                 let framed = ThingsStudioMainView(vm: vm, isSnapshotMode: true)
                     .frame(width: 880, height: 610)
-                    .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        RoundedRectangle(cornerRadius: ChrysaMetrics.radiusCard, style: .continuous)
                             .stroke(isDark ? Color.white.opacity(0.11) : Color.black.opacity(0.11), lineWidth: 1)
                     )
                     .padding(22)
