@@ -136,33 +136,9 @@ struct SettingsView: View {
 
                 hairline
 
-                // Row 2: Accent Swatches + Active Color Readout Badge
+                // Row 2: Accent Swatches
                 editorialRow(title: "强调色", minHeight: 54) {
-                    HStack(spacing: 12) {
-                        accentSwatchStrip
-
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(theme.accent)
-                                .frame(width: 9, height: 9)
-                            Text(theme.activeAccentTitle)
-                                .font(ChrysaFont.captionMedium)
-                                .foregroundColor(.t3TextSub)
-                                .lineLimit(1)
-                                .fixedSize(horizontal: true, vertical: false)
-                        }
-                        .padding(.horizontal, 10)
-                        .frame(height: 26)
-                        .fixedSize()
-                        .background(
-                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
-                                .fill(Color.t3ControlFill)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: ChrysaMetrics.radiusSmall, style: .continuous)
-                                .stroke(Color.t3Divider, lineWidth: 0.75)
-                        )
-                    }
+                    accentSwatchStrip
                 }
 
                 hairline
