@@ -52,7 +52,7 @@ package enum DownloadInputParser {
         "itsfileditchfiles.st/", "fileditchfiles.st/", "fileditch.com/",
         "mirroruploadx.com/", "www.mirroruploadx.com/",
         "cloud.mail.ru/",
-        "mediafire.com/", "www.mediafire.com/",
+        "mediafire.com/", "www.mediafire.com/", "app.mediafire.com/", "mfi.re/",
         "drive.google.com/",
         "fuckingfast.co/", "www.fuckingfast.co/",
         "1fichier.com/", "www.1fichier.com/",

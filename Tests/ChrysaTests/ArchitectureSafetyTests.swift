@@ -726,6 +726,67 @@ struct ArchitectureSafetyTests {
         let ofDirect = try #require(OneFichierResolver.parseDownloadPage(html: ofFinalHTML))
         #expect(ofDirect.directURL == "https://a-12.1fichier.com/c888999")
         #expect(ofDirect.filename == "Archive_Game.zip")
+
+        // 7. MediaFire: data-scrambled-url Base64 button (even alongside footer captcha strings),
+        //    direct CDN detection, folder keys & API JSON parsing, and shortlink normalization
+        let mfTargetURL = "https://download2265.mediafire.com/abc123token/Pentiment_v1.3.7z"
+        let mfScrambled = Data(mfTargetURL.utf8).base64EncodedString()
+        let mfScrambledHTML = """
+        <html><body>
+        <div class="dl-btn-label" title="Pentiment_v1.3.7z">Pentiment_v1.3.7z</div>
+        <a class="input popsok" aria-label="Download file" href="#" id="downloadButton" data-scrambled-url="\(mfScrambled)">
+          Download (2.5GB)
+        </a>
+        <footer><script>var g_recaptcha_key = "dummy-captcha-footer";</script></footer>
+        </body></html>
+        """
+        let mfExtracted = try #require(MediaFireResolver.extractDirectDownload(from: mfScrambledHTML))
+        #expect(mfExtracted.directURL == mfTargetURL)
+        #expect(mfExtracted.filename == "Pentiment_v1.3.7z")
+        #expect(mfExtracted.totalSize == Int64(2.5 * 1024 * 1024 * 1024))
+
+        let mfJSEscapedHTML = #"<script>var dl = "https:\/\/download1502.mediafire.com\/xyz\/Patch_CHS.zip?a=1&amp;b=2";</script>"#
+        let mfJSExtracted = try #require(MediaFireResolver.extractDirectDownload(from: mfJSEscapedHTML))
+        #expect(mfJSExtracted.directURL == "https://download1502.mediafire.com/xyz/Patch_CHS.zip?a=1&b=2")
+        #expect(mfJSExtracted.filename == "Patch_CHS.zip")
+
+        #expect(MediaFireResolver.isDirectCDNURL(try #require(URL(string: mfTargetURL))))
+        #expect(!MediaFireResolver.isDirectCDNURL(try #require(URL(string: "https://www.mediafire.com/file/abcd1234efgh567/test.7z/file"))))
+        #expect(
+            MediaFireResolver.extractFolderKeys(from: try #require(URL(string: "https://www.mediafire.com/folder/ab12cd34ef56,zz99yy88xx77/GamePack")))
+                == ["ab12cd34ef56", "zz99yy88xx77"]
+        )
+        #expect(
+            MediaFireResolver.canonicalFilePageURL(from: try #require(URL(string: "https://www.mediafire.com/view/abcd1234efgh567/Game.zip/file")))
+                == "https://www.mediafire.com/file/abcd1234efgh567/file"
+        )
+        #expect(HostResolverRegistry.normalizeDownloadInput("mfi.re/file/abcd1234efgh567") == "https://mfi.re/file/abcd1234efgh567")
+
+        let mfFolderJSON = Data("""
+        {
+          "response": {
+            "result": "Success",
+            "folder_content": {
+              "more_chunks": "yes",
+              "files": [
+                {
+                  "quickkey": "qk001abcde",
+                  "filename": "Game.part1.rar",
+                  "size": "104857600",
+                  "links": {"normal_download": "http://www.mediafire.com/file/qk001abcde/Game.part1.rar/file"}
+                }
+              ]
+            }
+          }
+        }
+        """.utf8)
+        let mfFolderPage = MediaFireResolver.parseFolderFilesJSON(mfFolderJSON)
+        #expect(mfFolderPage.errorMessage == nil)
+        #expect(mfFolderPage.moreChunks == true)
+        #expect(mfFolderPage.files.count == 1)
+        #expect(mfFolderPage.files[0].filename == "Game.part1.rar")
+        #expect(mfFolderPage.files[0].size == 104_857_600)
+        #expect(mfFolderPage.files[0].pageURL == "https://www.mediafire.com/file/qk001abcde/Game.part1.rar/file")
     }
 
     @Test

@@ -429,60 +429,6 @@ package struct BuzzheavierResolver: HostResolver {
     }
 }
 
-package struct MediaFireResolver: HostResolver {
-    package let id = "mediafire"
-    package let bareDomains = ["mediafire.com/", "www.mediafire.com/"]
-
-    package func canHandle(host: String, url: URL) -> Bool {
-        host.contains("mediafire.com")
-    }
-    package func matchesCDNHost(_ host: String) -> Bool {
-        host.contains("mediafire.com")
-    }
-
-    package func resolveDetailed(
-        input: String,
-        url: URL,
-        passwords: [String],
-        settings: DownloadSettings
-    ) async -> HostResolutionResult {
-        guard let resp = await ResolverHTTPHelper.fetchWithPolicy(
-            urlString: input,
-            policy: settings.proxyPolicy,
-            preferDirect: false,
-            timeoutSeconds: 20
-        ),
-              let html = resp.bodyString else {
-            return HostResolutionResult(downloads: [], failureReason: "无法连接 MediaFire")
-        }
-
-        if let failure = ResolverHTTPHelper.classifyFailure(statusCode: resp.statusCode, contentType: resp.contentType, body: html) {
-            return HostResolutionResult(downloads: [], failureReason: failure)
-        }
-
-        let pattern = #"href=["'](https?://download[0-9]*\.mediafire\.com/[^"']+)["']"#
-        if let regex = try? NSRegularExpression(pattern: pattern),
-           let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
-           let range = Range(match.range(at: 1), in: html) {
-            let direct = String(html[range])
-            let rawName = URL(string: direct)?.lastPathComponent.removingPercentEncoding
-            return HostResolutionResult(downloads: [
-                ResolvedDownload(
-                    originalURL: input,
-                    finalURL: direct,
-                    headers: [],
-                    suggestedFilename: rawName,
-                    maxThreads: maxThreads(),
-                    needsProxy: proxyNeeds(),
-                    resolverID: id
-                )
-            ])
-        }
-
-        return HostResolutionResult(downloads: [], failureReason: "无法提取 MediaFire 直链")
-    }
-}
-
 package struct GoogleDriveResolver: HostResolver {
     package let id = "googledrive"
     package let bareDomains = ["drive.google.com/"]
